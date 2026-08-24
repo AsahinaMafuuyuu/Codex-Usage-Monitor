@@ -3,7 +3,7 @@
 **交付日期：** 2026-08-24  
 **目标读者：** 后续负责 `public/**` 的智能体 / 开发者  
 **当前分支：** `codex/project-grouping-claude-redesign`  
-**接手基线：** `fd8e5c9 refactor(ui): compact deep agent lineage gutters`
+**接手基线：** `1beb8dc feat(ui): preserve task context while scrolling`
 
 ## 1. 接手前必须确认
 
@@ -13,7 +13,8 @@
 2. [`tasks/plan.md`](../tasks/plan.md) 的 Phase 9。
 3. [`ADR-0009`](decisions/0009-editorial-lineage-interface.md)：编辑式账页、连续谱系轨、角色标签。
 4. [`ADR-0010`](decisions/0010-typography-hierarchy.md)：字体职责与字号层级。
-5. [`VERIFICATION.md`](VERIFICATION.md)：最近一次真实浏览器验收证据。
+5. [`ADR-0011`](decisions/0011-sticky-task-ledger-context.md)：任务/状态 sticky 上下文与横向浏览契约。
+6. [`VERIFICATION.md`](VERIFICATION.md)：最近一次真实浏览器验收证据。
 
 然后执行：
 
@@ -28,11 +29,11 @@ git diff --check
 预期基线至少包含：
 
 ```text
+1beb8dc feat(ui): preserve task context while scrolling
+705c7d5 docs: advance frontend handoff after lineage compaction
 fd8e5c9 refactor(ui): compact deep agent lineage gutters
 7c80576 docs: add frontend iteration handoff
 aed004a feat(ui): establish readable typography hierarchy
-c0cc86d chore: require versioned frontend design decisions
-b9641bf feat: redesign dashboard as an editorial lineage ledger
 ```
 
 开始新的视觉决策前，工作区必须 clean。不要 reset、stash 或覆盖其他工作者的改动。
@@ -68,6 +69,13 @@ b9641bf feat: redesign dashboard as an editorial lineage ledger
 - 不重新引入 `8px` / `9px` UI 文字。
 - Session 标题上限 `48px`，Section 标题上限 `36px`。
 
+### Phase 9 / Task ledger context
+
+- 14 个审计字段和 `1390px` 固定表宽继续完整保留；不得通过隐藏 model / effort / token / cost / quality 字段解决宽度问题。
+- Task 与 Status 是唯一 sticky 审计上下文，分别固定在 `left: 0` 与 `left: 160px`；不要继续增加冻结列。
+- `.task-table-wrap` 仍是唯一横向 overflow 边界，同时是 `tabindex="0"` 的可聚焦 `region`。
+- 横向 scrollbar 在 Chromium 下为 10px 高，并继续使用 clay / paper-deep 视觉提示；不要用 `scrollbar-gutter: stable` 额外损失窄屏内容宽度。
+
 ## 4. Phase 9 后续工作顺序
 
 后续四项必须**逐项完成、逐项验证、逐项提交**；禁止混合实现。
@@ -89,13 +97,25 @@ b9641bf feat: redesign dashboard as an editorial lineage ledger
 fd8e5c9 refactor(ui): compact deep agent lineage gutters
 ```
 
-### Decision 3：任务审计表横向浏览 — 下一项
+### Decision 3：任务审计表横向浏览 — 已完成
 
-目标：改善 14 列、`1390px` 审计表的上下文保持，例如 sticky Task/Status、明确滚动 affordance 或审计密度控制。
+已在 `1beb8dc` 完成。Task / Status 固定在 `0px / 160px`；两列使用不透明冻结背景、Status 右侧 hairline/轻阴影，横向 scrollbar 提升到 10px，并将 `.task-table-wrap` 设为可键盘聚焦的 `region`。
 
-不要通过隐藏 token / model / effort / cost / quality 字段解决宽度问题。
+已验证保持以下契约：
 
-### Decision 4：Overview 信息层级
+- 14 列与 1390px 审计宽度完整保留，没有隐藏 token / model / effort / cost / quality 字段。
+- 桌面滚动 413px、窄屏滚动 620px 后，Task/Status 表头与数据单元格仍分别保持在 `0px / 160px`。
+- 1440×900 与 390×844 均无 document-level 横向 overflow；任务表仍由 `.task-table-wrap` 独立滚动。
+- 9 个真实 rollout 在最终 Chrome 验收前后 SHA-256 全部一致。
+- 本提交没有混入 Overview 重组或 Agent 展开策略。
+
+提交：
+
+```text
+1beb8dc feat(ui): preserve task context while scrolling
+```
+
+### Decision 4：Overview 信息层级 — 下一项
 
 将当前七项近似等权指标重新组织成更符合监控任务的语义层，例如 Activity / Token Flow / Cost；不要恢复多层圆角 card grid。
 
@@ -159,6 +179,15 @@ Decision 2 最新增量：
 - Chrome 390×844：同一会话 lineage 为 `10px + 8px = 18px/层`，document width 375，无横向溢出；任务表 339px 容器 / 1390px 内容，独立滚动。
 - console error / warning / runtime exception：0。
 
+Decision 3 最新增量：
+
+- `npm test`：26 tests，25 passed，0 failed，1 skipped。
+- `npm run check`、`git diff --check`：通过。
+- Chrome 1440×900：实际 8 Agent / 18 Task 会话，document `1440 / 1440`；任务表容器 977px / 内容 1390px。滚动 413px 后 Task/Status 表头与首行仍保持 `0px / 160px`，第三列移动至 `-177px`。
+- Chrome 390×844：document `375 / 375`；任务表容器 339px / 内容 1390px。滚动 620px 后 Task/Status 仍保持 `0px / 160px`，第三列移动至 `-384px`。
+- WebKit 横向 scrollbar 实际计算高度 10px；`.task-table-wrap` 为 `tabIndex=0`、`role=region`。
+- console error / warning / runtime exception：0；9 个 rollout 验收前后 SHA-256 全部一致。
+
 详细证据以 [`VERIFICATION.md`](VERIFICATION.md) 为准，不要把历史记录冒充为新一轮已执行验证。
 
 ## 8. 本阶段明确不应触碰的边界
@@ -175,4 +204,4 @@ Decision 2 最新增量：
 
 ## 9. 给下一位智能体的直接任务
 
-接手后先验证本文件第 1 节的 Git/测试基线。若基线一致，从 **Decision 3：任务审计表横向浏览** 开始；只拥有该决策所需的 `public/**`、对应测试和交付文档，不提前混入 Overview 或展开策略。完成并提交后汇报：目标、修改文件、视觉契约变化、精确验证结果、浏览器数据、commit hash、风险和下一项建议。
+接手后先验证本文件第 1 节的 Git/测试基线。若基线一致，从 **Decision 4：Overview 信息层级** 开始；只拥有该决策所需的 `public/**`、对应测试和交付文档，不提前混入 Agent 展开策略。目标是把当前七项近似等权指标重新组织为 Activity / Token Flow / Cost 等语义组，同时保持编辑式账页而不是恢复 card grid。完成并提交后汇报：目标、修改文件、视觉契约变化、精确验证结果、浏览器数据、commit hash、风险和下一项建议。
