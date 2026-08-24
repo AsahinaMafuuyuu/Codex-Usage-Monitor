@@ -38,3 +38,11 @@
 - [x] Make agent role labels prominent and align task-table data
 - [x] Record the visual ADR and delivery evidence
 - [x] Verify and commit the desktop and narrow-screen redesign
+- [x] Record per-decision frontend version-control rules in `AGENTS.md`
+- [x] Establish role-based typography tokens and remove 8–9px UI text
+- [x] Reduce oversized Session/Section headings for observability density
+- [x] Record the typography contract as ADR-0010
+- [ ] Reduce deep-lineage horizontal width loss as a separate visual commit
+- [ ] Improve task-ledger scrolling/sticky context as a separate visual commit
+- [ ] Rebalance overview metric hierarchy as a separate visual commit
+- [ ] Define and implement a scalable agent expansion policy as a separate visual commit

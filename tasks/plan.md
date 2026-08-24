@@ -352,6 +352,37 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 - [x] Reduced-motion and keyboard-focus behavior remain intact.
 - [x] Commit the complete Phase 8 redesign and documentation with an explicit Conventional Commit message.
 
+## Phase 9: Dense observability refinement
+
+Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策逐步提升长期使用体验。每一项决策按 `AGENTS.md` 单独验证并提交，避免把字体、谱系、表格和交互密度混在同一轮修改中。
+
+### Task 1: Establish the typography hierarchy
+
+**Description:** Reassign serif, sans, and monospace by information role, remove 8–9px UI text, and reduce oversized editorial headings so dense monitoring remains readable without losing the Phase 8 identity.
+
+**Acceptance criteria:**
+
+- [x] Display serif is limited to entity/section titles; UI labels and semantic chips use system sans; machine values and identifiers use monospace.
+- [x] Reusable typography tokens cover identifier, utility, label, body, data, and entity sizes.
+- [x] `public/styles.css` contains no `8px` or `9px` font declarations.
+- [x] Session and section headings are reduced to workstation-appropriate maximum sizes while token/USD/tabular alignment is preserved.
+- [x] ADR-0010 records the long-lived typography contract.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`, desktop browser check, narrow-screen browser check.
+
+**Dependencies:** Phase 8.
+
+**Files likely touched:** `public/styles.css`, `test/ui-security.test.js`, `docs/decisions/0010-typography-hierarchy.md`, `tasks/plan.md`, `tasks/todo.md`, `CHANGELOG.md`, `docs/VERIFICATION.md`.
+
+**Estimated scope:** Medium.
+
+### Planned follow-up decisions
+
+- [ ] Reduce deep-lineage horizontal width loss without weakening parent/child readability.
+- [ ] Improve the 14-column task ledger with sticky context and clearer horizontal-scroll affordance.
+- [ ] Rebalance overview metrics into activity, token-flow, and cost information groups.
+- [ ] Define an agent expansion policy that avoids fully expanding large descendant trees by default.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |

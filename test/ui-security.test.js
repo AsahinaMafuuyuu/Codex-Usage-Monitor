@@ -41,6 +41,17 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /role-badge/u);
   assert.match(script, /<colgroup>/u);
   assert.match(styles, /--parchment:\s*#f4f1ea/iu);
+  assert.match(styles, /--text-identifier:\s*10px/iu);
+  assert.match(styles, /--text-utility:\s*11px/iu);
+  assert.match(styles, /--text-label:\s*12px/iu);
+  assert.match(styles, /--text-body:\s*14px/iu);
+  assert.match(styles, /--text-data:\s*12px/iu);
+  assert.match(styles, /--text-entity:\s*20px/iu);
+  assert.doesNotMatch(styles, /font-size:\s*(?:8|9)px\b/iu);
+  assert.match(styles, /\.eyebrow\s*\{[^}]*font-family:\s*var\(--body\)/isu);
+  assert.match(styles, /\.role-badge\s*\{[^}]*font-family:\s*var\(--body\)/isu);
+  assert.match(styles, /\.task-table th\s*\{[^}]*font-family:\s*var\(--body\)/isu);
+  assert.match(styles, /\.task-table td\s*\{[^}]*font-family:\s*var\(--mono\)/isu);
   assert.match(styles, /\.role-reviewer/u);
   assert.match(styles, /\.role-test-worker/u);
   assert.match(styles, /font-variant-numeric:\s*tabular-nums/iu);

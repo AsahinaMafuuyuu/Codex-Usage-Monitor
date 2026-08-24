@@ -24,6 +24,12 @@
   --display: Charter, "Iowan Old Style", "Palatino Linotype", "Songti SC", "Noto Serif CJK SC", serif;
   --body: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --mono: "Cascadia Code", "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
+  --text-identifier: 10px;
+  --text-utility: 11px;
+  --text-label: 12px;
+  --text-body: 14px;
+  --text-data: 12px;
+  --text-entity: 20px;
 }
 
 * { box-sizing: border-box; }
@@ -35,8 +41,8 @@ body {
   color: var(--ink);
   background: var(--parchment);
   font-family: var(--body);
-  font-size: 14px;
-  line-height: 1.45;
+  font-size: var(--text-body);
+  line-height: 1.5;
   overflow: hidden;
 }
 
@@ -87,10 +93,10 @@ summary:focus-visible {
 .eyebrow {
   margin: 0;
   color: var(--clay-dark);
-  font-family: var(--mono);
-  font-size: 10px;
-  font-weight: 650;
-  letter-spacing: .14em;
+  font-family: var(--body);
+  font-size: var(--text-utility);
+  font-weight: 700;
+  letter-spacing: .1em;
 }
 
 .brand-mark {
@@ -124,8 +130,8 @@ summary:focus-visible {
   display: block;
   margin-bottom: 7px;
   color: var(--muted);
-  font-size: 11px;
-  font-weight: 550;
+  font-size: var(--text-label);
+  font-weight: 600;
 }
 
 .search-field input {
@@ -146,10 +152,10 @@ summary:focus-visible {
   justify-content: space-between;
   padding: 12px 20px 7px;
   color: var(--quiet);
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: .12em;
+  font-family: var(--body);
+  font-size: var(--text-utility);
+  font-weight: 700;
+  letter-spacing: .08em;
 }
 
 .session-list {
@@ -194,7 +200,7 @@ summary:focus-visible {
   overflow: hidden;
   color: var(--quiet);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--text-identifier);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -209,7 +215,7 @@ summary:focus-visible {
   color: var(--quiet);
   font-family: var(--mono);
 }
-.project-meta b { font-size: 9px; font-weight: 500; }
+.project-meta b { font-size: var(--text-identifier); font-weight: 600; }
 .project-meta i { font-family: var(--body); font-size: 15px; font-style: normal; transition: transform 150ms ease; }
 .session-group[open] .project-meta i { transform: rotate(90deg); }
 
@@ -248,7 +254,7 @@ summary:focus-visible {
 .session-item strong {
   display: -webkit-box;
   overflow: hidden;
-  font-size: 12px;
+  font-size: 13px;
   font-weight: 620;
   line-height: 1.45;
   -webkit-box-orient: vertical;
@@ -262,7 +268,7 @@ summary:focus-visible {
   margin-top: 6px;
   color: var(--quiet);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--text-identifier);
 }
 .session-item b { font-weight: 500; }
 
@@ -279,13 +285,13 @@ summary:focus-visible {
 .observer-health div { min-width: 0; }
 .observer-health strong,
 .observer-health span { display: block; }
-.observer-health strong { font-size: 11px; font-weight: 650; }
+.observer-health strong { font-size: var(--text-label); font-weight: 650; }
 .observer-health span:last-child {
   margin-top: 2px;
   overflow: hidden;
   color: var(--quiet);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--text-identifier);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -335,7 +341,7 @@ summary:focus-visible {
   margin-left: auto;
   color: var(--quiet);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--text-identifier);
 }
 
 .mobile-session-toggle { display: none; }
@@ -359,7 +365,7 @@ summary:focus-visible {
   max-width: 920px;
   margin: 12px 0 24px;
   font-family: var(--display);
-  font-size: clamp(38px, 4.2vw, 66px);
+  font-size: clamp(36px, 3.4vw, 48px);
   font-weight: 500;
   line-height: 1.04;
   letter-spacing: -.04em;
@@ -378,14 +384,14 @@ summary:focus-visible {
 .session-id-row > span:first-child {
   flex: 0 0 30px;
   color: var(--quiet);
-  font-size: 10px;
+  font-size: var(--text-utility);
 }
 .session-project-row code,
 .session-id-row code {
   overflow: hidden;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--text-identifier);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -396,7 +402,7 @@ summary:focus-visible {
   padding: 3px 7px;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--text-identifier);
   background: transparent;
   border: 1px solid var(--line-strong);
   border-radius: 999px;
@@ -410,10 +416,10 @@ summary:focus-visible {
 .hero-signal > * { display: block; }
 .hero-signal-label {
   color: var(--clay-dark);
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 650;
-  letter-spacing: .12em;
+  font-family: var(--body);
+  font-size: var(--text-utility);
+  font-weight: 700;
+  letter-spacing: .08em;
 }
 .hero-signal strong {
   margin: 8px 0 6px;
@@ -423,7 +429,7 @@ summary:focus-visible {
   letter-spacing: -.055em;
   font-variant-numeric: tabular-nums;
 }
-.hero-signal small { color: var(--quiet); font-size: 9px; }
+.hero-signal small { color: var(--quiet); font-size: var(--text-utility); }
 
 .overview-grid {
   display: grid;
@@ -450,7 +456,7 @@ summary:focus-visible {
 .metric-card > span,
 .quota-heading span {
   color: var(--muted);
-  font-size: 11px;
+  font-size: var(--text-label);
 }
 .metric-card strong {
   display: block;
@@ -462,7 +468,7 @@ summary:focus-visible {
   font-variant-numeric: tabular-nums;
 }
 .metric-card small,
-.quota-card small { color: var(--quiet); font-size: 9px; }
+.quota-card small { color: var(--quiet); font-size: var(--text-utility); }
 
 .quota-card {
   grid-column: 1 / -1;
@@ -496,7 +502,7 @@ summary:focus-visible {
   justify-content: space-between;
   color: var(--muted);
   font-family: var(--mono);
-  font-size: 9px;
+  font-size: var(--text-utility);
 }
 .quota-progress {
   display: block;
@@ -525,7 +531,7 @@ summary:focus-visible {
 .section-heading h2 {
   margin: 7px 0 0;
   font-family: var(--display);
-  font-size: clamp(31px, 3.2vw, 45px);
+  font-size: clamp(30px, 2.8vw, 36px);
   font-weight: 520;
   letter-spacing: -.035em;
 }
@@ -533,7 +539,7 @@ summary:focus-visible {
   max-width: 620px;
   margin: 9px 0 0;
   color: var(--muted);
-  font-size: 12px;
+  font-size: 13px;
 }
 .quality-legend {
   display: flex;
@@ -541,7 +547,7 @@ summary:focus-visible {
   justify-content: flex-end;
   gap: 14px;
   color: var(--quiet);
-  font-size: 9px;
+  font-size: var(--text-utility);
 }
 .quality-legend span { display: flex; align-items: center; gap: 6px; }
 .quality-dot { width: 6px; height: 6px; border-radius: 50%; background: var(--quiet); }
@@ -625,7 +631,7 @@ summary:focus-visible {
 .agent-title-line strong {
   overflow: hidden;
   font-family: var(--display);
-  font-size: 20px;
+  font-size: var(--text-entity);
   font-weight: 650;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -636,7 +642,7 @@ summary:focus-visible {
   overflow: hidden;
   color: var(--quiet);
   font-family: var(--mono);
-  font-size: 8px;
+  font-size: var(--text-identifier);
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -647,10 +653,10 @@ summary:focus-visible {
   color: var(--muted);
   background: var(--paper-deep);
   border-left: 4px solid var(--line-strong);
-  font-family: var(--mono);
-  font-size: 9px;
-  font-weight: 780;
-  letter-spacing: .08em;
+  font-family: var(--body);
+  font-size: var(--text-utility);
+  font-weight: 750;
+  letter-spacing: .055em;
   line-height: 1;
 }
 .role-root { color: var(--clay-dark); background: var(--clay-soft); border-color: var(--clay); }
@@ -680,11 +686,11 @@ summary:focus-visible {
   text-overflow: ellipsis;
   white-space: nowrap;
 }
-.agent-stat span { color: var(--quiet); font-size: 8px; }
+.agent-stat span { color: var(--quiet); font-size: var(--text-utility); }
 .agent-stat strong {
   margin-top: 5px;
   font-family: var(--mono);
-  font-size: 11px;
+  font-size: var(--text-data);
   font-weight: 600;
   font-variant-numeric: tabular-nums;
 }
@@ -731,7 +737,8 @@ summary:focus-visible {
   color: var(--quiet);
   background: var(--paper-deep);
   border-bottom: 1px solid var(--line-strong);
-  font-size: 9px;
+  font-family: var(--body);
+  font-size: var(--text-utility);
   font-weight: 700;
   text-align: right;
   letter-spacing: .06em;
@@ -745,7 +752,7 @@ summary:focus-visible {
   color: var(--muted);
   border-bottom: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
   font-family: var(--mono);
-  font-size: 10px;
+  font-size: var(--text-utility);
   text-align: right;
   text-overflow: ellipsis;
   white-space: nowrap;
@@ -757,10 +764,10 @@ summary:focus-visible {
   display: block;
   color: var(--ink);
   font-family: var(--body);
-  font-size: 11px;
+  font-size: var(--text-label);
   font-weight: 650;
 }
-.task-name-cell code { display: block; margin-top: 4px; color: var(--quiet); font-size: 8px; }
+.task-name-cell code { display: block; margin-top: 4px; color: var(--quiet); font-size: var(--text-identifier); }
 .model-cell code {
   display: block;
   overflow: hidden;
@@ -775,13 +782,15 @@ summary:focus-visible {
   color: var(--blue);
   border: 1px solid color-mix(in srgb, var(--blue) 42%, var(--line));
   border-radius: 2px;
-  font-size: 8px;
+  font-family: var(--body);
+  font-size: var(--text-identifier);
+  font-weight: 650;
   letter-spacing: .04em;
 }
 .cost-cell strong,
 .cost-cell span { display: block; white-space: nowrap; }
-.cost-cell strong { color: var(--ink); font-size: 10px; }
-.cost-cell span { margin-top: 3px; color: var(--quiet); font-family: var(--body); font-size: 8px; }
+.cost-cell strong { color: var(--ink); font-size: var(--text-utility); }
+.cost-cell span { margin-top: 3px; color: var(--quiet); font-family: var(--body); font-size: var(--text-identifier); }
 
 .status-chip,
 .quality-chip {
@@ -791,7 +800,7 @@ summary:focus-visible {
   padding: 0;
   border: 0;
   font-family: var(--body);
-  font-size: 9px;
+  font-size: var(--text-utility);
   white-space: nowrap;
 }
 .status-chip::before,

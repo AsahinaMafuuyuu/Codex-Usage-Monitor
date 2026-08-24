@@ -92,6 +92,17 @@ npm test
 - 只读复核：角色验收会话的 7 个 rollout 在浏览器解析前后 SHA-256 逐一一致。
 - 本轮真实五任务 parser fixture：skipped；未把此前交付记录表述为本轮已执行。
 
+### Typography hierarchy v1 增量复核
+
+日期：2026-08-24。按 ADR-0010 重新划分 serif / sans / monospace 职责、移除 8–9px UI 文本并收敛超大标题后的执行结果：
+
+- 普通 `npm test`：26 tests，25 passed，0 failed，1 skipped；skipped 项仍为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的开发机真实样本。
+- `npm run check` 与 `git diff --check`：通过；静态 UI 契约额外验证 typography tokens、无 `8px` / `9px` font declaration，以及 eyebrow/role/table header 使用 sans、任务数据使用 monospace。
+- 真实 Chrome 桌面渲染：CDP 视口 1440×900，document width 1440，无文档级横向溢出；Session 标题实际计算为 48px，Section 标题 36px，eyebrow / role / task header 为 11px，任务数据为 11px，长标识为 10px。
+- 真实 Chrome 窄屏渲染：CDP 视口 390×844，document width 375；Session 标题按响应式 clamp 为 39px，概览仍为 169px 双列、智能体统计约 151px 双列；可见任务表容器 339px、内容 1390px，`overflow-x: auto` 独立滚动保持有效。
+- 实际平台字体核对：中文 Section 标题由 Chrome 报告为 `Noto Serif SC`，eyebrow 为 `Segoe UI`，Agent 标识为 `Cascadia Code`，与 ADR-0010 的实体 / UI / identifier 职责一致。
+- 浏览器重新加载后捕获的 console warning / error 与 Runtime exception 均为 0。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。
