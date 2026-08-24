@@ -379,7 +379,7 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 ### Planned follow-up decisions
 
 - [x] Reduce deep-lineage horizontal width loss without weakening parent/child readability. Desktop lineage depth now consumes 32px per level (`18px` rail offset + `14px` elbow) instead of 54px; narrow screens use 18px per level (`10px` + `8px`) while preserving the continuous rail and task-table overflow boundary.
-- [ ] Improve the 14-column task ledger with sticky context and clearer horizontal-scroll affordance.
+- [x] Improve the 14-column task ledger with sticky context and clearer horizontal-scroll affordance. Task and Status remain pinned at `0px` / `160px`, the horizontal scrollbar is deliberately visible, and the scroll region is keyboard-focusable without hiding any audit field.
 - [ ] Rebalance overview metrics into activity, token-flow, and cost information groups.
 - [ ] Define an agent expansion policy that avoids fully expanding large descendant trees by default.
 

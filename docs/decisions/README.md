@@ -14,6 +14,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0008](0008-project-directory-session-grouping.md) | Accepted | 按根会话工程目录分组并统一缓存命中率口径 |
 | [0009](0009-editorial-lineage-interface.md) | Accepted | 使用编辑式账页、连续谱系轨和显式角色标签 |
 | [0010](0010-typography-hierarchy.md) | Accepted | 建立实体、正文、辅助与机器数据分离的字体职责和可读字号层级 |
+| [0011](0011-sticky-task-ledger-context.md) | Accepted | 固定任务与状态上下文并强化 14 列审计表的横向浏览可发现性 |
 
 ## 新增 ADR
 

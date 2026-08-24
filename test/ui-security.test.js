@@ -40,6 +40,10 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /class="agent-children/u);
   assert.match(script, /role-badge/u);
   assert.match(script, /<colgroup>/u);
+  assert.match(script, /role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 14 列"/u);
+  assert.match(script, /class="task-name-head"/u);
+  assert.match(script, /class="task-status-head"/u);
+  assert.match(script, /class="task-status-cell"/u);
   assert.match(styles, /--parchment:\s*#f4f1ea/iu);
   assert.match(styles, /--text-identifier:\s*10px/iu);
   assert.match(styles, /--text-utility:\s*11px/iu);
@@ -58,6 +62,10 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /--lineage-elbow-width:\s*14px/iu);
   assert.match(styles, /\.agent-children\s*\{[^}]*margin-left:\s*var\(--lineage-rail-offset\)[^}]*padding-left:\s*var\(--lineage-elbow-width\)/isu);
   assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*?\.agent-tree\s*\{[^}]*--lineage-rail-offset:\s*10px;[^}]*--lineage-elbow-width:\s*8px/iu);
+  assert.match(styles, /\.task-table \.task-name-head,\s*\.task-table \.task-name-cell\s*\{[^}]*position:\s*sticky;[^}]*left:\s*0/isu);
+  assert.match(styles, /\.task-table \.task-status-head,\s*\.task-table \.task-status-cell\s*\{[^}]*position:\s*sticky;[^}]*left:\s*160px/isu);
+  assert.match(styles, /\.task-table-wrap::?-webkit-scrollbar\s*\{[^}]*height:\s*10px/isu);
+  assert.match(styles, /\.task-table-wrap:focus-visible/iu);
   assert.match(styles, /font-variant-numeric:\s*tabular-nums/iu);
   assert.match(styles, /prefers-reduced-motion/u);
 });

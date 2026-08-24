@@ -252,7 +252,7 @@ function renderAgent(agent) {
 
 function renderTasks(agent) {
   if (!agent.tasks.length) return '<div class="empty-agent">该智能体还没有持久化任务边界。</div>';
-  return `<div class="task-table-wrap"><table class="task-table">
+  return `<div class="task-table-wrap" role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 14 列"><table class="task-table">
     <colgroup>
       <col class="col-task"><col class="col-status"><col class="col-start"><col class="col-duration">
       <col class="col-model"><col class="col-effort"><col class="col-input"><col class="col-cache">
@@ -260,12 +260,12 @@ function renderTasks(agent) {
       <col class="col-cost"><col class="col-quality">
     </colgroup>
     <thead><tr>
-      <th>任务</th><th>状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>推理</th><th>总计</th><th title="按当前标准 API 短上下文价格估算，不等于 Codex 订阅实际扣费">估算 USD</th><th>质量</th>
+      <th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>推理</th><th>总计</th><th title="按当前标准 API 短上下文价格估算，不等于 Codex 订阅实际扣费">估算 USD</th><th>质量</th>
     </tr></thead>
     <tbody>${agent.tasks.map((task) => `
       <tr class="task-row">
         <td class="task-name-cell"><strong>Task ${task.sequence}</strong><code title="${escapeHtml(task.turnId)}">${escapeHtml(shortId(task.turnId))}</code></td>
-        <td><span class="status-chip ${escapeHtml(task.status)}">${statusLabel(task.status)}</span></td>
+        <td class="task-status-cell"><span class="status-chip ${escapeHtml(task.status)}">${statusLabel(task.status)}</span></td>
         <td title="${escapeHtml(task.startedAt || "")}">${formatDate(task.startedAt)}</td>
         <td>${formatDuration(task.durationMs, task.startedAt, task.completedAt)}</td>
         <td class="model-cell"><code title="${escapeHtml(task.model || "模型未知")}">${escapeHtml(task.model || "未知")}</code></td>

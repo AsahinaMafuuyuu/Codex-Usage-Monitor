@@ -114,6 +114,18 @@ npm test
 - 任务审计表保持原契约：桌面 `.task-table-wrap` 可视宽度 977px、内容 1390px；窄屏可视宽度 339px、内容 1390px；两者 `overflow-x: auto`，未将深层谱系优化扩散到 Decision 3。
 - Chrome 捕获的 console warning / error 与 Runtime exception 均为 0。
 
+### Phase 9 Decision 3：任务审计表横向浏览增量复核
+
+日期：2026-08-24。只改善 14 列任务审计表的横向浏览上下文与滚动可发现性，不隐藏任何审计字段，也不改变 Overview 或 Agent 展开策略。
+
+- 普通 `npm test`：26 tests，25 passed，0 failed，1 skipped；skipped 项仍为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的开发机真实样本。
+- `npm run check` 与 `git diff --check`：通过；静态 UI 契约确认 `.task-table-wrap` 是可键盘聚焦的 `region`，Task / Status 分别使用 `left: 0` / `160px` sticky 定位，并保留 `prefers-reduced-motion`、Typography v1 与 lineage geometry 约束。
+- 真实 Chrome 使用实际 **8 Agent / 18 Task** 历史会话验证。桌面 CDP 视口 1440×900，document `1440 / 1440` 无页面级横向溢出；任务表容器 `977px`、内容 `1390px`，`overflow-x: auto`。横向滚动 413px 后，Task 表头与首行仍保持容器内 `0px`，Status 表头与首行仍保持 `160px`，第三列已移动到 `-177px`，证明冻结上下文独立于滚动数据。
+- 窄屏 CDP 视口 390×844，document `375 / 375` 无页面级横向溢出；任务表容器恢复并保持 `339px`、内容 `1390px`。横向滚动 620px 后 Task / Status 表头及首行仍分别固定在 `0px` / `160px`，第三列移动到 `-384px`；没有为窄屏隐藏 model、effort、token、cost 或 quality 字段。
+- Chromium 计算的 WebKit 横向 scrollbar 高度为 `10px`；`.task-table-wrap` 的 `tabIndex=0`、`role=region`，aria label 明确说明“任务与状态列固定，可横向滚动查看完整 14 列”。
+- Chrome 捕获的 console warning / error 与 Runtime exception 均为 0。
+- 只读复核：对本轮 8 Agent 会话涉及的 9 个 rollout 在最终 Chrome 验收前后逐一计算 SHA-256，全部哈希完全一致；监控器未修改真实 `.codex` 历史。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。

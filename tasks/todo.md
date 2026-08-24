@@ -44,6 +44,6 @@
 - [x] Record the typography contract as ADR-0010
 - [x] Publish a frontend handoff with exact Git baseline, frozen contracts, Phase 9 order, and browser acceptance protocol
 - [x] Reduce deep-lineage horizontal width loss as a separate visual commit
-- [ ] Improve task-ledger scrolling/sticky context as a separate visual commit
+- [x] Improve task-ledger scrolling/sticky context as a separate visual commit
 - [ ] Rebalance overview metric hierarchy as a separate visual commit
 - [ ] Define and implement a scalable agent expansion policy as a separate visual commit
