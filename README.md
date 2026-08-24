@@ -89,6 +89,7 @@ AGENTS.md             多智能体所有权和协作规则
 - [本地 API](docs/API.md)
 - [运行与故障处理](docs/OPERATIONS.md)
 - [验证证据](docs/VERIFICATION.md)
+- [前端 Phase 9 接手说明](docs/FRONTEND-HANDOFF.md)
 - [后续路线图](docs/ROADMAP.md)
 - [参与开发](CONTRIBUTING.md)
 - [变更记录](CHANGELOG.md)

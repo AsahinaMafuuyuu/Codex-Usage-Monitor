@@ -70,8 +70,14 @@ npm test
 - Rollout 是内部可回放格式，不是稳定公共 API；未知字段被容忍，但新事件语义仍可能需要适配。
 - 监控器只完整解析当前选择的根会话；未选择会话只有索引级信息，已导入历史仍保留。
 - `complete` 是客户端可审计边界完整，不是账单级逐请求 usage。
-- 额度与 token 没有官方证明的一一换算；本版本不展示虚构费用。
+- 额度与 token 没有官方证明的一一换算；页面展示的 USD 仅来自逐任务可审计 token 明细与版本化标准 API 价目，不把账号额度换算为费用，也不声称是 Codex 订阅实际扣费。
 - 未集成 App Server、Hooks 或 OpenTelemetry，原因记录在 [ADR-0001](decisions/0001-read-only-rollout-observer.md)。
+
+## 前端后续交接
+
+当前前端视觉工作位于 `codex/project-grouping-claude-redesign` 分支。Phase 8 已完成编辑式账页与连续 Agent 谱系，Phase 9 已完成 Typography v1；后续视觉优化必须按 `AGENTS.md` 的“一项视觉决策一个 Git commit”规则继续。
+
+下一位智能体开始修改 `public/**` 前，应先阅读 [Frontend Handoff](FRONTEND-HANDOFF.md)。该文档记录精确 Git 基线、已冻结视觉/字体契约、Phase 9 后续顺序、浏览器验收协议和禁止越界修改的后端/安全边界。
 
 ## 交付核对
 
@@ -80,3 +86,4 @@ npm test
 - [x] README、交付、架构、API、运维、验证、路线图、CHANGELOG 和 ADR 已提供。
 - [x] 项目级 `AGENTS.md` 定义多智能体角色、所有权、并行边界和交接格式。
 - [x] 数据口径、隐私边界和真实样本证据已明确区分。
+- [x] 前端视觉迭代已提供独立接手文档与逐决策版本控制规则。
