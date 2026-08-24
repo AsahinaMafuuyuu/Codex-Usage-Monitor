@@ -38,12 +38,13 @@ npm run start:no-open
 
 ## 页面能力
 
-- 搜索并选择根会话，只完整解析当前选择及其递归子智能体。
+- 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话，只完整解析当前选择及其递归子智能体；目录缺失时明确归入“未归类”。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
+- 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
 - 逐任务展示 rollout 记录的模型、effort 和当前标准 API 短上下文 USD 等值估算；会话概览汇总主智能体及全部后代。未知模型或明细不足时明确显示不可估算。
 - 区分 `complete`、`provisional`、`estimated`、`partial`、`discontinuity` 和 `unknown` 数据质量。
 - 通过文件观察与 1 秒轮询实时增量更新，并用 SSE 刷新页面。
-- 按需读取任务首条父代理指令预览；原日志消失后仍保留用量记录，但预览会明确不可用。
+- 任务表不显示指令正文；受认证的旧 preview API 暂时保留，供后续完整对话功能重新设计。
 - 展示独立的账号级 `rate_limits` 快照；超过 5 分钟标为可能过期。
 
 ## 数据口径
@@ -51,6 +52,7 @@ npm run start:no-open
 - `history.jsonl` 不用于 token 统计，因为它没有 token 字段。
 - 用量来源是 `.codex/sessions/**/rollout-*.jsonl` 和 `.codex/archived_sessions`。
 - 任务 token 来自 `total_token_usage` 的任务边界差分；绝不累加可能重复或重置的 `last_token_usage`。
+- 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
 - 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度。
 - 美元值使用版本化官方标准 API 价目计算，不是 Codex 订阅实际扣费；不包含无法从任务汇总证明的长上下文、服务层级、区域或工具费用。部分任务不可估算时，任务数量仍被保留，金额以 `≥` 标为已知下限。
 - `complete` 仅表示可见边界完整且累计值单调，不等同服务端账单的逐请求 usage。
@@ -62,7 +64,7 @@ npm run start:no-open
 
 - 不修改 `config.toml`，不启动 App Server，不启用 Hooks/OTel，不调用模型，不联网。
 - Codex 的 SQLite 和 rollout 文件始终只读。
-- 监控 SQLite 不保存 prompt、response、消息正文或会话标题。
+- 监控 SQLite 只新增根会话工程目录这类定位元数据，不保存 prompt、response、消息正文或会话标题。
 - 页面使用一次性随机令牌、严格 Cookie、Host/Origin 校验、CSP 和只读 HTTP 方法。
 - API 的 ID 受固定格式约束，不能传入任意文件路径。
 

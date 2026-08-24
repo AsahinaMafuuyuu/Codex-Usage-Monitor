@@ -146,7 +146,8 @@ export class CodexRepository {
     if (!rootId) return null;
     const rootThread = this.state.threads.get(rootId);
     const entries = this.entriesByRoot.get(rootId) ?? [];
-    const rootEntry = entries.find((entry) => entry.threadId === rootId) ?? entries[0];
+    const rootEntry = entries.find((entry) => entry.threadId === rootId);
+    const fallbackEntry = rootEntry ?? entries[0];
     const title =
       names.get(rootId)?.threadName ??
       rootThread?.name ??
@@ -162,17 +163,18 @@ export class CodexRepository {
     const createdCandidates = [
       normalizeTimestamp(rootThread?.created_at_ms),
       normalizeTimestamp(rootThread?.created_at),
-      rootEntry?.createdAt,
+      fallbackEntry?.createdAt,
     ].filter(Boolean);
     return {
       id: rootId,
       title,
-      source: typeof rootThread?.source === "string" ? rootThread.source : rootEntry?.source?.kind ?? null,
+      source: typeof rootThread?.source === "string" ? rootThread.source : fallbackEntry?.source?.kind ?? null,
+      projectPath: nonEmptyText(rootThread?.cwd) ?? nonEmptyText(rootEntry?.meta?.cwd),
       createdAt: createdCandidates.sort()[0] ?? null,
       updatedAt: updatedCandidates.sort().at(-1) ?? null,
       archived: Boolean(rootThread?.archived) || entries.some((entry) => entry.archived),
-      cliVersion: rootThread?.cli_version ?? rootEntry?.cliVersion ?? null,
-      rolloutPath: rootThread?.rollout_path ?? rootEntry?.path ?? null,
+      cliVersion: rootThread?.cli_version ?? fallbackEntry?.cliVersion ?? null,
+      rolloutPath: rootThread?.rollout_path ?? fallbackEntry?.path ?? null,
     };
   }
 
@@ -349,4 +351,8 @@ function compareEntries(left, right) {
 
 function numberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function nonEmptyText(value) {
+  return typeof value === "string" && value.trim() ? value.trim() : null;
 }

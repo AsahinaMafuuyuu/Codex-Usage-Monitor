@@ -27,3 +27,14 @@
 - [x] Session/agent cost dashboard presentation
 - [x] Cost-rollup API, architecture, ADR, changelog, and verification documentation
 - [x] Cost-rollup regression, syntax, browser, and read-only-source verification
+- [x] Persist root-session project paths as locator metadata
+- [x] Group local sessions by exact project directory
+- [x] Add session input, output, and total cache-hit metrics
+- [x] Add agent and task cache-hit metrics
+- [x] Remove the task instruction column from the interface
+- [x] Verify and commit project grouping plus cache visibility
+- [ ] Apply the Claude-inspired editorial type, color, and layout system
+- [ ] Replace card-heavy topology with a nested lineage ledger
+- [ ] Make agent role labels prominent and align task-table data
+- [ ] Record the visual ADR and delivery evidence
+- [ ] Verify and commit the desktop and narrow-screen redesign

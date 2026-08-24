@@ -47,12 +47,16 @@ export class UsageMonitor extends EventEmitter {
 
   listSessions(query = "") {
     const normalized = query.trim().toLocaleLowerCase();
-    return this.database.listSessions().map((session) => ({
-      ...session,
-      title: this.repository.getSession(session.id)?.title || "未命名会话",
-    })).filter((session) => {
+    return this.database.listSessions().map((session) => {
+      const indexed = this.repository.getSession(session.id);
+      return {
+        ...session,
+        projectPath: indexed?.projectPath ?? session.projectPath,
+        title: indexed?.title || "未命名会话",
+      };
+    }).filter((session) => {
       if (!normalized) return true;
-      return `${session.title} ${session.id} ${session.source ?? ""}`
+      return `${session.title} ${session.id} ${session.source ?? ""} ${session.projectPath ?? ""}`
         .toLocaleLowerCase()
         .includes(normalized);
     });

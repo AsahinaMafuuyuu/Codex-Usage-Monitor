@@ -20,7 +20,7 @@
 
         <label class="search-field">
           <span>筛选会话</span>
-          <input id="session-search" type="search" placeholder="标题或 session ID" autocomplete="off">
+          <input id="session-search" type="search" placeholder="项目、标题或 session ID" autocomplete="off">
         </label>
 
         <div class="session-list-heading">
@@ -88,10 +88,25 @@
               <strong id="task-count">—</strong>
               <small id="active-task-count">无活动任务</small>
             </article>
+            <article class="metric-card">
+              <span>会话输入</span>
+              <strong id="input-total">—</strong>
+              <small>根智能体与全部后代</small>
+            </article>
             <article class="metric-card metric-wide">
               <span>缓存输入</span>
               <strong id="cached-total">—</strong>
               <small>属于 input tokens 的缓存部分</small>
+            </article>
+            <article class="metric-card">
+              <span>总缓存命中率</span>
+              <strong id="cache-hit-rate">—</strong>
+              <small>缓存输入 / 会话输入</small>
+            </article>
+            <article class="metric-card">
+              <span>会话输出</span>
+              <strong id="output-total">—</strong>
+              <small>包含 reasoning 明细</small>
             </article>
             <article class="metric-card cost-metric">
               <span>会话总计 USD</span>

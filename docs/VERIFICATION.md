@@ -14,13 +14,14 @@ npm run check
 - 分页复制历史和 `subagent_history_start_ordinal` 排除。
 - 累计快照差分、重复快照幂等和 active → completed 增量 tail。
 - 累计倒退的 `discontinuity` 标签。
-- SQLite schema v1–v4→v5 迁移、cursor 恢复 active task、任务间累计 baseline、不可信 cursor 全量回放和 warning/discontinuity 跨重启保留。
+- SQLite schema v1–v5→v6 迁移、根会话 `project_path` 保留、cursor 恢复 active task、任务间累计 baseline、不可信 cursor 全量回放和 warning/discontinuity 跨重启保留。
 - 原 rollout 消失后，派生任务与汇总在重启后继续保留，预览明确不可用。
 - 未完成 JSONL 尾行保留到下一次读取。
 - 未知/跳过格式进入健康 warning，父→子预览不会被子智能体回复覆盖。
 - SQLite 中任务用量持久化且 schema 不含 prompt/preview/content/message 字段。
 - 任务模型/effort 跨 SQLite reopen 保留；标准 API USD 估算覆盖缓存读、GPT-5.6 cache write、输出、alias/snapshot、未知模型、total-only 与价目复核状态。
 - session API 为每个任务附加 `costEstimate`，为智能体返回自身/含后代汇总，为会话返回完整/仅子智能体汇总，并保留 partial/unavailable 覆盖数与版本化 `pricing` 元数据。
+- 会话列表和 snapshot 返回根 `projectPath`，子智能体目录不会覆盖工程归属；静态 UI 契约覆盖工程分组、三级缓存命中率和已移除的指令列。
 - 会话标题不进入派生数据库。
 - 启动 token、Strict Cookie、Host/Origin 和只读 HTTP 边界。
 - CSP 下静态页面和脚本不依赖 inline style。
@@ -63,14 +64,26 @@ npm test
 
 本节必须根据命令输出更新，不接受推测值。
 
+### 工程分组与缓存可见性增量复核
+
+日期：2026-08-24。加入根工程目录分类、会话输入/输出/总缓存命中率、智能体/任务命中率并移除指令列后的执行结果：
+
+- 普通 `npm test`：26 tests，25 passed，0 failed，1 skipped；skipped 项为本轮未配置 `CODEX_MONITOR_REAL_FIXTURE`。
+- `npm run check` 与 `git diff --check`：通过。
+- 真实浏览器桌面验证：1440×900，260 个会话形成 41 个唯一完整工程路径组；Windows 普通路径与 `\\?\` 扩展路径不再重复分组。页面显示会话输入、输出和总缓存命中率，6 个智能体及其任务表均显示命中率，指令表头不存在，文档级横向溢出为 0。
+- 真实浏览器窄屏验证：390×844，文档级横向溢出为 0；330px 工程抽屉可打开且保留全部 41 组，任务表在 317px 可视区域内保持 1320px 独立横向滚动。
+- 浏览器控制台：0 error、0 warning。
+- 只读复核：所选稳定历史会话的 6 个 rollout 在浏览器解析前后 SHA-256 逐一一致。
+- 本轮真实五任务 parser fixture：skipped；未把此前交付记录表述为本轮已执行。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。
-2. 搜索并选择有子智能体的会话，确认 agent tree、任务数、质量状态、六类 token、任务模型、effort、智能体自身/含后代 USD 和会话总计 USD 等值可见。
+2. 确认会话按完整工程目录分组；搜索并选择有子智能体的会话，确认 agent tree、任务数、质量状态、输入/输出/缓存命中率、六类 token、任务模型、effort、智能体自身/含后代 USD 和会话总计 USD 等值可见。
 3. 悬停 USD 单元格，确认能看到价目模型/单价以及“不等于 Codex 订阅扣费”的限制；未知模型显示不可估算。
-4. 展开任务，确认预览最多 120 字；数据库 schema 中无正文列。
+4. 确认任务表不再显示指令列；数据库 schema 中无正文列，旧 preview API 仍受认证且不落库。
 5. 向选中 rollout 追加脱敏完整测试记录，确认 2 秒内收到 SSE snapshot；随后恢复测试环境。
-6. 验证窄屏页面仍可选择会话、横向查看完整任务表、展开任务并查看额度/健康状态。
+6. 验证窄屏页面仍可按工程选择会话、横向查看完整任务表并查看额度/健康状态。
 7. 对源 `.codex` 文件执行验证前后哈希比较。
 
 手工操作不得修改真实 rollout。需要追加测试时使用临时 Codex home 和脱敏 fixture。

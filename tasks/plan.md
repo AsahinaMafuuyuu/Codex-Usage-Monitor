@@ -219,6 +219,139 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 - [x] Desktop and narrow-screen views expose the new totals without obscuring existing usage details.
 - [x] Source rollout hashes are unchanged whenever a real-history check is executed.
 
+## Phase 7: Project-grouped sessions and cache visibility
+
+### Task 1: Persist the observed project directory
+
+**Description:** Promote the observed root `session_meta.cwd` field into session locator metadata so sessions can be grouped by exact project directory even after restart, without reading or persisting conversation content.
+
+**Acceptance criteria:**
+
+- [x] Repository sessions expose the root session `cwd` as nullable `projectPath`; child working directories never override the root project.
+- [x] SQLite schema migration preserves `projectPath`, and the authenticated session list/snapshot APIs return it.
+- [x] Search includes project path while absent paths remain an explicit ungrouped state.
+
+**Verification:** `npm test`, `npm run check`.
+
+**Dependencies:** Phase 6.
+
+**Files likely touched:** `src/repository.js`, `src/database.js`, `src/monitor.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Group sessions and expose cache efficiency
+
+**Description:** Group the sidebar by exact project path and surface audited input, output, and cache-hit ratios at session, agent, and task scopes while removing the temporary instruction-preview column from the task table.
+
+**Acceptance criteria:**
+
+- [x] Sidebar groups sessions by normalized exact project path, labels each group with its directory name and full path, and keeps unknown projects separate.
+- [x] Session overview exposes input, output, and total cache-hit ratio; every agent summary and task row exposes its own cache-hit ratio using `cachedInputTokens / inputTokens`.
+- [x] The task table no longer renders an instruction column or preview row, while the protected backend preview contract remains unchanged for a future complete-conversation flow.
+
+**Verification:** `npm test`, `npm run check`, desktop browser check, narrow-screen browser check.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `public/index.html`, `public/app.js`, `public/styles.css`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Project grouping and cache visibility
+
+- [x] Full tests and syntax checks pass.
+- [x] Desktop and narrow-screen session navigation remains usable with several project groups.
+- [x] Input/output/cache ratios match deterministic fixtures and no instruction preview appears in the UI.
+- [x] Commit the complete Phase 7 slice with an explicit Conventional Commit message.
+
+## Phase 8: Claude-inspired editorial observability workspace
+
+### Design brief and token plan
+
+**Subject and job:** A private observability ledger for one developer who needs to move between project-scoped Codex sessions, distinguish agent responsibilities, and audit token flow without visual fatigue.
+
+**Palette:** parchment `#F4F1EA`, paper `#FBFAF7`, ink `#2D2A26`, muted graphite `#6F6A63`, Claude clay `#C15F3C`, sage `#667A68`, and hairline `#D8D1C7`. Dark cyan is retired; color communicates selection, lineage, role, quality, and quota rather than filling cards.
+
+**Typography:** restrained editorial serif (`Charter`, `Iowan Old Style`, Chinese serif fallbacks) for session and section titles; calm system sans for navigation and prose; `Cascadia Code`/system monospace with tabular numerals for paths, IDs, token values, and aligned tables. No remote font dependency is introduced under the self-only CSP.
+
+**Layout:** treat the sidebar as a project index, the overview as a ruled ledger rather than a card grid, and the agent area as one continuous nested activity document.
+
+```text
+┌ project index ─────┬──────────────── selected session / project ───────────────┐
+│ PROJECT A          │ title                                      live status    │
+│  session           │ input · output · cache · cost · agents · tasks            │
+│  session           ├──────────────── quota strip ───────────────────────────────┤
+│ PROJECT B          │ role ─ agent ───────── own / subtree / cache               │
+│  session           │   └ role ─ child agent                                    │
+│                    │       aligned task ledger                                  │
+└────────────────────┴─────────────────────────────────────────────────────────────┘
+```
+
+**Signature:** a continuous clay-colored lineage ledger with depth gutters and elbow connectors; prominent role labels sit on the rail like index tabs, making `reviewer`, `test-worker`, and related responsibilities scannable before agent names.
+
+**Self-critique before build:** Warm paper, serif type, and clay accent are common generative defaults, but the user explicitly requested Claude's design language. To keep the result product-specific, decorative cream/terracotta cards are rejected: the clay accent is spent only on project selection and the lineage ledger, while topology depth, role, table alignment, and data quality drive every structural device.
+
+### Task 1: Recompose the application shell and overview
+
+**Description:** Replace the dark control-room shell and card grid with a warm editorial workspace that gives project navigation, session identity, token flow, and quota a clear typographic hierarchy.
+
+**Acceptance criteria:**
+
+- [ ] Desktop, narrow, empty, loading, live, stale, and focus states share the documented type scale and palette.
+- [ ] Overview metrics use aligned ruled groups with substantially fewer card containers.
+- [ ] Project navigation remains searchable, readable, and operable by keyboard and mobile drawer.
+
+**Verification:** `npm run check`, desktop browser check, narrow-screen browser check, keyboard focus check.
+
+**Dependencies:** Phase 7.
+
+**Files likely touched:** `public/index.html`, `public/styles.css`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Rebuild topology and task hierarchy
+
+**Description:** Turn the agent stream into a nested lineage ledger with explicit parent/child connectors, highly visible role badges, and a disciplined task table whose text and numeric columns align.
+
+**Acceptance criteria:**
+
+- [ ] Parent/child nesting remains visible at every supported depth without relying on card indentation alone.
+- [ ] Known agent roles receive conspicuous, accessible labels with a neutral fallback for unknown roles.
+- [ ] Task headers and values align consistently, numeric cells use tabular figures, and horizontal overflow remains discoverable on narrow screens.
+
+**Verification:** `npm test`, `npm run check`, desktop and narrow-screen browser screenshots.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `public/app.js`, `public/styles.css`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 3: Record the visual decision and delivery evidence
+
+**Description:** Capture the project-specific design rationale, alternatives, responsive/accessibility consequences, public behavior, and actual verification evidence.
+
+**Acceptance criteria:**
+
+- [ ] An accepted ADR records why the editorial ledger and lineage rail were chosen over cards, a graph canvas, and the existing dark dashboard.
+- [ ] README, architecture/API notes, changelog, and verification record match shipped behavior.
+- [ ] Final full test, syntax, diff, desktop, and narrow-screen checks pass before the second feature commit.
+
+**Verification:** `npm test`, `npm run check`, documentation tests, `git diff --check`.
+
+**Dependencies:** Tasks 1 and 2.
+
+**Files likely touched:** `docs/decisions/0009-editorial-lineage-interface.md`, `docs/decisions/README.md`, `README.md`, `CHANGELOG.md`, `docs/VERIFICATION.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Editorial redesign
+
+- [ ] Full tests and syntax checks pass.
+- [ ] Desktop and narrow-screen visual QA confirms comfortable typography, clear project grouping, direct nesting, visible role identity, and aligned task data.
+- [ ] Reduced-motion and keyboard-focus behavior remain intact.
+- [ ] Commit the complete Phase 8 redesign and documentation with an explicit Conventional Commit message.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |

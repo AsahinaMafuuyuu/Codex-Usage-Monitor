@@ -13,8 +13,9 @@ const elements = Object.fromEntries(
     "health-detail", "mobile-session-toggle", "connection-label", "last-update",
     "empty-state", "loading-state", "dashboard", "session-title", "session-id",
     "session-version", "hero-total", "agent-count", "task-count", "active-task-count",
-    "cached-total", "session-cost", "session-cost-coverage", "quota-plan", "quota-freshness",
-    "quota-windows", "quota-observed", "agent-tree", "toast",
+    "input-total", "cached-total", "cache-hit-rate", "output-total", "session-cost",
+    "session-cost-coverage", "quota-plan", "quota-freshness", "quota-windows",
+    "quota-observed", "agent-tree", "toast",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -32,10 +33,6 @@ elements["mobile-session-toggle"].addEventListener("click", () => document.body.
 elements["session-list"].addEventListener("click", (event) => {
   const button = event.target.closest("[data-session-id]");
   if (button) void selectSession(button.dataset.sessionId);
-});
-elements["agent-tree"].addEventListener("click", (event) => {
-  const button = event.target.closest("[data-preview-thread]");
-  if (button) void togglePreview(button);
 });
 
 await initialize();
@@ -109,19 +106,27 @@ function closeEvents() {
 function renderSessions() {
   const query = state.search.trim().toLocaleLowerCase();
   const sessions = state.sessions.filter((session) =>
-    `${session.title} ${session.id}`.toLocaleLowerCase().includes(query),
+    `${session.title} ${session.id} ${session.projectPath ?? ""}`.toLocaleLowerCase().includes(query),
   );
   elements["session-count"].textContent = `${sessions.length}`;
   if (!sessions.length) {
     elements["session-list"].innerHTML = '<p class="empty-agent">没有匹配的会话</p>';
     return;
   }
-  elements["session-list"].innerHTML = sessions.map((session) => `
-    <button class="session-item ${session.id === state.selectedId ? "active" : ""}"
-      type="button" data-session-id="${escapeHtml(session.id)}">
-      <strong>${escapeHtml(session.title || "未命名会话")}</strong>
-      <span><time title="${escapeHtml(session.updatedAt || "")}">${formatRelative(session.updatedAt)}</time><b>${session.agentCount || "—"} agents</b></span>
-    </button>
+  elements["session-list"].innerHTML = groupSessionsByProject(sessions).map((group, index) => `
+    <section class="session-group" aria-labelledby="project-group-${index}">
+      <header class="project-heading" id="project-group-${index}">
+        <span><strong>${escapeHtml(projectName(group.projectPath))}</strong><code title="${escapeHtml(group.projectPath || "未记录工程目录")}">${escapeHtml(group.projectPath || "未记录工程目录")}</code></span>
+        <b>${group.sessions.length}</b>
+      </header>
+      ${group.sessions.map((session) => `
+        <button class="session-item ${session.id === state.selectedId ? "active" : ""}"
+          type="button" data-session-id="${escapeHtml(session.id)}">
+          <strong>${escapeHtml(session.title || "未命名会话")}</strong>
+          <span><time title="${escapeHtml(session.updatedAt || "")}">${formatRelative(session.updatedAt)}</time><b>${session.agentCount || "—"} agents</b></span>
+        </button>
+      `).join("")}
+    </section>
   `).join("");
 }
 
@@ -145,7 +150,11 @@ function renderDashboard() {
   elements["active-task-count"].textContent = snapshot.summary.activeTasks
     ? `${snapshot.summary.activeTasks} 个任务运行中`
     : "无活动任务";
-  elements["cached-total"].textContent = formatTokens(snapshot.summary.subagentUsage?.cachedInputTokens);
+  const sessionUsage = snapshot.summary.totalUsage;
+  elements["input-total"].textContent = formatTokens(sessionUsage?.inputTokens);
+  elements["cached-total"].textContent = formatTokens(sessionUsage?.cachedInputTokens);
+  elements["cache-hit-rate"].textContent = formatCacheHitRate(sessionUsage);
+  elements["output-total"].textContent = formatTokens(sessionUsage?.outputTokens);
   elements["session-cost"].textContent = formatUsdSummary(snapshot.summary.totalCostEstimate);
   elements["session-cost"].title = costSummaryTitle(snapshot.summary.totalCostEstimate, "整个会话");
   elements["session-cost-coverage"].textContent = costSummaryCoverage(snapshot.summary.totalCostEstimate);
@@ -222,6 +231,7 @@ function renderAgent(agent) {
       <div class="agent-stat task-count"><span>任务</span><strong>${agent.taskCount}</strong></div>
       <div class="agent-stat tokens"><span>自身 tokens</span><strong>${formatTokens(agent.ownUsage?.totalTokens)}</strong></div>
       <div class="agent-stat subtree"><span>含后代 tokens</span><strong>${formatTokens(agent.subtreeUsage?.totalTokens)}</strong></div>
+      <div class="agent-stat cache-hit"><span>自身缓存命中</span><strong>${formatCacheHitRate(agent.ownUsage)}</strong></div>
       <div class="agent-stat cost-own" title="${escapeHtml(costSummaryTitle(agent.ownCostEstimate, "该智能体自身"))}"><span>自身 USD</span><strong>${formatUsdSummary(agent.ownCostEstimate)}</strong></div>
       <div class="agent-stat cost-subtree" title="${escapeHtml(costSummaryTitle(agent.subtreeCostEstimate, "该智能体及后代"))}"><span>含后代 USD</span><strong>${formatUsdSummary(agent.subtreeCostEstimate)}</strong></div>
       <span class="agent-chevron" aria-hidden="true">›</span>
@@ -234,7 +244,7 @@ function renderTasks(agent) {
   if (!agent.tasks.length) return '<div class="empty-agent">该智能体还没有持久化任务边界。</div>';
   return `<div class="task-table-wrap"><table class="task-table">
     <thead><tr>
-      <th>任务</th><th>状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th>输出</th><th>推理</th><th>总计</th><th title="按当前标准 API 短上下文价格估算，不等于 Codex 订阅实际扣费">估算 USD</th><th>质量</th><th>指令</th>
+      <th>任务</th><th>状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>推理</th><th>总计</th><th title="按当前标准 API 短上下文价格估算，不等于 Codex 订阅实际扣费">估算 USD</th><th>质量</th>
     </tr></thead>
     <tbody>${agent.tasks.map((task) => `
       <tr class="task-row">
@@ -246,36 +256,15 @@ function renderTasks(agent) {
         <td><span class="effort-chip">${escapeHtml(effortLabel(task.effort))}</span></td>
         <td>${formatTokens(task.deltaUsage?.inputTokens)}</td>
         <td>${formatTokens(task.deltaUsage?.cachedInputTokens)}</td>
+        <td>${formatCacheHitRate(task.deltaUsage)}</td>
         <td>${formatTokens(task.deltaUsage?.outputTokens)}</td>
         <td>${formatTokens(task.deltaUsage?.reasoningOutputTokens)}</td>
         <td><strong>${formatTokens(task.deltaUsage?.totalTokens)}</strong></td>
         <td class="cost-cell" title="${escapeHtml(costEstimateTitle(task.costEstimate))}"><strong>${formatUsdEstimate(task.costEstimate)}</strong><span>${costEstimateLabel(task.costEstimate)}</span></td>
         <td><span class="quality-chip ${escapeHtml(task.quality)}">${qualityLabel(task.quality)}</span></td>
-        <td><button class="preview-button" type="button" data-preview-thread="${escapeHtml(task.threadId)}" data-preview-turn="${escapeHtml(task.turnId)}">展开</button></td>
       </tr>
-      <tr class="preview-row" id="preview-${escapeHtml(task.threadId)}-${escapeHtml(task.turnId)}" hidden><td colspan="14"><div class="preview-content">正在读取本地原始日志…</div></td></tr>
     `).join("")}</tbody>
   </table></div>`;
-}
-
-async function togglePreview(button) {
-  const row = document.getElementById(`preview-${button.dataset.previewThread}-${button.dataset.previewTurn}`);
-  if (!row) return;
-  if (!row.hidden) {
-    row.hidden = true;
-    button.textContent = "展开";
-    return;
-  }
-  row.hidden = false;
-  button.textContent = "收起";
-  if (row.dataset.loaded) return;
-  try {
-    const preview = await fetchJson(`/api/tasks/${encodeURIComponent(button.dataset.previewThread)}/${encodeURIComponent(button.dataset.previewTurn)}/preview`);
-    row.querySelector(".preview-content").textContent = preview.available ? preview.text : preview.reason;
-    row.dataset.loaded = "true";
-  } catch (error) {
-    row.querySelector(".preview-content").textContent = error.message;
-  }
 }
 
 function setLoading(loading) {
@@ -332,10 +321,41 @@ function agentLabel(agent) {
   return agent.nickname || agent.agentPath?.split("/").filter(Boolean).at(-1) || `Agent ${shortId(agent.threadId)}`;
 }
 
+function groupSessionsByProject(sessions) {
+  const groups = new Map();
+  for (const session of sessions) {
+    const projectPath = normalizeProjectPath(session.projectPath);
+    const key = projectPath ? projectPath.replaceAll("\\", "/").replace(/\/+$/u, "").toLocaleLowerCase() : "__ungrouped__";
+    if (!groups.has(key)) groups.set(key, { projectPath, sessions: [] });
+    groups.get(key).sessions.push(session);
+  }
+  return [...groups.values()];
+}
+
+function normalizeProjectPath(projectPath) {
+  if (typeof projectPath !== "string" || !projectPath.trim()) return null;
+  return projectPath.trim().replace(/^\\\\\?\\/u, "").replace(/[\\/]+$/u, "");
+}
+
+function projectName(projectPath) {
+  if (!projectPath) return "未归类";
+  return projectPath.split(/[\\/]/u).filter(Boolean).at(-1) || projectPath;
+}
+
 function formatTokens(value) {
   if (value == null) return "—";
   if (Math.abs(value) >= 100_000) return compactFormatter.format(value);
   return tokenFormatter.format(value);
+}
+
+function formatCacheHitRate(usage) {
+  const input = usage?.inputTokens;
+  const cached = usage?.cachedInputTokens;
+  if (!Number.isFinite(input) || !Number.isFinite(cached) || input <= 0 || cached < 0 || cached > input) return "—";
+  return new Intl.NumberFormat("zh-CN", {
+    style: "percent",
+    maximumFractionDigits: 1,
+  }).format(cached / input);
 }
 
 function formatDate(value) {

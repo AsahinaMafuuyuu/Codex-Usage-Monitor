@@ -31,7 +31,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 { "sessions": ["session summary objects"] }
 ```
 
-`q` 可选，按当前只读索引中的标题、session ID 和 source 做本地包含搜索。数据库不持久化标题。
+每个会话摘要包含 nullable `projectPath`，值来自根线程 `session_meta.cwd`。`q` 可选，按当前只读索引中的标题、session ID、source 和工程目录做本地包含搜索。数据库不持久化标题，但 schema v6 将 `projectPath` 作为定位元数据保留。
 
 ### `GET /api/sessions/:id`
 
@@ -39,7 +39,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 ```json
 {
-  "session": {},
+  "session": { "projectPath": "C:\\workspace\\example" },
   "agents": [{
     "tasks": [],
     "ownCostEstimate": {},
@@ -100,6 +100,8 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。四类摘要均返回 `estimatedTasks` 和 `unavailableTasks`：全部可计算为 `estimated`，混合覆盖为 `partial`，没有可计算任务为 `unavailable`。`partial.amountUsd` 只是已知任务的下限；页面用 `≥` 显示，不把它冒充完整总额。
 
+页面从 `summary.totalUsage` 计算完整会话输入、输出和缓存命中率，从 `agents[].ownUsage` 与 `tasks[].deltaUsage` 计算对应层级命中率。统一公式为 `cachedInputTokens / inputTokens`；API 不增加可失真的持久化百分比字段。
+
 这是有状态选择操作，但不写 `.codex`；它只更新监控器自身的解析范围和派生 SQLite。
 
 ### `GET /api/sessions/:id/events`
@@ -117,6 +119,8 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 ### `GET /api/tasks/:threadId/:turnId/preview`
 
 按数据库中保存的来源位置读取原始 rollout，并返回最多 120 字的确定性指令预览。响应区分 `available`，源日志消失时不会回退到数据库内容，因为正文从未被持久化。
+
+当前页面不调用此接口。它暂时保留现有认证和内容最小化契约，等待后续“查看完整对话”功能另行设计。
 
 客户端不能传入文件路径；路径只能从已存在任务记录解析。
 

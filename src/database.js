@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { addUsage, sumTaskUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 5;
+const SCHEMA_VERSION = 6;
 
 export class MonitorDatabase {
   constructor(databasePath) {
@@ -20,6 +20,7 @@ export class MonitorDatabase {
         id TEXT PRIMARY KEY,
         title TEXT NOT NULL DEFAULT '',
         source TEXT,
+        project_path TEXT,
         created_at TEXT,
         updated_at TEXT,
         archived INTEGER NOT NULL DEFAULT 0,
@@ -111,6 +112,10 @@ export class MonitorDatabase {
       CREATE INDEX IF NOT EXISTS idx_tasks_root ON tasks(root_session_id, thread_id, sequence);
       CREATE INDEX IF NOT EXISTS idx_quota_observed ON quota_snapshots(observed_at DESC);
     `);
+    const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
+    if (!sessionColumns.some((column) => column.name === "project_path")) {
+      this.db.exec("ALTER TABLE sessions ADD COLUMN project_path TEXT;");
+    }
     const cursorColumns = this.db.prepare("PRAGMA table_info(ingest_cursors)").all();
     const addedWarningCounters = !cursorColumns.some((column) => column.name === "unknown_records") ||
       !cursorColumns.some((column) => column.name === "skipped_records");
@@ -143,11 +148,12 @@ export class MonitorDatabase {
 
     this.statements = {
       upsertSession: this.db.prepare(`
-        INSERT INTO sessions (id, title, source, created_at, updated_at, archived, cli_version, rollout_path)
-        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+        INSERT INTO sessions (id, title, source, project_path, created_at, updated_at, archived, cli_version, rollout_path)
+        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           title=CASE WHEN excluded.title <> '' THEN excluded.title ELSE sessions.title END,
           source=COALESCE(excluded.source, sessions.source),
+          project_path=COALESCE(excluded.project_path, sessions.project_path),
           created_at=COALESCE(excluded.created_at, sessions.created_at),
           updated_at=COALESCE(excluded.updated_at, sessions.updated_at),
           archived=excluded.archived,
@@ -247,6 +253,7 @@ export class MonitorDatabase {
           session.id,
           "",
           session.source ?? null,
+          session.projectPath ?? null,
           session.createdAt ?? null,
           session.updatedAt ?? null,
           session.archived ? 1 : 0,
@@ -264,6 +271,7 @@ export class MonitorDatabase {
         rootId,
         "",
         snapshot.session.source ?? null,
+        snapshot.session.projectPath ?? null,
         snapshot.session.createdAt ?? null,
         snapshot.session.updatedAt ?? null,
         snapshot.session.archived ? 1 : 0,
@@ -369,7 +377,7 @@ export class MonitorDatabase {
   listSessions() {
     return this.db.prepare(`
       SELECT id, title, source, created_at, updated_at, archived, cli_version,
-             rollout_path, parse_status, imported_at, agent_count, task_count
+             project_path, rollout_path, parse_status, imported_at, agent_count, task_count
       FROM sessions ORDER BY COALESCE(updated_at, created_at) DESC
     `).all().map(mapSession);
   }
@@ -512,6 +520,7 @@ function mapSession(row) {
     id: row.id,
     title: row.title ?? "",
     source: row.source ?? null,
+    projectPath: row.project_path ?? null,
     createdAt: row.created_at ?? null,
     updatedAt: row.updated_at ?? null,
     archived: Boolean(row.archived),

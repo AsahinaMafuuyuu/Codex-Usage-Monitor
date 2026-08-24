@@ -11,7 +11,7 @@
 
 SQLite 使用 WAL 和 schema/parser 版本，保存：
 
-- sessions 的 ID、时间、来源、归档、CLI/parser 状态；持久化标题固定为空。
+- sessions 的 ID、时间、来源、根会话工程目录、归档、CLI/parser 状态；持久化标题固定为空。工程目录是会话定位元数据，口径见 ADR-0008。
 - agents 的线程关系、角色、路径和派生汇总。
 - tasks 的 turn ID、序号、状态、质量、时间、模型、effort、baseline/end/delta 和来源定位。
 - quota snapshots 与 ingest cursors。
@@ -32,3 +32,4 @@ SQLite 使用 WAL 和 schema/parser 版本，保存：
 - 数据库可长期保留，仍应视为本地敏感元数据并由用户管理备份。
 - schema migration 和导出功能必须继续证明不存在正文列。
 - 会话列表标题只能来自当前只读 repository 内存索引，不得从 SQLite 恢复。
+- 根会话 `cwd` 可以作为本地敏感定位元数据持久化；不得借此扩大到环境变量、Git 配置或目录内容。

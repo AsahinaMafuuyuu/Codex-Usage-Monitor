@@ -37,12 +37,13 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(stored.tasks[0].model, "gpt-5.6-terra");
   assert.equal(stored.tasks[0].effort, "xhigh");
   assert.equal(stored.session.title, "");
+  assert.equal(stored.session.projectPath, "C:\\workspace\\codex-usage-monitor");
   const columns = reopened.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(columns.some((name) => /prompt|preview|content|message/iu.test(name)), false);
-  assert.equal(reopened.getHealthStats().schemaVersion, 5);
+  assert.equal(reopened.getHealthStats().schemaVersion, 6);
 });
 
-test("schema v1 ingest cursors migrate to resumable schema v5", async (t) => {
+test("schema v1 ingest cursors migrate to resumable schema v6", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -78,11 +79,55 @@ test("schema v1 ingest cursors migrate to resumable schema v5", async (t) => {
   assert.equal(columns.some((column) => column.name === "skipped_records"), true);
   assert.equal(columns.some((column) => column.name === "last_usage"), true);
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 5);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 6);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].byteOffset, 120);
   assert.equal(cursors[0].lineNumber, 0);
+});
+
+test("schema v5 sessions gain project locator metadata without losing rows", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-session-migration-"));
+  const path = join(directory, "usage.sqlite");
+  let migrated = null;
+  t.after(async () => {
+    migrated?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    CREATE TABLE sessions (
+      id TEXT PRIMARY KEY,
+      title TEXT NOT NULL DEFAULT '',
+      source TEXT,
+      created_at TEXT,
+      updated_at TEXT,
+      archived INTEGER NOT NULL DEFAULT 0,
+      cli_version TEXT,
+      rollout_path TEXT,
+      parse_status TEXT NOT NULL DEFAULT 'not_imported',
+      imported_at TEXT,
+      agent_count INTEGER NOT NULL DEFAULT 0,
+      task_count INTEGER NOT NULL DEFAULT 0,
+      parser_version INTEGER NOT NULL DEFAULT 5
+    );
+    INSERT INTO sessions (id, source, updated_at) VALUES ('${ROOT}', 'cli', '2026-08-24T00:00:00.000Z');
+    PRAGMA user_version=5;
+  `);
+  legacy.close();
+
+  migrated = new MonitorDatabase(path);
+  const columns = migrated.db.prepare("PRAGMA table_info(sessions)").all();
+  assert.equal(columns.some((column) => column.name === "project_path"), true);
+  assert.equal(migrated.listSessions()[0].projectPath, null);
+  migrated.upsertSessions([{
+    id: ROOT,
+    source: "cli",
+    projectPath: "C:\\workspace\\retained-project",
+    updatedAt: "2026-08-24T00:01:00.000Z",
+  }]);
+  assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 6);
 });
 
 test("pre-v5 cursors replay once to rebuild diagnostics and cumulative usage state", async (t) => {
@@ -172,9 +217,17 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
     timestamp: "2026-08-24T00:00:00.000Z",
     ordinal: 0,
     type: "session_meta",
-    payload: { id: ROOT, session_id: ROOT, timestamp: "2026-08-24T00:00:00.000Z", cli_version: "test" },
+    payload: {
+      id: ROOT,
+      session_id: ROOT,
+      timestamp: "2026-08-24T00:00:00.000Z",
+      cli_version: "test",
+      cwd: "C:\\workspace\\project-alpha",
+    },
   }) + "\n");
-  await writeFile(childRollout, makeSubagentRollout(CHILD, TURN, 100));
+  await writeFile(childRollout, makeSubagentRollout(CHILD, TURN, 100, {
+    projectPath: "C:\\workspace\\project-beta",
+  }));
   await writeFile(grandchildRollout, makeSubagentRollout(GRANDCHILD, GRANDCHILD_TURN, 50, {
     parentThreadId: CHILD,
     depth: 2,
@@ -216,12 +269,14 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assert.doesNotMatch(contentSecurityPolicy, /unsafe-inline/iu);
   const payload = await sessionsResponse.json();
   assert.equal(payload.sessions[0].id, ROOT);
+  assert.equal(payload.sessions[0].projectPath, "C:\\workspace\\project-alpha");
 
   const snapshotResponse = await fetch(`${base}/api/sessions/${ROOT}`, {
     headers: { Cookie: cookie },
   });
   assert.equal(snapshotResponse.status, 200);
   const selected = await snapshotResponse.json();
+  assert.equal(selected.session.projectPath, "C:\\workspace\\project-alpha");
   const task = selected.agents.flatMap((agent) => agent.tasks)
     .find((candidate) => candidate.threadId === CHILD);
   assert.equal(task.model, "gpt-5.6-terra");
@@ -327,6 +382,7 @@ function makeSubagentRollout(threadId, turnId, totalTokens, options = {}) {
         session_id: ROOT,
         parent_thread_id: parentThreadId,
         timestamp,
+        cwd: options.projectPath,
         source: { subagent: { thread_spawn: { parent_thread_id: parentThreadId, depth } } },
       },
     },
@@ -368,7 +424,13 @@ function assertSecurityHeaders(headers) {
 function snapshot() {
   const usage = { ...zeroUsage(), inputTokens: 40, outputTokens: 2, totalTokens: 42 };
   return {
-    session: { id: ROOT, title: "Test", createdAt: "2026-08-24T00:00:00.000Z", updatedAt: "2026-08-24T00:01:00.000Z" },
+    session: {
+      id: ROOT,
+      title: "Test",
+      projectPath: "C:\\workspace\\codex-usage-monitor",
+      createdAt: "2026-08-24T00:00:00.000Z",
+      updatedAt: "2026-08-24T00:01:00.000Z",
+    },
     agents: [{
       rootSessionId: ROOT,
       threadId: CHILD,

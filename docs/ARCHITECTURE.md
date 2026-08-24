@@ -26,16 +26,16 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 | `src/rollout-parser.js` | 读取完整 JSONL 行、识别任务边界、快照、quota、ordinal 和预览位置 |
 | `src/usage.js` | 规范化六类 token、检查单调性、做边界差分和质量分类 |
 | `src/pricing.js` | 用版本化官方标准 API 价目生成逐任务 USD 等值，并合并智能体/会话覆盖摘要 |
-| `src/database.js` | 管理 schema v5、WAL、幂等 upsert、任务快照和可恢复 ingest cursor |
+| `src/database.js` | 管理 schema v6、WAL、幂等 upsert、工程定位、任务快照和可恢复 ingest cursor |
 | `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation 和事件发布 |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
 | `public/**` | 会话搜索、子智能体树、任务明细、额度与健康状态 |
 
 ## 会话发现
 
-启动时先读取 `session_index.jsonl` 和以 `PRAGMA query_only=ON` 打开的最新 `state_*.sqlite`，再扫描 `sessions` 与 `archived_sessions` 下 rollout 的首条 `session_meta`。父子关系优先采用 `thread_spawn_edges`；缺失时由 rollout 的 `parent_thread_id` 和 `source.subagent` 回退推断。
+启动时先读取 `session_index.jsonl` 和以 `PRAGMA query_only=ON` 打开的最新 `state_*.sqlite`，再扫描 `sessions` 与 `archived_sessions` 下 rollout 的首条 `session_meta`。父子关系优先采用 `thread_spawn_edges`；缺失时由 rollout 的 `parent_thread_id` 和 `source.subagent` 回退推断。根线程的 `cwd` 作为 `projectPath`，子智能体目录不得覆盖它。
 
-会话列表只保存索引级派生元数据。用户选择根会话后，才完整解析该会话及递归子智能体文件；切换选择会替换实时监听范围，数据库中已经导入的任务不会被删除。
+会话列表只保存索引级派生元数据，并按完整 `projectPath` 分组；浏览器将 Windows `\\?\` 扩展路径前缀视为同一目录的语法别名，缺少根目录时保持“未归类”。用户选择根会话后，才完整解析该会话及递归子智能体文件；切换选择会替换实时监听范围，数据库中已经导入的任务不会被删除。
 
 ## 任务归因
 
@@ -48,6 +48,8 @@ delta[field] = end.total_token_usage[field] - baseline.total_token_usage[field]
 ```
 
 重复累计快照不产生新用量；累计倒退不计算伪精确 delta。`last_token_usage` 可能重复或重置，因而不参与相加。`subagent_history_start_ordinal` 之前的分页复制历史被排除。
+
+缓存命中率只做展示层确定性派生：`cachedInputTokens / inputTokens`。会话使用 `summary.totalUsage`，智能体使用 `ownUsage`，任务使用 `deltaUsage`；输入非正、字段缺失或缓存大于输入时不输出百分比。
 
 数据质量：
 
@@ -79,7 +81,7 @@ Snapshot 先为每个任务重算费用，再沿与 token 完全相同的 `paren
 
 ## 持久化边界
 
-SQLite schema v5 包含 `sessions`、`agents`、`tasks`、`quota_snapshots` 和 `ingest_cursors`。任务保存边界、baseline/end/delta、源文件定位和字节偏移；cursor 额外保存行号、unknown/skipped/discontinuity 诊断及线程最新累计 usage，以便重启后安全续读且不丢失 warning 或任务间 baseline。数据库不保存 prompt、response、消息正文或会话标题。
+SQLite schema v6 包含 `sessions`、`agents`、`tasks`、`quota_snapshots` 和 `ingest_cursors`。sessions 新增 nullable `project_path` 定位元数据；任务保存边界、baseline/end/delta、源文件定位和字节偏移；cursor 额外保存行号、unknown/skipped/discontinuity 诊断及线程最新累计 usage，以便重启后安全续读且不丢失 warning 或任务间 baseline。数据库不保存 prompt、response、消息正文或会话标题。
 
 预览接口只使用已存的任务定位信息重新打开来源 rollout，确定性提取首条父代理指令，折叠空白并截断到 120 字。结果不缓存、不落库；源文件不存在时返回不可用状态。
 
@@ -97,7 +99,7 @@ Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 r
 - CSP 禁止第三方脚本、frame 和跨源连接。
 - URL 参数只能提供受正则约束的 session/thread/turn ID，不能提供任意文件路径。
 
-安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)。
+安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)，工程分类与缓存比率见 [ADR-0008](decisions/0008-project-directory-session-grouping.md)。
 
 ## 官方证据边界
 
