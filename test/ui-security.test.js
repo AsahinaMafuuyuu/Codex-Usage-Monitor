@@ -3,9 +3,10 @@ import { readFile } from "node:fs/promises";
 import test from "node:test";
 
 test("the static UI does not require inline styles under the self-only CSP", async () => {
-  const [html, script] = await Promise.all([
+  const [html, script, styles] = await Promise.all([
     readFile(new URL("../public/index.html", import.meta.url), "utf8"),
     readFile(new URL("../public/app.js", import.meta.url), "utf8"),
+    readFile(new URL("../public/styles.css", import.meta.url), "utf8"),
   ]);
   assert.doesNotMatch(html, /\sstyle\s*=/iu);
   assert.doesNotMatch(html, /<style\b/iu);
@@ -33,4 +34,15 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(html, /id="input-total"/u);
   assert.match(html, /id="output-total"/u);
   assert.match(html, /id="cache-hit-rate"/u);
+  assert.match(html, /content="light"/u);
+  assert.match(html, /id="session-project"/u);
+  assert.match(script, /class="agent-branch/u);
+  assert.match(script, /class="agent-children/u);
+  assert.match(script, /role-badge/u);
+  assert.match(script, /<colgroup>/u);
+  assert.match(styles, /--parchment:\s*#f4f1ea/iu);
+  assert.match(styles, /\.role-reviewer/u);
+  assert.match(styles, /\.role-test-worker/u);
+  assert.match(styles, /font-variant-numeric:\s*tabular-nums/iu);
+  assert.match(styles, /prefers-reduced-motion/u);
 });

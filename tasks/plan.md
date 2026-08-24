@@ -297,9 +297,9 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 
 **Acceptance criteria:**
 
-- [ ] Desktop, narrow, empty, loading, live, stale, and focus states share the documented type scale and palette.
-- [ ] Overview metrics use aligned ruled groups with substantially fewer card containers.
-- [ ] Project navigation remains searchable, readable, and operable by keyboard and mobile drawer.
+- [x] Desktop, narrow, empty, loading, live, stale, and focus states share the documented type scale and palette.
+- [x] Overview metrics use aligned ruled groups with substantially fewer card containers.
+- [x] Project navigation remains searchable, readable, and operable by keyboard and mobile drawer.
 
 **Verification:** `npm run check`, desktop browser check, narrow-screen browser check, keyboard focus check.
 
@@ -315,9 +315,9 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 
 **Acceptance criteria:**
 
-- [ ] Parent/child nesting remains visible at every supported depth without relying on card indentation alone.
-- [ ] Known agent roles receive conspicuous, accessible labels with a neutral fallback for unknown roles.
-- [ ] Task headers and values align consistently, numeric cells use tabular figures, and horizontal overflow remains discoverable on narrow screens.
+- [x] Parent/child nesting remains visible at every supported depth without relying on card indentation alone.
+- [x] Known agent roles receive conspicuous, accessible labels with a neutral fallback for unknown roles.
+- [x] Task headers and values align consistently, numeric cells use tabular figures, and horizontal overflow remains discoverable on narrow screens.
 
 **Verification:** `npm test`, `npm run check`, desktop and narrow-screen browser screenshots.
 
@@ -333,9 +333,9 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 
 **Acceptance criteria:**
 
-- [ ] An accepted ADR records why the editorial ledger and lineage rail were chosen over cards, a graph canvas, and the existing dark dashboard.
-- [ ] README, architecture/API notes, changelog, and verification record match shipped behavior.
-- [ ] Final full test, syntax, diff, desktop, and narrow-screen checks pass before the second feature commit.
+- [x] An accepted ADR records why the editorial ledger and lineage rail were chosen over cards, a graph canvas, and the existing dark dashboard.
+- [x] README, architecture/API notes, changelog, and verification record match shipped behavior.
+- [x] Final full test, syntax, diff, desktop, and narrow-screen checks pass before the second feature commit.
 
 **Verification:** `npm test`, `npm run check`, documentation tests, `git diff --check`.
 
@@ -347,10 +347,10 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 
 ### Checkpoint: Editorial redesign
 
-- [ ] Full tests and syntax checks pass.
-- [ ] Desktop and narrow-screen visual QA confirms comfortable typography, clear project grouping, direct nesting, visible role identity, and aligned task data.
-- [ ] Reduced-motion and keyboard-focus behavior remain intact.
-- [ ] Commit the complete Phase 8 redesign and documentation with an explicit Conventional Commit message.
+- [x] Full tests and syntax checks pass.
+- [x] Desktop and narrow-screen visual QA confirms comfortable typography, clear project grouping, direct nesting, visible role identity, and aligned task data.
+- [x] Reduced-motion and keyboard-focus behavior remain intact.
+- [x] Commit the complete Phase 8 redesign and documentation with an explicit Conventional Commit message.
 
 ## Risks and Mitigations
 

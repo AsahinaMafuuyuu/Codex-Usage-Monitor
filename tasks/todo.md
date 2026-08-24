@@ -33,8 +33,8 @@
 - [x] Add agent and task cache-hit metrics
 - [x] Remove the task instruction column from the interface
 - [x] Verify and commit project grouping plus cache visibility
-- [ ] Apply the Claude-inspired editorial type, color, and layout system
-- [ ] Replace card-heavy topology with a nested lineage ledger
-- [ ] Make agent role labels prominent and align task-table data
-- [ ] Record the visual ADR and delivery evidence
-- [ ] Verify and commit the desktop and narrow-screen redesign
+- [x] Apply the Claude-inspired editorial type, color, and layout system
+- [x] Replace card-heavy topology with a nested lineage ledger
+- [x] Make agent role labels prominent and align task-table data
+- [x] Record the visual ADR and delivery evidence
+- [x] Verify and commit the desktop and narrow-screen redesign

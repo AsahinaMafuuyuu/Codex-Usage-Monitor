@@ -29,7 +29,7 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 | `src/database.js` | 管理 schema v6、WAL、幂等 upsert、工程定位、任务快照和可恢复 ingest cursor |
 | `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation 和事件发布 |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
-| `public/**` | 会话搜索、子智能体树、任务明细、额度与健康状态 |
+| `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、对齐任务明细、额度与健康状态 |
 
 ## 会话发现
 
@@ -91,6 +91,14 @@ SQLite schema v6 包含 `sessions`、`agents`、`tasks`、`quota_snapshots` 和 
 
 Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 record/event 和缺少必需任务 ID 的记录分别计入 `unknownRecords`、`skippedRecords` 并触发 warning。这样既容忍新字段，又不会把格式变化静默伪装为健康。
 
+## 界面信息架构
+
+页面沿“工程 → 会话 → 智能体谱系 → 任务账页”逐层展开。工程组使用原生 `details/summary`，默认只打开当前组；会话汇总采用 12 栏分割线账页，避免为每个指标制造独立卡片容器。
+
+智能体树由递归的 `agent-branch` 与 `agent-children` 构成，children 容器绘制连续竖轨并由每个 child 绘制父子横线。角色 badge 是职责的主扫描入口，昵称和 agent path 是身份补充；颜色不参与模型、用量或质量推断。
+
+任务表在每个智能体下复用相同 `colgroup` 和固定布局，确保跨表列宽一致。小屏只让 `.task-table-wrap` 水平滚动，页面本身不产生横向溢出。设计色板、字体、响应式和替代方案见 [ADR-0009](decisions/0009-editorial-lineage-interface.md)。
+
 ## 信任边界
 
 - 进程只监听 `127.0.0.1`。
@@ -99,7 +107,7 @@ Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 r
 - CSP 禁止第三方脚本、frame 和跨源连接。
 - URL 参数只能提供受正则约束的 session/thread/turn ID，不能提供任意文件路径。
 
-安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)，工程分类与缓存比率见 [ADR-0008](decisions/0008-project-directory-session-grouping.md)。
+安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)，工程分类与缓存比率见 [ADR-0008](decisions/0008-project-directory-session-grouping.md)，界面结构见 [ADR-0009](decisions/0009-editorial-lineage-interface.md)。
 
 ## 官方证据边界
 

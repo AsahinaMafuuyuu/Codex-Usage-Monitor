@@ -12,6 +12,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0006](0006-node-builtins-and-vanilla-ui.md) | Accepted | 使用 Node 内置模块和无框架页面 |
 | [0007](0007-versioned-api-equivalent-cost.md) | Accepted | 用版本化官方 API 价目估算任务、智能体和会话美元等值 |
 | [0008](0008-project-directory-session-grouping.md) | Accepted | 按根会话工程目录分组并统一缓存命中率口径 |
+| [0009](0009-editorial-lineage-interface.md) | Accepted | 使用编辑式账页、连续谱系轨和显式角色标签 |
 
 ## 新增 ADR
 

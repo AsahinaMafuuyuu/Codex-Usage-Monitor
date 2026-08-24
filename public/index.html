@@ -3,7 +3,7 @@
   <head>
     <meta charset="utf-8">
     <meta name="viewport" content="width=device-width, initial-scale=1">
-    <meta name="color-scheme" content="dark">
+    <meta name="color-scheme" content="light">
     <title>Codex Usage Monitor</title>
     <link rel="stylesheet" href="/styles.css">
   </head>
@@ -13,8 +13,8 @@
         <header class="brand-block">
           <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
           <div>
-            <p class="eyebrow">LOCAL OBSERVER</p>
-            <h1>Codex Usage</h1>
+            <p class="eyebrow">LOCAL USAGE LEDGER</p>
+            <h1>Codex 观察台</h1>
           </div>
         </header>
 
@@ -24,7 +24,7 @@
         </label>
 
         <div class="session-list-heading">
-          <span>本地会话</span>
+          <span>工程与会话</span>
           <span id="session-count">—</span>
         </div>
         <nav id="session-list" class="session-list" aria-live="polite"></nav>
@@ -40,7 +40,7 @@
 
       <main class="workspace">
         <header class="workspace-bar">
-          <button id="mobile-session-toggle" class="mobile-session-toggle" type="button" aria-label="打开会话列表">会话</button>
+          <button id="mobile-session-toggle" class="mobile-session-toggle" type="button" aria-label="打开工程与会话列表">工程 / 会话</button>
           <div class="connection-status">
             <span id="live-pulse" class="live-pulse"></span>
             <span id="connection-label">等待选择会话</span>
@@ -50,8 +50,8 @@
 
         <div id="empty-state" class="empty-state">
           <div class="empty-orbit" aria-hidden="true"><span></span></div>
-          <p class="eyebrow">SESSION REQUIRED</p>
-          <h2>选择一个会话开始观察</h2>
+          <p class="eyebrow">OPEN A SESSION RECORD</p>
+          <h2>从左侧工程中选择一段工作</h2>
           <p>页面会读取该根会话及全部子智能体的 rollout，历史记录保存在本地 SQLite。</p>
         </div>
 
@@ -63,18 +63,23 @@
         <div id="dashboard" hidden>
           <section class="session-hero">
             <div class="session-identity">
-              <p class="eyebrow">SELECTED SESSION</p>
+              <p class="eyebrow">SESSION RECORD / 会话记录</p>
               <h2 id="session-title">—</h2>
+              <div class="session-project-row">
+                <span>工程</span>
+                <code id="session-project">—</code>
+              </div>
               <div class="session-id-row">
+                <span>会话</span>
                 <code id="session-id">—</code>
                 <span id="session-version" class="version-chip">—</span>
               </div>
             </div>
-            <div class="hero-signal" aria-label="实时观察状态">
-              <div class="signal-rings"><span></span><span></span><span></span></div>
+            <aside class="hero-signal" aria-label="子智能体 token 汇总">
+              <span class="hero-signal-label">SUBAGENT TOKENS</span>
               <strong id="hero-total">—</strong>
-              <span>子智能体 tokens</span>
-            </div>
+              <small>全部递归任务 · 实时汇总</small>
+            </aside>
           </section>
 
           <section class="overview-grid" aria-label="会话汇总">
@@ -128,9 +133,10 @@
 
           <section class="agent-section">
             <header class="section-heading">
-              <div>
-                <p class="eyebrow">AGENT TOPOLOGY</p>
-                <h2>智能体活动轨道</h2>
+              <div class="section-heading-copy">
+                <p class="eyebrow">LINEAGE LEDGER / 工作谱系</p>
+                <h2>智能体工作谱系</h2>
+                <p>沿父子关系阅读任务流；角色标签标明每一段工作的责任类型。</p>
               </div>
               <div class="quality-legend" aria-label="数据质量图例">
                 <span><i class="quality-dot complete"></i>边界完整</span>

@@ -17,6 +17,8 @@
 - 任务 API 增加 `costEstimate`，智能体增加 `ownCostEstimate` / `subtreeCostEstimate`，session snapshot 增加 `pricing`、`summary.totalCostEstimate` 和 `summary.subagentCostEstimate`；未知模型或不完整 token 明细不再生成伪精确费用。
 - SQLite 升级到 schema v6，以 nullable `project_path` 保存根会话定位元数据；列表与 snapshot API 增加 `projectPath`。
 - 任务表移除指令预览列及其前端读取逻辑；受认证的 preview API 暂时保留供后续完整对话功能重新设计。
+- 前端从深色卡片仪表盘重构为 Claude 启发的暖色编辑式账页，工程组改为可折叠索引，概览使用 4+3 分栏。
+- 智能体拓扑改为真实递归的连续谱系轨，角色使用显式语义 badge；任务表通过固定 `colgroup` 和 tabular numerals 跨智能体对齐。
 
 ## [0.1.0] - 2026-08-24
 

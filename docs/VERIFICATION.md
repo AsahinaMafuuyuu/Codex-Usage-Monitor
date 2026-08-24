@@ -25,6 +25,7 @@ npm run check
 - 会话标题不进入派生数据库。
 - 启动 token、Strict Cookie、Host/Origin 和只读 HTTP 边界。
 - CSP 下静态页面和脚本不依赖 inline style。
+- 静态界面契约覆盖暖色设计 token、工程上下文、递归 branch/children、reviewer/test-worker 角色样式、固定表格 colgroup、tabular numerals 和 reduced-motion。
 - 开发机五任务真实样本及源文件 SHA-256 不变。
 
 `npm run check` 对服务、监听器、parser、pricing 和浏览器脚本执行 Node 语法检查。
@@ -74,6 +75,21 @@ npm test
 - 真实浏览器窄屏验证：390×844，文档级横向溢出为 0；330px 工程抽屉可打开且保留全部 41 组，任务表在 317px 可视区域内保持 1320px 独立横向滚动。
 - 浏览器控制台：0 error、0 warning。
 - 只读复核：所选稳定历史会话的 6 个 rollout 在浏览器解析前后 SHA-256 逐一一致。
+- 本轮真实五任务 parser fixture：skipped；未把此前交付记录表述为本轮已执行。
+
+### 编辑式谱系界面增量复核
+
+日期：2026-08-24。完成 Claude 启发的暖色编辑式界面、可折叠工程索引、连续智能体谱系、显式角色标签和固定表格布局后的执行结果：
+
+- 普通 `npm test`：26 tests，25 passed，0 failed，1 skipped；skipped 项为本轮未配置 `CODEX_MONITOR_REAL_FIXTURE`。
+- `npm run check` 与 `git diff --check`：通过。
+- 真实浏览器桌面验证：1440×900，概览七项按 `4 + 3` 等宽分栏，无圆角指标/智能体卡片，页面横向溢出为 0；当前工程是 41 个工程组中唯一展开项。
+- 拓扑与角色验证：用户截图对应的历史会话显示 7 个智能体、连续递归谱系轨、1 个 `REVIEWER` 和 1 个 `TEST-WORKER`；两类角色分别使用可区分的紫灰与鼠尾草绿语义样式。
+- 表格验证：每个智能体任务表使用相同 14 列固定宽度；抽查前六列分别为 160、76、125、82、150、72px，文本首列左对齐、数值列右对齐并使用 tabular numerals。
+- 真实浏览器窄屏验证：390×844，概览为 169px 双列，智能体统计为约 151px 双列，页面横向溢出为 0；340px 工程抽屉可用，1390px 任务表在 339px 容器内独立横向滚动。
+- 可访问性验证：工程 `summary` 键盘聚焦时出现 2px clay 焦点环；静态契约保留 `prefers-reduced-motion`。
+- 浏览器控制台：0 error、0 warning。
+- 只读复核：角色验收会话的 7 个 rollout 在浏览器解析前后 SHA-256 逐一一致。
 - 本轮真实五任务 parser fixture：skipped；未把此前交付记录表述为本轮已执行。
 
 ## 手工验收

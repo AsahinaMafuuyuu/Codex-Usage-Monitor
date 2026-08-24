@@ -11,7 +11,7 @@ const elements = Object.fromEntries(
   [
     "session-search", "session-count", "session-list", "health-dot", "health-label",
     "health-detail", "mobile-session-toggle", "connection-label", "last-update",
-    "empty-state", "loading-state", "dashboard", "session-title", "session-id",
+    "empty-state", "loading-state", "dashboard", "session-title", "session-project", "session-id",
     "session-version", "hero-total", "agent-count", "task-count", "active-task-count",
     "input-total", "cached-total", "cache-hit-rate", "output-total", "session-cost",
     "session-cost-coverage", "quota-plan", "quota-freshness", "quota-windows",
@@ -113,20 +113,20 @@ function renderSessions() {
     elements["session-list"].innerHTML = '<p class="empty-agent">没有匹配的会话</p>';
     return;
   }
-  elements["session-list"].innerHTML = groupSessionsByProject(sessions).map((group, index) => `
-    <section class="session-group" aria-labelledby="project-group-${index}">
-      <header class="project-heading" id="project-group-${index}">
+  elements["session-list"].innerHTML = groupSessionsByProject(sessions).map((group) => `
+    <details class="session-group" ${query || group.sessions.some((session) => session.id === state.selectedId) ? "open" : ""}>
+      <summary class="project-heading">
         <span><strong>${escapeHtml(projectName(group.projectPath))}</strong><code title="${escapeHtml(group.projectPath || "未记录工程目录")}">${escapeHtml(group.projectPath || "未记录工程目录")}</code></span>
-        <b>${group.sessions.length}</b>
-      </header>
-      ${group.sessions.map((session) => `
-        <button class="session-item ${session.id === state.selectedId ? "active" : ""}"
-          type="button" data-session-id="${escapeHtml(session.id)}">
-          <strong>${escapeHtml(session.title || "未命名会话")}</strong>
-          <span><time title="${escapeHtml(session.updatedAt || "")}">${formatRelative(session.updatedAt)}</time><b>${session.agentCount || "—"} agents</b></span>
-        </button>
-      `).join("")}
-    </section>
+        <span class="project-meta"><b>${group.sessions.length}</b><i aria-hidden="true">›</i></span>
+      </summary>
+      <div class="project-sessions">${group.sessions.map((session) => `
+          <button class="session-item ${session.id === state.selectedId ? "active" : ""}"
+            type="button" data-session-id="${escapeHtml(session.id)}">
+            <strong>${escapeHtml(session.title || "未命名会话")}</strong>
+            <span><time title="${escapeHtml(session.updatedAt || "")}">${formatRelative(session.updatedAt)}</time><b>${session.agentCount || "—"} 智能体</b></span>
+          </button>
+        `).join("")}</div>
+    </details>
   `).join("");
 }
 
@@ -141,6 +141,8 @@ function renderDashboard() {
   elements["empty-state"].hidden = true;
   elements.dashboard.hidden = false;
   elements["session-title"].textContent = snapshot.session.title || "未命名会话";
+  elements["session-project"].textContent = normalizeProjectPath(snapshot.session.projectPath) || "未记录工程目录";
+  elements["session-project"].title = snapshot.session.projectPath || "";
   elements["session-id"].textContent = snapshot.session.id;
   elements["session-id"].title = snapshot.session.id;
   elements["session-version"].textContent = snapshot.session.cliVersion || "版本未知";
@@ -212,9 +214,11 @@ function renderAgents() {
   const renderBranch = (parentId, depth) => (byParent.get(parentId) ?? []).map((agent) => {
     const active = agent.tasks.some((task) => task.status === "in_progress");
     const rootClass = agent.isRoot ? "root" : "";
-    return `<div class="agent-node depth-${Math.min(depth, 6)} ${active ? "active" : ""} ${rootClass}">
-      ${renderAgent(agent)}
-    </div>${renderBranch(agent.threadId, depth + 1)}`;
+    const children = renderBranch(agent.threadId, depth + 1);
+    return `<div class="agent-branch depth-${Math.min(depth, 6)}">
+      <div class="agent-node ${active ? "active" : ""} ${rootClass}">${renderAgent(agent)}</div>
+      ${children ? `<div class="agent-children">${children}</div>` : ""}
+    </div>`;
   }).join("");
   elements["agent-tree"].innerHTML = renderBranch("__root__", 0);
 }
@@ -222,18 +226,24 @@ function renderAgents() {
 function renderAgent(agent) {
   const active = agent.tasks.some((task) => task.status === "in_progress");
   const shouldOpen = !agent.isRoot || active;
+  const role = agentRole(agent);
   return `<details class="agent-card" ${shouldOpen ? "open" : ""}>
     <summary>
       <div class="agent-name">
-        <strong>${escapeHtml(agentLabel(agent))}</strong>
-        <span>${escapeHtml(agent.agentPath || agent.threadId)} · ${escapeHtml(agent.role || (agent.isRoot ? "root" : "subagent"))}</span>
+        <div class="agent-title-line">
+          <span class="role-badge ${agentRoleClass(role)}">${escapeHtml(role.toLocaleUpperCase())}</span>
+          <strong>${escapeHtml(agentLabel(agent))}</strong>
+        </div>
+        <code>${escapeHtml(agent.agentPath || agent.threadId)}</code>
       </div>
-      <div class="agent-stat task-count"><span>任务</span><strong>${agent.taskCount}</strong></div>
-      <div class="agent-stat tokens"><span>自身 tokens</span><strong>${formatTokens(agent.ownUsage?.totalTokens)}</strong></div>
-      <div class="agent-stat subtree"><span>含后代 tokens</span><strong>${formatTokens(agent.subtreeUsage?.totalTokens)}</strong></div>
-      <div class="agent-stat cache-hit"><span>自身缓存命中</span><strong>${formatCacheHitRate(agent.ownUsage)}</strong></div>
-      <div class="agent-stat cost-own" title="${escapeHtml(costSummaryTitle(agent.ownCostEstimate, "该智能体自身"))}"><span>自身 USD</span><strong>${formatUsdSummary(agent.ownCostEstimate)}</strong></div>
-      <div class="agent-stat cost-subtree" title="${escapeHtml(costSummaryTitle(agent.subtreeCostEstimate, "该智能体及后代"))}"><span>含后代 USD</span><strong>${formatUsdSummary(agent.subtreeCostEstimate)}</strong></div>
+      <div class="agent-stats">
+        <div class="agent-stat task-count"><span>任务</span><strong>${agent.taskCount}</strong></div>
+        <div class="agent-stat tokens"><span>自身 tokens</span><strong>${formatTokens(agent.ownUsage?.totalTokens)}</strong></div>
+        <div class="agent-stat subtree"><span>含后代</span><strong>${formatTokens(agent.subtreeUsage?.totalTokens)}</strong></div>
+        <div class="agent-stat cache-hit"><span>缓存命中</span><strong>${formatCacheHitRate(agent.ownUsage)}</strong></div>
+        <div class="agent-stat cost-own" title="${escapeHtml(costSummaryTitle(agent.ownCostEstimate, "该智能体自身"))}"><span>自身 USD</span><strong>${formatUsdSummary(agent.ownCostEstimate)}</strong></div>
+        <div class="agent-stat cost-subtree" title="${escapeHtml(costSummaryTitle(agent.subtreeCostEstimate, "该智能体及后代"))}"><span>含后代 USD</span><strong>${formatUsdSummary(agent.subtreeCostEstimate)}</strong></div>
+      </div>
       <span class="agent-chevron" aria-hidden="true">›</span>
     </summary>
     ${renderTasks(agent)}
@@ -243,6 +253,12 @@ function renderAgent(agent) {
 function renderTasks(agent) {
   if (!agent.tasks.length) return '<div class="empty-agent">该智能体还没有持久化任务边界。</div>';
   return `<div class="task-table-wrap"><table class="task-table">
+    <colgroup>
+      <col class="col-task"><col class="col-status"><col class="col-start"><col class="col-duration">
+      <col class="col-model"><col class="col-effort"><col class="col-input"><col class="col-cache">
+      <col class="col-hit"><col class="col-output"><col class="col-reasoning"><col class="col-total">
+      <col class="col-cost"><col class="col-quality">
+    </colgroup>
     <thead><tr>
       <th>任务</th><th>状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>推理</th><th>总计</th><th title="按当前标准 API 短上下文价格估算，不等于 Codex 订阅实际扣费">估算 USD</th><th>质量</th>
     </tr></thead>
@@ -319,6 +335,19 @@ async function fetchJson(url) {
 function agentLabel(agent) {
   if (agent.isRoot) return "主智能体";
   return agent.nickname || agent.agentPath?.split("/").filter(Boolean).at(-1) || `Agent ${shortId(agent.threadId)}`;
+}
+
+function agentRole(agent) {
+  if (agent.isRoot) return "root";
+  return typeof agent.role === "string" && agent.role.trim() ? agent.role.trim().toLocaleLowerCase() : "subagent";
+}
+
+function agentRoleClass(role) {
+  const known = new Set([
+    "root", "reviewer", "test-worker", "frontend-designer", "backend-fullstack-worker",
+    "debugger", "explorer", "routine-worker", "worker", "default",
+  ]);
+  return known.has(role) ? `role-${role}` : "role-other";
 }
 
 function groupSessionsByProject(sessions) {
