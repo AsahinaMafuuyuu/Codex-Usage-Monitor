@@ -1,0 +1,16 @@
+{
+  "name": "codex-usage-monitor",
+  "version": "0.1.0",
+  "private": true,
+  "type": "module",
+  "description": "Local, read-only Codex subagent usage monitor",
+  "scripts": {
+    "start": "node --disable-warning=ExperimentalWarning src/server.js",
+    "start:no-open": "node --disable-warning=ExperimentalWarning src/server.js --no-open",
+    "test": "node --disable-warning=ExperimentalWarning --test",
+    "check": "node --check src/server.js && node --check src/monitor.js && node --check src/rollout-parser.js && node --check public/app.js"
+  },
+  "engines": {
+    "node": ">=24.0.0"
+  }
+}

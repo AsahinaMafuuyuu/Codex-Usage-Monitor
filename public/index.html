@@ -1,0 +1,130 @@
+<!doctype html>
+<html lang="zh-CN">
+  <head>
+    <meta charset="utf-8">
+    <meta name="viewport" content="width=device-width, initial-scale=1">
+    <meta name="color-scheme" content="dark">
+    <title>Codex Usage Monitor</title>
+    <link rel="stylesheet" href="/styles.css">
+  </head>
+  <body>
+    <div class="app-shell">
+      <aside class="session-panel" aria-label="会话列表">
+        <header class="brand-block">
+          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+          <div>
+            <p class="eyebrow">LOCAL OBSERVER</p>
+            <h1>Codex Usage</h1>
+          </div>
+        </header>
+
+        <label class="search-field">
+          <span>筛选会话</span>
+          <input id="session-search" type="search" placeholder="标题或 session ID" autocomplete="off">
+        </label>
+
+        <div class="session-list-heading">
+          <span>本地会话</span>
+          <span id="session-count">—</span>
+        </div>
+        <nav id="session-list" class="session-list" aria-live="polite"></nav>
+
+        <footer class="observer-health">
+          <span id="health-dot" class="health-dot"></span>
+          <div>
+            <strong id="health-label">正在建立索引</strong>
+            <span id="health-detail">只读观察 .codex</span>
+          </div>
+        </footer>
+      </aside>
+
+      <main class="workspace">
+        <header class="workspace-bar">
+          <button id="mobile-session-toggle" class="mobile-session-toggle" type="button" aria-label="打开会话列表">会话</button>
+          <div class="connection-status">
+            <span id="live-pulse" class="live-pulse"></span>
+            <span id="connection-label">等待选择会话</span>
+          </div>
+          <time id="last-update">—</time>
+        </header>
+
+        <div id="empty-state" class="empty-state">
+          <div class="empty-orbit" aria-hidden="true"><span></span></div>
+          <p class="eyebrow">SESSION REQUIRED</p>
+          <h2>选择一个会话开始观察</h2>
+          <p>页面会读取该根会话及全部子智能体的 rollout，历史记录保存在本地 SQLite。</p>
+        </div>
+
+        <div id="loading-state" class="loading-state" hidden>
+          <div class="scan-line" aria-hidden="true"></div>
+          <p>正在回填会话历史并计算任务边界…</p>
+        </div>
+
+        <div id="dashboard" hidden>
+          <section class="session-hero">
+            <div class="session-identity">
+              <p class="eyebrow">SELECTED SESSION</p>
+              <h2 id="session-title">—</h2>
+              <div class="session-id-row">
+                <code id="session-id">—</code>
+                <span id="session-version" class="version-chip">—</span>
+              </div>
+            </div>
+            <div class="hero-signal" aria-label="实时观察状态">
+              <div class="signal-rings"><span></span><span></span><span></span></div>
+              <strong id="hero-total">—</strong>
+              <span>子智能体 tokens</span>
+            </div>
+          </section>
+
+          <section class="overview-grid" aria-label="会话汇总">
+            <article class="metric-card">
+              <span>子智能体</span>
+              <strong id="agent-count">—</strong>
+              <small>递归统计</small>
+            </article>
+            <article class="metric-card">
+              <span>任务记录</span>
+              <strong id="task-count">—</strong>
+              <small id="active-task-count">无活动任务</small>
+            </article>
+            <article class="metric-card metric-wide">
+              <span>缓存输入</span>
+              <strong id="cached-total">—</strong>
+              <small>属于 input tokens 的缓存部分</small>
+            </article>
+            <article id="quota-card" class="quota-card">
+              <div class="quota-heading">
+                <div>
+                  <span>账号额度快照</span>
+                  <strong id="quota-plan">暂无数据</strong>
+                </div>
+                <span id="quota-freshness" class="freshness-chip">—</span>
+              </div>
+              <div id="quota-windows" class="quota-windows"></div>
+              <small id="quota-observed">额度是账号级快照，不归属于单个任务</small>
+            </article>
+          </section>
+
+          <section class="agent-section">
+            <header class="section-heading">
+              <div>
+                <p class="eyebrow">AGENT TOPOLOGY</p>
+                <h2>智能体活动轨道</h2>
+              </div>
+              <div class="quality-legend" aria-label="数据质量图例">
+                <span><i class="quality-dot complete"></i>边界完整</span>
+                <span><i class="quality-dot provisional"></i>实时</span>
+                <span><i class="quality-dot warning"></i>需注意</span>
+              </div>
+            </header>
+            <div id="agent-tree" class="agent-tree"></div>
+          </section>
+        </div>
+      </main>
+    </div>
+
+    <div id="toast" class="toast" role="status" aria-live="polite"></div>
+    <script type="module" src="/app.js"></script>
+  </body>
+</html>

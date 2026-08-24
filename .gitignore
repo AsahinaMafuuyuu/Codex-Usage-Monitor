@@ -1,0 +1,9 @@
+data/*.sqlite
+data/*.sqlite-shm
+data/*.sqlite-wal
+.impeccable/
+coverage/
+node_modules/
+*.log
+Thumbs.db
+.DS_Store
