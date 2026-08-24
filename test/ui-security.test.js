@@ -54,6 +54,10 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.task-table td\s*\{[^}]*font-family:\s*var\(--mono\)/isu);
   assert.match(styles, /\.role-reviewer/u);
   assert.match(styles, /\.role-test-worker/u);
+  assert.match(styles, /--lineage-rail-offset:\s*18px/iu);
+  assert.match(styles, /--lineage-elbow-width:\s*14px/iu);
+  assert.match(styles, /\.agent-children\s*\{[^}]*margin-left:\s*var\(--lineage-rail-offset\)[^}]*padding-left:\s*var\(--lineage-elbow-width\)/isu);
+  assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*?\.agent-tree\s*\{[^}]*--lineage-rail-offset:\s*10px;[^}]*--lineage-elbow-width:\s*8px/iu);
   assert.match(styles, /font-variant-numeric:\s*tabular-nums/iu);
   assert.match(styles, /prefers-reduced-motion/u);
 });

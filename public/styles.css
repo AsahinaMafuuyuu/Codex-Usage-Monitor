@@ -556,28 +556,30 @@ summary:focus-visible {
 .quality-dot.warning { background: var(--gold); }
 
 .agent-tree {
+  --lineage-rail-offset: 18px;
+  --lineage-elbow-width: 14px;
   border-top: 1px solid var(--line-strong);
 }
 
 .agent-branch { position: relative; }
 .agent-children {
   position: relative;
-  margin-left: 30px;
-  padding-left: 24px;
+  margin-left: var(--lineage-rail-offset);
+  padding-left: var(--lineage-elbow-width);
   border-left: 1px solid var(--line-strong);
 }
 .agent-children > .agent-branch::before {
   content: "";
   position: absolute;
-  left: -24px;
+  left: calc(-1 * var(--lineage-elbow-width));
   top: 31px;
-  width: 24px;
+  width: var(--lineage-elbow-width);
   border-top: 1px solid var(--line-strong);
 }
 .agent-children > .agent-branch:last-child::after {
   content: "";
   position: absolute;
-  left: -25px;
+  left: calc(-1 * var(--lineage-elbow-width) - 1px);
   top: 32px;
   bottom: 0;
   width: 3px;
@@ -948,9 +950,7 @@ summary:focus-visible {
   .quota-windows { grid-template-columns: 1fr; gap: 13px; }
   .section-heading { align-items: flex-start; flex-direction: column; }
   .quality-legend { justify-content: flex-start; }
-  .agent-children { margin-left: 12px; padding-left: 11px; }
-  .agent-children > .agent-branch::before { left: -11px; width: 11px; }
-  .agent-children > .agent-branch:last-child::after { left: -12px; }
+  .agent-tree { --lineage-rail-offset: 10px; --lineage-elbow-width: 8px; }
   .agent-card summary {
     grid-template-columns: minmax(0, 1fr) 16px;
     gap: 14px 8px;

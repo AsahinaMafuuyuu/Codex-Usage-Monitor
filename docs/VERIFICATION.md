@@ -103,6 +103,17 @@ npm test
 - 实际平台字体核对：中文 Section 标题由 Chrome 报告为 `Noto Serif SC`，eyebrow 为 `Segoe UI`，Agent 标识为 `Cascadia Code`，与 ADR-0010 的实体 / UI / identifier 职责一致。
 - 浏览器重新加载后捕获的 console warning / error 与 Runtime exception 均为 0。
 
+### Phase 9 Decision 2：深层谱系 gutter 增量复核
+
+日期：2026-08-24。只收敛 Agent lineage 的 rail offset、elbow connector 与对应窄屏值，不改变任务表列、Overview 或 Agent 展开策略。
+
+- 普通 `npm test`：26 tests，25 passed，0 failed，1 skipped；skipped 项仍为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的开发机真实样本。
+- `npm run check` 与 `git diff --check`：通过；静态 UI 契约新增 lineage geometry 约束，确认桌面 `18px + 14px` 与窄屏 `10px + 8px` 变量化实现。
+- 真实 Chrome 桌面渲染：CDP 视口 1440×900，选取实际 7 Agent、最大 lineage depth 3 的历史会话；document width 1440，无文档级横向溢出。`.agent-children` 实际计算为 `margin-left: 18px`、`padding-left: 14px`、`border-left-width: 1px`，即每深入一级从原 54px 收敛到 32px。
+- 真实 Chrome 窄屏渲染：CDP 视口 390×844，document width 375，无文档级横向溢出；同一会话仍渲染 7 Agent、最大 depth 3，`.agent-children` 实际为 `10px + 8px`，即 18px/层。
+- 任务审计表保持原契约：桌面 `.task-table-wrap` 可视宽度 977px、内容 1390px；窄屏可视宽度 339px、内容 1390px；两者 `overflow-x: auto`，未将深层谱系优化扩散到 Decision 3。
+- Chrome 捕获的 console warning / error 与 Runtime exception 均为 0。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。
