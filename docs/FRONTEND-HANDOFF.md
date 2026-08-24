@@ -3,7 +3,7 @@
 **交付日期：** 2026-08-24  
 **目标读者：** 后续负责 `public/**` 的智能体 / 开发者  
 **当前分支：** `codex/project-grouping-claude-redesign`  
-**接手基线：** `aed004a feat(ui): establish readable typography hierarchy`
+**接手基线：** `fd8e5c9 refactor(ui): compact deep agent lineage gutters`
 
 ## 1. 接手前必须确认
 
@@ -28,6 +28,8 @@ git diff --check
 预期基线至少包含：
 
 ```text
+fd8e5c9 refactor(ui): compact deep agent lineage gutters
+7c80576 docs: add frontend iteration handoff
 aed004a feat(ui): establish readable typography hierarchy
 c0cc86d chore: require versioned frontend design decisions
 b9641bf feat: redesign dashboard as an editorial lineage ledger
@@ -70,24 +72,24 @@ b9641bf feat: redesign dashboard as an editorial lineage ledger
 
 后续四项必须**逐项完成、逐项验证、逐项提交**；禁止混合实现。
 
-### Decision 2：减少深层谱系横向空间损失 — 下一项
+### Decision 2：减少深层谱系横向空间损失 — 已完成
 
-当前 `.agent-children` 每层同时使用 `margin-left` 与 `padding-left`，深层 Agent 会持续侵占任务内容宽度。目标是在不削弱父子关系的前提下缩小每层 gutter。
+已在 `fd8e5c9` 完成。`.agent-children` 改为变量化 lineage geometry：桌面 `18px` rail offset + `14px` elbow，每层总横向占用由 54px 收敛到 32px；720px 以下使用 `10px + 8px = 18px/层`。
 
-约束：
+已验证保持以下契约：
 
-- 本轮只改 lineage gutter / connector / 对应响应式值。
-- 不同时做 sticky task columns、overview 重组或展开策略。
-- 深层仍必须清晰看出 parent → child。
-- `.task-table-wrap` 继续作为横向 overflow 边界。
+- 连续竖轨、横向 elbow 和节点圆点仍明确表达 parent → child。
+- `.task-table-wrap` 仍是唯一任务审计表横向 overflow 边界。
+- 真实 7 Agent / depth 3 会话在 1440×900 与 390×844 均无 document-level 横向 overflow。
+- 本提交没有混入 sticky task columns、Overview 重组或 Agent 展开策略。
 
-建议提交：
+提交：
 
 ```text
-refactor(ui): compact deep agent lineage gutters
+fd8e5c9 refactor(ui): compact deep agent lineage gutters
 ```
 
-### Decision 3：任务审计表横向浏览
+### Decision 3：任务审计表横向浏览 — 下一项
 
 目标：改善 14 列、`1390px` 审计表的上下文保持，例如 sticky Task/Status、明确滚动 affordance 或审计密度控制。
 
@@ -149,6 +151,14 @@ Typography v1 提交前后的最近验收：
 - 实际字体角色：中文章节标题落到本机 serif，UI 标签使用 Segoe UI，标识使用 Cascadia Code。
 - console error / warning / runtime exception：0。
 
+Decision 2 最新增量：
+
+- `npm test`：26 tests，25 passed，0 failed，1 skipped。
+- `npm run check`、`git diff --check`：通过。
+- Chrome 1440×900：实际 7 Agent / depth 3 会话，lineage 为 `18px + 14px = 32px/层`，document width 1440，无横向溢出；任务表 977px 容器 / 1390px 内容，独立滚动。
+- Chrome 390×844：同一会话 lineage 为 `10px + 8px = 18px/层`，document width 375，无横向溢出；任务表 339px 容器 / 1390px 内容，独立滚动。
+- console error / warning / runtime exception：0。
+
 详细证据以 [`VERIFICATION.md`](VERIFICATION.md) 为准，不要把历史记录冒充为新一轮已执行验证。
 
 ## 8. 本阶段明确不应触碰的边界
@@ -165,4 +175,4 @@ Typography v1 提交前后的最近验收：
 
 ## 9. 给下一位智能体的直接任务
 
-接手后先验证本文件第 1 节的 Git/测试基线。若基线一致，从 **Decision 2：减少深层谱系横向空间损失** 开始；只拥有该决策所需的 `public/**`、对应测试和交付文档。完成并提交后汇报：目标、修改文件、视觉契约变化、精确验证结果、浏览器数据、commit hash、风险和下一项建议。
+接手后先验证本文件第 1 节的 Git/测试基线。若基线一致，从 **Decision 3：任务审计表横向浏览** 开始；只拥有该决策所需的 `public/**`、对应测试和交付文档，不提前混入 Overview 或展开策略。完成并提交后汇报：目标、修改文件、视觉契约变化、精确验证结果、浏览器数据、commit hash、风险和下一项建议。
