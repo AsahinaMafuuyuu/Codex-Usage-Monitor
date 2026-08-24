@@ -49,6 +49,19 @@ npm run start:no-open
 
 页面额度卡超过 5 分钟会显示可能过期；这通常表示最近没有新的 rate-limit 记录，并不自动代表账号异常。
 
+## USD 价目维护
+
+进程不会联网获取价格。`src/pricing.js` 内的标准 API 短上下文价目表带 `version`、`capturedAt` 和 `reviewAfter`；页面在复核日期后显示“价目待复核”，但不会静默切换或猜测新价格。
+
+更新价目时：
+
+1. 只使用 OpenAI 官方模型/定价页面，逐项核对 input、cached input、cache write 和 output。
+2. 更新价目版本、抓取/复核日期和来源 URL；不要覆盖不再适用的历史证据而不记录变更。
+3. 同步 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)、API 文档和 CHANGELOG。
+4. 为每个变更模型更新精确分项测试，然后运行 `npm test`、`npm run check` 和桌面/窄屏浏览器验收。
+
+价格显示始终是当前标准 API 等值，不是 Codex 订阅实际扣费。不要从 `rate_limits`、plan type 或账号额度百分比反推美元。
+
 ## SQLite、备份和重建
 
 默认数据库使用 WAL，运行时可能同时出现：
@@ -91,6 +104,12 @@ data\usage.sqlite-shm
 ### 指令预览不可用
 
 用量可以来自 SQLite 历史，但预览必须实时读取原 rollout。日志已删除、移动且索引未刷新，或无法从 `agent_path` 与协作信封证明父→子路由时，会明确不可用；子智能体回复不会作为 fallback。这是内容最小化设计，不是数据丢失。
+
+### USD 显示“不可估算”或与实际账单不同
+
+任务必须同时有受支持的官方模型映射和一致的 input/cached/cache-write/output 差分才能估算。内部 alias、未知模型、total-only 增长或字段缺失会显示不可估算，不会套用相近模型价格。
+
+即使有金额，它也只代表价目表版本对应的标准 API 短上下文等值。Codex 订阅、超过 272K input 的请求、Fast/Batch/Flex/Priority、区域处理和收费工具调用可能采用不同口径，不能用该字段对账。
 
 ### 端口全部被占用
 

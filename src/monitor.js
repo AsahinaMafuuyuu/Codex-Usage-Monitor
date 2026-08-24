@@ -3,6 +3,12 @@ import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import {
+  combineCostSummaries,
+  estimateTaskCost,
+  pricingCatalogSummary,
+  summarizeTaskCosts,
+} from "./pricing.js";
+import {
   readTaskPreview,
   scanLatestQuota,
   SessionRolloutParser,
@@ -116,27 +122,50 @@ export class UsageMonitor extends EventEmitter {
       agentCount: stored.session.agentCount,
       taskCount: stored.session.taskCount,
     };
+    const tasks = stored.tasks.map((task) => ({
+      ...task,
+      costEstimate: estimateTaskCost(task.model, task.deltaUsage),
+    }));
     const agentsById = new Map(stored.agents.map((agent) => [agent.threadId, { ...agent, tasks: [] }]));
-    for (const task of stored.tasks) agentsById.get(task.threadId)?.tasks.push(task);
+    for (const task of tasks) agentsById.get(task.threadId)?.tasks.push(task);
     const agents = [...agentsById.values()];
+    for (const agent of agents) {
+      agent.ownCostEstimate = summarizeTaskCosts(agent.tasks);
+      agent.subtreeCostEstimate = { ...agent.ownCostEstimate };
+    }
+    for (const agent of [...agents].sort((left, right) => right.depth - left.depth)) {
+      const parent = agentsById.get(agent.parentThreadId);
+      if (parent) {
+        parent.subtreeCostEstimate = combineCostSummaries([
+          parent.subtreeCostEstimate,
+          agent.subtreeCostEstimate,
+        ]);
+      }
+    }
     const rootAgent = agents.find((agent) => agent.isRoot);
     let subagentUsage = zeroUsage();
     for (const agent of agents) {
       if (!agent.isRoot) subagentUsage = addUsage(subagentUsage, agent.ownUsage);
     }
     const qualityCounts = {};
-    for (const task of stored.tasks) qualityCounts[task.quality] = (qualityCounts[task.quality] ?? 0) + 1;
+    for (const task of tasks) qualityCounts[task.quality] = (qualityCounts[task.quality] ?? 0) + 1;
     return {
       session: stored.session,
       agents,
       summary: {
         agentCount: agents.filter((agent) => !agent.isRoot).length,
-        taskCount: stored.tasks.length,
-        activeTasks: stored.tasks.filter((task) => task.status === "in_progress").length,
+        taskCount: tasks.length,
+        activeTasks: tasks.filter((task) => task.status === "in_progress").length,
         totalUsage: rootAgent?.subtreeUsage ?? subagentUsage,
         subagentUsage,
         qualityCounts,
+        totalCostEstimate: summarizeTaskCosts(tasks),
+        subagentCostEstimate: summarizeTaskCosts(tasks.filter((task) => {
+          const agent = agentsById.get(task.threadId);
+          return agent && !agent.isRoot;
+        })),
       },
+      pricing: pricingCatalogSummary(),
       quota: this.quota(),
       health: this.health(),
     };

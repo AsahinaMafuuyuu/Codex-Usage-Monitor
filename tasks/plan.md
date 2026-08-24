@@ -64,6 +64,161 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 - [x] Remove CSP-incompatible inline styles and add a static UI security contract test.
 - [x] Expand HTTP tests for Cookie attributes, one-time token exchange, Host, CSP, Origin, and write-method rejection.
 
+### Phase 5: Per-task model strength and USD cost visibility
+
+- [x] Preserve the existing task-level `turn_context.model` and `turn_context.effort` contract through parser snapshots, SQLite restore, and the authenticated session API.
+- [x] Show model, model strength, and a USD cost estimate on every subagent task row, with explicit unknown states when rollout metadata is absent.
+- [x] Calculate cost from each audited token field with a versioned official standard API rate card; label it as an API-equivalent estimate rather than Codex subscription billing.
+- [x] Update the public behavior documentation and changelog, then verify desktop and narrow-screen layouts in a real browser.
+
+#### Task 1: Lock the metadata and cost contract
+
+**Description:** Extend deterministic tests around the already-persisted `model`, `effort`, and per-field `deltaUsage` so replay and SQLite restore cannot silently drop the data used by the interface or pricing estimator.
+
+**Acceptance criteria:**
+
+- [x] A fixture task retains `model` and `effort` after parsing and database reopen.
+- [x] The same task retains its boundary-derived token breakdown and quality label.
+- [x] Missing model or effort remains `null` and is never guessed from agent role or model family.
+
+**Verification:** `npm test`
+
+**Dependencies:** None.
+
+**Files likely touched:** `test/parser.test.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Small.
+
+#### Task 2: Calculate a versioned API-equivalent cost
+
+**Description:** Add a deterministic, offline price catalog and attach a structured cost estimate to each API task without persisting a mutable dollar amount.
+
+**Acceptance criteria:**
+
+- [x] Supported models use official per-field rates with GPT-5.6 cache writes and output reasoning accounted exactly once.
+- [x] Unknown models, incomplete fields, inconsistent totals, and stale catalogs remain explicit.
+- [x] The session API exposes per-task estimates, catalog metadata, and subagent coverage totals.
+
+**Verification:** `npm test`, `npm run check`.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/pricing.js`, `src/monitor.js`, `test/pricing.test.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+#### Task 3: Expose the fields in each task row
+
+**Description:** Add model, strength, and estimated USD columns to the task table, preserving the detailed input/cache/output/reasoning breakdown and horizontal narrow-screen access.
+
+**Acceptance criteria:**
+
+- [x] Every task row renders model, strength, and API-equivalent USD cost from its own task record.
+- [x] Null metadata is shown as an explicit unknown marker rather than a blank or inherited value.
+- [x] Table semantics, preview row span, escaping, and responsive overflow remain correct.
+
+**Verification:** `npm run check`, `npm test`, desktop browser check, narrow-screen browser check.
+
+**Dependencies:** Task 2.
+
+**Files likely touched:** `public/app.js`, `public/styles.css`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+#### Task 4: Document the user-visible contract
+
+**Description:** Document where model and strength come from, define USD cost as a versioned standard API short-context equivalent, and record the delivered behavior and verification evidence.
+
+**Acceptance criteria:**
+
+- [x] README and API docs describe the three displayed values and their unknown-state behavior.
+- [x] Documentation prohibits quota-to-currency conversion and distinguishes the estimate from actual Codex subscription billing.
+- [x] Changelog and verification evidence match the implemented and actually executed checks.
+
+**Verification:** `npm test`, `npm run check`.
+
+**Dependencies:** Task 3.
+
+**Files likely touched:** `README.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/decisions/0007-versioned-api-equivalent-cost.md`, `docs/decisions/README.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Model strength and cost
+
+- [x] Parser/database/UI contract tests pass.
+- [x] Full tests and syntax checks pass.
+- [x] Desktop and narrow-screen task tables show model, strength, and USD estimate without obscuring quality or preview controls.
+- [x] Source rollout hashes are unchanged whenever a real-history check is executed.
+
+## Phase 6: Agent and session cost rollups
+
+### Goals
+
+- [x] Summarize each agent's own API-equivalent USD cost and the cost of its full descendant subtree.
+- [x] Summarize the entire session cost across the root agent and every descendant, while retaining a separate subagent-only total.
+- [x] Preserve partial and unavailable coverage instead of presenting incomplete estimates as exact totals.
+
+#### Task 1: Add cost-summary aggregation to the snapshot API
+
+**Description:** Reuse the same agent lineage already used for token rollups to calculate own-agent, descendant-inclusive, session-total, and subagent-only API-equivalent cost summaries.
+
+**Acceptance criteria:**
+
+- [x] Every agent exposes `ownCostEstimate` and `subtreeCostEstimate`.
+- [x] Session summary exposes `totalCostEstimate` and `subagentCostEstimate`.
+- [x] Known amounts remain summable when some tasks are unavailable, with counts and `partial` status preserved.
+
+**Verification:** `npm test`, `npm run check`.
+
+**Dependencies:** Phase 5 pricing contract.
+
+**Files likely touched:** `src/pricing.js`, `src/monitor.js`, `test/pricing.test.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+#### Task 2: Show session and agent totals in the dashboard
+
+**Description:** Add a session cost metric and agent-card own/subtree cost statistics, with responsive visibility and clear partial or unavailable labels.
+
+**Acceptance criteria:**
+
+- [x] The overview shows the session-wide API-equivalent USD total and coverage.
+- [x] Each agent card shows its own and descendant-inclusive totals.
+- [x] Partial totals use a lower-bound marker and unavailable totals remain explicit on desktop and narrow screens.
+
+**Verification:** `npm test`, `npm run check`, desktop browser check, narrow-screen browser check.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `public/index.html`, `public/app.js`, `public/styles.css`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+#### Task 3: Record the expanded cost contract and evidence
+
+**Description:** Update the accepted pricing decision, public documentation, changelog, and verification record to match the delivered rollups.
+
+**Acceptance criteria:**
+
+- [x] Documentation distinguishes task, own-agent, subtree, subagent-only, and complete-session cost scopes.
+- [x] Partial rollups are documented as known lower bounds, never billing-grade totals.
+- [x] Verification evidence reports only checks actually executed.
+
+**Verification:** `npm test`, `npm run check`.
+
+**Dependencies:** Tasks 1 and 2.
+
+**Files likely touched:** `README.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/decisions/0007-versioned-api-equivalent-cost.md`, `CHANGELOG.md`, `docs/VERIFICATION.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Cost rollups
+
+- [x] Agent own/subtree and session total/subagent-only API fields pass regression coverage.
+- [x] Full tests and syntax checks pass.
+- [x] Desktop and narrow-screen views expose the new totals without obscuring existing usage details.
+- [x] Source rollout hashes are unchanged whenever a real-history check is executed.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
@@ -76,7 +231,7 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 
 ## Open Questions
 
-None. Product form, persistence, quota semantics, privacy, and project location were approved before implementation.
+None. The user explicitly requested USD cost; ADR-0007 bounds it to a versioned official standard API short-context equivalent rather than billing-grade Codex subscription cost.
 
 ## Decision Log
 

@@ -40,19 +40,65 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 ```json
 {
   "session": {},
-  "agents": [{ "tasks": [] }],
+  "agents": [{
+    "tasks": [],
+    "ownCostEstimate": {},
+    "subtreeCostEstimate": {}
+  }],
   "summary": {
     "agentCount": 0,
     "taskCount": 0,
     "activeTasks": 0,
     "totalUsage": {},
     "subagentUsage": {},
-    "qualityCounts": {}
+    "qualityCounts": {},
+    "totalCostEstimate": {
+      "status": "unavailable",
+      "amountUsd": null,
+      "currency": "USD",
+      "estimatedTasks": 0,
+      "unavailableTasks": 0
+    },
+    "subagentCostEstimate": {
+      "status": "unavailable",
+      "amountUsd": null,
+      "currency": "USD",
+      "estimatedTasks": 0,
+      "unavailableTasks": 0
+    }
   },
+  "pricing": {},
   "quota": null,
   "health": {}
 }
 ```
+
+每个 `agents[].tasks[]` 任务包含 rollout 的 `model`、`effort` 以及运行时派生的 `costEstimate`：
+
+```json
+{
+  "model": "gpt-5.6-terra",
+  "effort": "xhigh",
+  "costEstimate": {
+    "status": "estimated",
+    "amountUsd": 0.012345,
+    "currency": "USD",
+    "basis": "openai-standard-api-short-context",
+    "catalogVersion": "2026-08-24",
+    "catalogStale": false,
+    "pricedModel": "gpt-5.6-terra",
+    "ratesPerMillion": {},
+    "components": {},
+    "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "limitations": [],
+    "reason": null
+  }
+}
+```
+
+`costEstimate.status` 为 `estimated` 或 `unavailable`；不可估算时 `amountUsd=null` 并给出 `reason`。`pricing` 返回本地价目表版本、抓取/复核日期、官方来源、支持模型和是否待复核。金额是当前标准 API 短上下文等值，不是 Codex 订阅扣费，也不包含无法从 rollout 证明的长上下文、服务层级、区域或工具费用。
+
+每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。四类摘要均返回 `estimatedTasks` 和 `unavailableTasks`：全部可计算为 `estimated`，混合覆盖为 `partial`，没有可计算任务为 `unavailable`。`partial.amountUsd` 只是已知任务的下限；页面用 `≥` 显示，不把它冒充完整总额。
 
 这是有状态选择操作，但不写 `.codex`；它只更新监控器自身的解析范围和派生 SQLite。
 

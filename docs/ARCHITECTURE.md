@@ -25,6 +25,7 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 | `src/repository.js` | 读取 session index、只读 state DB 和 rollout 元数据；建立根会话、线程与父子关系 |
 | `src/rollout-parser.js` | 读取完整 JSONL 行、识别任务边界、快照、quota、ordinal 和预览位置 |
 | `src/usage.js` | 规范化六类 token、检查单调性、做边界差分和质量分类 |
+| `src/pricing.js` | 用版本化官方标准 API 价目生成逐任务 USD 等值，并合并智能体/会话覆盖摘要 |
 | `src/database.js` | 管理 schema v5、WAL、幂等 upsert、任务快照和可恢复 ingest cursor |
 | `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation 和事件发布 |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
@@ -59,6 +60,23 @@ delta[field] = end.total_token_usage[field] - baseline.total_token_usage[field]
 | `discontinuity` | 累计值倒退或流出现不连续，不输出伪精确差分 |
 | `unknown` | 活跃任务尚缺可计算的边界 |
 
+## 美元等值估算
+
+任务的 `model` 和 `effort` 来自同一 turn 的 `turn_context`。美元字段不是从账号 `rate_limits` 推导，而是在 API snapshot 阶段以持久化的 `model + deltaUsage` 套用 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md) 的版本化官方标准 API 价目：
+
+```text
+cost = uncached_input × input_rate
+     + cached_input × cached_rate
+     + cache_write × cache_write_rate
+     + output × output_rate
+```
+
+Reasoning tokens 是 output 的明细，不另加一次。GPT-5.6 cache write 按官方说明使用 1.25× input rate；其他已支持模型的 cache write 保留在普通 uncached input 中。未知模型、缺字段或矛盾明细返回 `unavailable`。
+
+Snapshot 先为每个任务重算费用，再沿与 token 完全相同的 `parentThreadId` 拓扑自底向上汇总。每个智能体得到自身任务 `ownCostEstimate` 和包含全部后代的 `subtreeCostEstimate`；会话同时得到主智能体加全部后代的 `totalCostEstimate` 与仅非根智能体的 `subagentCostEstimate`。汇总只相加可估算金额，并累计不可估算任务数量；混合覆盖标为 `partial`，其金额是已知下限而非完整总额。
+
+价目表记录抓取日期、复核日期和官方来源；进程运行时不联网。由于任务 delta 聚合多次响应，无法识别单次请求的 272K 长上下文阈值，也不包含服务层级、区域处理和工具调用费。结果必须始终标为标准 API 短上下文等值估算，而不是 Codex 订阅实际扣费。
+
 ## 持久化边界
 
 SQLite schema v5 包含 `sessions`、`agents`、`tasks`、`quota_snapshots` 和 `ingest_cursors`。任务保存边界、baseline/end/delta、源文件定位和字节偏移；cursor 额外保存行号、unknown/skipped/discontinuity 诊断及线程最新累计 usage，以便重启后安全续读且不丢失 warning 或任务间 baseline。数据库不保存 prompt、response、消息正文或会话标题。
@@ -79,7 +97,7 @@ Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 r
 - CSP 禁止第三方脚本、frame 和跨源连接。
 - URL 参数只能提供受正则约束的 session/thread/turn ID，不能提供任意文件路径。
 
-安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)。
+安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)。
 
 ## 官方证据边界
 

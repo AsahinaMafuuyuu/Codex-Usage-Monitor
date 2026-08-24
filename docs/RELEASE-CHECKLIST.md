@@ -6,6 +6,7 @@
 
 - [ ] 版本范围、验收标准和非目标已写入 plan/todo。
 - [ ] API、schema、安全、隐私或归因口径变化已更新 ADR。
+- [ ] 若包含 USD 估算，官方价目来源、catalog version、review date、未知模型和长上下文限制已经复核。
 - [ ] README、API、运维、验证和 CHANGELOG 与实现一致。
 - [ ] 多智能体文件所有权已收回，所有交接和风险已检查。
 

@@ -16,3 +16,14 @@
 - [x] Git main-branch baseline with runtime data ignored
 - [x] Independent documentation and repository audit
 - [x] Independent-review persistence, cursor resume, preview, health, and CSP fixes
+- [x] Persist and restore task model plus effort regression coverage
+- [x] Versioned official API pricing estimator and coverage states
+- [x] Per-task model, strength, and estimated USD columns
+- [x] Explicit unknown states for absent task metadata
+- [x] README, API, verification, and changelog update
+- [x] Desktop and narrow-screen browser QA
+- [x] Agent own-cost and descendant-inclusive cost rollups
+- [x] Complete-session and subagent-only cost summaries
+- [x] Session/agent cost dashboard presentation
+- [x] Cost-rollup API, architecture, ADR, changelog, and verification documentation
+- [x] Cost-rollup regression, syntax, browser, and read-only-source verification

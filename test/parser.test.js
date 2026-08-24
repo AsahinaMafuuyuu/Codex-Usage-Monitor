@@ -54,6 +54,7 @@ test("paginated copied history is skipped and cumulative snapshots are differenc
   assert.equal(snapshot.tasks[0].deltaUsage.totalTokens, 150);
   assert.equal(snapshot.tasks[0].quality, "complete");
   assert.equal(snapshot.tasks[0].model, "gpt-test");
+  assert.equal(snapshot.tasks[0].effort, "high");
   assert.equal(snapshot.quotas.at(-1).primary.usedPercent, 21);
 
   const preview = await readTaskPreview(snapshot.tasks[0]);
@@ -150,6 +151,8 @@ test("tailing completes an active task without rereading or double counting", as
   await parser.parseFiles([entry]);
   assert.equal(parser.snapshot().tasks[0].quality, "provisional");
   assert.equal(parser.snapshot().tasks[0].deltaUsage.totalTokens, 80);
+  assert.equal(parser.snapshot().tasks[0].model, null);
+  assert.equal(parser.snapshot().tasks[0].effort, null);
 
   await appendFile(
     fixture.path,

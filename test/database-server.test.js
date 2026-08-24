@@ -16,6 +16,8 @@ const CHILD = "bbbbbbbb-bbbb-4bbb-8bbb-bbbbbbbbbbbb";
 const TURN = "cccccccc-cccc-4ccc-8ccc-cccccccccccc";
 const SIBLING = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const SIBLING_TURN = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
+const GRANDCHILD = "ffffffff-ffff-4fff-8fff-ffffffffffff";
+const GRANDCHILD_TURN = "11111111-1111-4111-8111-111111111111";
 
 test("SQLite persists usage metadata without a prompt field", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-db-"));
@@ -32,6 +34,8 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   const stored = reopened.getSession(ROOT);
   assert.equal(stored.tasks.length, 1);
   assert.equal(stored.tasks[0].deltaUsage.totalTokens, 42);
+  assert.equal(stored.tasks[0].model, "gpt-5.6-terra");
+  assert.equal(stored.tasks[0].effort, "xhigh");
   assert.equal(stored.session.title, "");
   const columns = reopened.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(columns.some((name) => /prompt|preview|content|message/iu.test(name)), false);
@@ -162,12 +166,20 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   const sessions = join(codexHome, "sessions", "2026", "08", "24");
   await mkdir(sessions, { recursive: true });
   const rollout = join(sessions, `rollout-test-${ROOT}.jsonl`);
+  const childRollout = join(sessions, `rollout-test-${CHILD}.jsonl`);
+  const grandchildRollout = join(sessions, `rollout-test-${GRANDCHILD}.jsonl`);
   await writeFile(rollout, JSON.stringify({
     timestamp: "2026-08-24T00:00:00.000Z",
     ordinal: 0,
     type: "session_meta",
     payload: { id: ROOT, session_id: ROOT, timestamp: "2026-08-24T00:00:00.000Z", cli_version: "test" },
   }) + "\n");
+  await writeFile(childRollout, makeSubagentRollout(CHILD, TURN, 100));
+  await writeFile(grandchildRollout, makeSubagentRollout(GRANDCHILD, GRANDCHILD_TURN, 50, {
+    parentThreadId: CHILD,
+    depth: 2,
+    model: "codex-auto-review",
+  }));
   const app = await startApplication({
     codexHome,
     databasePath: join(directory, "usage.sqlite"),
@@ -205,6 +217,60 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   const payload = await sessionsResponse.json();
   assert.equal(payload.sessions[0].id, ROOT);
 
+  const snapshotResponse = await fetch(`${base}/api/sessions/${ROOT}`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(snapshotResponse.status, 200);
+  const selected = await snapshotResponse.json();
+  const task = selected.agents.flatMap((agent) => agent.tasks)
+    .find((candidate) => candidate.threadId === CHILD);
+  assert.equal(task.model, "gpt-5.6-terra");
+  assert.equal(task.effort, "xhigh");
+  assert.equal(task.costEstimate.status, "estimated");
+  assert.equal(task.costEstimate.amountUsd, 0.0003);
+  assert.equal(selected.pricing.basis, "openai-standard-api-short-context");
+  assert.deepEqual(selected.summary.totalCostEstimate, {
+    status: "partial",
+    amountUsd: 0.0003,
+    currency: "USD",
+    estimatedTasks: 1,
+    unavailableTasks: 1,
+  });
+  assert.deepEqual(selected.summary.subagentCostEstimate, {
+    status: "partial",
+    amountUsd: 0.0003,
+    currency: "USD",
+    estimatedTasks: 1,
+    unavailableTasks: 1,
+  });
+  const rootAgent = selected.agents.find((agent) => agent.isRoot);
+  const childAgent = selected.agents.find((agent) => agent.threadId === CHILD);
+  assert.deepEqual(rootAgent.ownCostEstimate, {
+    status: "unavailable",
+    amountUsd: null,
+    currency: "USD",
+    estimatedTasks: 0,
+    unavailableTasks: 0,
+  });
+  assert.deepEqual(rootAgent.subtreeCostEstimate, selected.summary.totalCostEstimate);
+  assert.deepEqual(childAgent.ownCostEstimate, {
+    status: "estimated",
+    amountUsd: 0.0003,
+    currency: "USD",
+    estimatedTasks: 1,
+    unavailableTasks: 0,
+  });
+  assert.deepEqual(childAgent.subtreeCostEstimate, selected.summary.subagentCostEstimate);
+  const grandchildAgent = selected.agents.find((agent) => agent.threadId === GRANDCHILD);
+  assert.deepEqual(grandchildAgent.ownCostEstimate, {
+    status: "unavailable",
+    amountUsd: null,
+    currency: "USD",
+    estimatedTasks: 0,
+    unavailableTasks: 1,
+  });
+  assert.deepEqual(grandchildAgent.subtreeCostEstimate, grandchildAgent.ownCostEstimate);
+
   const hostile = await fetch(`${base}/api/sessions`, {
     headers: { Cookie: cookie, Origin: "https://example.test" },
   });
@@ -238,7 +304,10 @@ async function bootMonitor(codexHome, databasePath) {
   return { database, monitor };
 }
 
-function makeSubagentRollout(threadId, turnId, totalTokens) {
+function makeSubagentRollout(threadId, turnId, totalTokens, options = {}) {
+  const parentThreadId = options.parentThreadId ?? ROOT;
+  const depth = options.depth ?? 1;
+  const model = options.model ?? "gpt-5.6-terra";
   const timestamp = "2026-08-24T00:00:00.000Z";
   const usage = {
     input_tokens: totalTokens - 10,
@@ -256,14 +325,15 @@ function makeSubagentRollout(threadId, turnId, totalTokens) {
       payload: {
         id: threadId,
         session_id: ROOT,
-        parent_thread_id: ROOT,
+        parent_thread_id: parentThreadId,
         timestamp,
-        source: { subagent: { thread_spawn: { parent_thread_id: ROOT, depth: 1 } } },
+        source: { subagent: { thread_spawn: { parent_thread_id: parentThreadId, depth } } },
       },
     },
     { timestamp, ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
-    { timestamp, ordinal: 2, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
-    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+    { timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: turnId, model, effort: "xhigh" } },
+    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
+    { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ].map(JSON.stringify).join("\n") + "\n";
 }
 
@@ -323,6 +393,8 @@ function snapshot() {
       startedAt: "2026-08-24T00:00:00.000Z",
       completedAt: "2026-08-24T00:01:00.000Z",
       durationMs: 60_000,
+      model: "gpt-5.6-terra",
+      effort: "xhigh",
       baselineUsage: zeroUsage(),
       endUsage: usage,
       deltaUsage: usage,

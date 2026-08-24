@@ -13,8 +13,8 @@ const elements = Object.fromEntries(
     "health-detail", "mobile-session-toggle", "connection-label", "last-update",
     "empty-state", "loading-state", "dashboard", "session-title", "session-id",
     "session-version", "hero-total", "agent-count", "task-count", "active-task-count",
-    "cached-total", "quota-plan", "quota-freshness", "quota-windows", "quota-observed",
-    "agent-tree", "toast",
+    "cached-total", "session-cost", "session-cost-coverage", "quota-plan", "quota-freshness",
+    "quota-windows", "quota-observed", "agent-tree", "toast",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -146,6 +146,9 @@ function renderDashboard() {
     ? `${snapshot.summary.activeTasks} 个任务运行中`
     : "无活动任务";
   elements["cached-total"].textContent = formatTokens(snapshot.summary.subagentUsage?.cachedInputTokens);
+  elements["session-cost"].textContent = formatUsdSummary(snapshot.summary.totalCostEstimate);
+  elements["session-cost"].title = costSummaryTitle(snapshot.summary.totalCostEstimate, "整个会话");
+  elements["session-cost-coverage"].textContent = costSummaryCoverage(snapshot.summary.totalCostEstimate);
   elements["last-update"].textContent = snapshot.health.lastUpdateAt
     ? `更新 ${formatDate(snapshot.health.lastUpdateAt)}`
     : `导入 ${formatDate(snapshot.session.importedAt)}`;
@@ -216,9 +219,11 @@ function renderAgent(agent) {
         <strong>${escapeHtml(agentLabel(agent))}</strong>
         <span>${escapeHtml(agent.agentPath || agent.threadId)} · ${escapeHtml(agent.role || (agent.isRoot ? "root" : "subagent"))}</span>
       </div>
-      <div class="agent-stat"><span>任务</span><strong>${agent.taskCount}</strong></div>
+      <div class="agent-stat task-count"><span>任务</span><strong>${agent.taskCount}</strong></div>
       <div class="agent-stat tokens"><span>自身 tokens</span><strong>${formatTokens(agent.ownUsage?.totalTokens)}</strong></div>
-      <div class="agent-stat subtree"><span>含后代</span><strong>${formatTokens(agent.subtreeUsage?.totalTokens)}</strong></div>
+      <div class="agent-stat subtree"><span>含后代 tokens</span><strong>${formatTokens(agent.subtreeUsage?.totalTokens)}</strong></div>
+      <div class="agent-stat cost-own" title="${escapeHtml(costSummaryTitle(agent.ownCostEstimate, "该智能体自身"))}"><span>自身 USD</span><strong>${formatUsdSummary(agent.ownCostEstimate)}</strong></div>
+      <div class="agent-stat cost-subtree" title="${escapeHtml(costSummaryTitle(agent.subtreeCostEstimate, "该智能体及后代"))}"><span>含后代 USD</span><strong>${formatUsdSummary(agent.subtreeCostEstimate)}</strong></div>
       <span class="agent-chevron" aria-hidden="true">›</span>
     </summary>
     ${renderTasks(agent)}
@@ -229,7 +234,7 @@ function renderTasks(agent) {
   if (!agent.tasks.length) return '<div class="empty-agent">该智能体还没有持久化任务边界。</div>';
   return `<div class="task-table-wrap"><table class="task-table">
     <thead><tr>
-      <th>任务</th><th>状态</th><th>开始</th><th>耗时</th><th>输入</th><th>缓存</th><th>输出</th><th>推理</th><th>总计</th><th>质量</th><th>指令</th>
+      <th>任务</th><th>状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th>输出</th><th>推理</th><th>总计</th><th title="按当前标准 API 短上下文价格估算，不等于 Codex 订阅实际扣费">估算 USD</th><th>质量</th><th>指令</th>
     </tr></thead>
     <tbody>${agent.tasks.map((task) => `
       <tr class="task-row">
@@ -237,15 +242,18 @@ function renderTasks(agent) {
         <td><span class="status-chip ${escapeHtml(task.status)}">${statusLabel(task.status)}</span></td>
         <td title="${escapeHtml(task.startedAt || "")}">${formatDate(task.startedAt)}</td>
         <td>${formatDuration(task.durationMs, task.startedAt, task.completedAt)}</td>
+        <td class="model-cell"><code title="${escapeHtml(task.model || "模型未知")}">${escapeHtml(task.model || "未知")}</code></td>
+        <td><span class="effort-chip">${escapeHtml(effortLabel(task.effort))}</span></td>
         <td>${formatTokens(task.deltaUsage?.inputTokens)}</td>
         <td>${formatTokens(task.deltaUsage?.cachedInputTokens)}</td>
         <td>${formatTokens(task.deltaUsage?.outputTokens)}</td>
         <td>${formatTokens(task.deltaUsage?.reasoningOutputTokens)}</td>
         <td><strong>${formatTokens(task.deltaUsage?.totalTokens)}</strong></td>
+        <td class="cost-cell" title="${escapeHtml(costEstimateTitle(task.costEstimate))}"><strong>${formatUsdEstimate(task.costEstimate)}</strong><span>${costEstimateLabel(task.costEstimate)}</span></td>
         <td><span class="quality-chip ${escapeHtml(task.quality)}">${qualityLabel(task.quality)}</span></td>
         <td><button class="preview-button" type="button" data-preview-thread="${escapeHtml(task.threadId)}" data-preview-turn="${escapeHtml(task.turnId)}">展开</button></td>
       </tr>
-      <tr class="preview-row" id="preview-${escapeHtml(task.threadId)}-${escapeHtml(task.turnId)}" hidden><td colspan="11"><div class="preview-content">正在读取本地原始日志…</div></td></tr>
+      <tr class="preview-row" id="preview-${escapeHtml(task.threadId)}-${escapeHtml(task.turnId)}" hidden><td colspan="14"><div class="preview-content">正在读取本地原始日志…</div></td></tr>
     `).join("")}</tbody>
   </table></div>`;
 }
@@ -356,6 +364,71 @@ function formatDuration(durationMs, startedAt, completedAt) {
   return `${minutes}m ${seconds % 60}s`;
 }
 
+function formatUsdEstimate(estimate) {
+  const value = estimate?.status === "estimated" ? estimate.amountUsd : null;
+  return formatUsdAmount(value);
+}
+
+function formatUsdSummary(summary) {
+  const value = summary?.amountUsd;
+  if (value == null || !Number.isFinite(value)) return "—";
+  return `${summary.status === "partial" ? "≥" : ""}${formatUsdAmount(value)}`;
+}
+
+function formatUsdAmount(value) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  if (value > 0 && value < 0.000001) return "<$0.000001";
+  const maximumFractionDigits = value >= 100 ? 2 : value >= 1 ? 3 : value >= 0.01 ? 4 : 6;
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits,
+  }).format(value);
+}
+
+function costSummaryCoverage(summary) {
+  const estimated = summary?.estimatedTasks ?? 0;
+  const unavailable = summary?.unavailableTasks ?? 0;
+  if (estimated + unavailable === 0) return "暂无任务 · 标准 API 等值";
+  if (summary?.status === "partial") return `${estimated} 已估算 · ${unavailable} 不可估算`;
+  if (summary?.status === "estimated") return `${estimated} 个任务 · 标准 API 等值`;
+  return `${unavailable} 个任务不可估算`;
+}
+
+function costSummaryTitle(summary, scope) {
+  const estimated = summary?.estimatedTasks ?? 0;
+  const unavailable = summary?.unavailableTasks ?? 0;
+  if (estimated + unavailable === 0) return `${scope}暂无任务，因而没有费用估算。`;
+  if (summary?.status === "partial") {
+    return `${scope}有 ${estimated} 个任务已估算、${unavailable} 个任务不可估算；显示金额只是已知下限，不是 Codex 订阅实际扣费。`;
+  }
+  if (summary?.status === "estimated") {
+    return `${scope}共 ${estimated} 个任务，按当前标准 API 短上下文价格估算；不等于 Codex 订阅实际扣费。`;
+  }
+  return `${scope}的 ${unavailable} 个任务缺少可审计的模型、价格或 token 明细，无法估算。`;
+}
+
+function costEstimateLabel(estimate) {
+  if (estimate?.status !== "estimated") return "不可估算";
+  return estimate.catalogStale ? "价目待复核" : "API 等值";
+}
+
+function costEstimateTitle(estimate) {
+  if (!estimate || estimate.status !== "estimated") {
+    return ({
+      missing_model: "rollout 未记录任务模型，无法匹配官方价格。",
+      unsupported_model: "该模型没有已验证的官方价格映射。",
+      missing_usage: "任务缺少可计算的 token 差分。",
+      incomplete_usage_breakdown: "任务缺少输入、缓存或输出 token 明细。",
+      inconsistent_usage_breakdown: "任务 token 明细互相矛盾，未生成伪精确费用。",
+    })[estimate?.reason] || "缺少可审计的模型或 token 明细。";
+  }
+  const rates = estimate.ratesPerMillion;
+  const stale = estimate.catalogStale ? " 当前价目已到复核日期。" : "";
+  return `${estimate.pricedModel} 当前标准 API 短上下文等值：输入 $${rates.input}/1M、缓存输入 $${rates.cachedInput}/1M、缓存写入 $${rates.cacheWriteInput}/1M、输出 $${rates.output}/1M。不等于 Codex 订阅实际扣费；未含长上下文、服务层级、区域和工具费用。${stale}`;
+}
+
 function formatWindow(minutes) {
   if (minutes == null) return "未知窗口";
   if (minutes % 10_080 === 0) return `${minutes / 10_080} 周`;
@@ -377,6 +450,11 @@ function qualityLabel(quality) {
     complete: "边界完整", provisional: "实时", estimated: "估算",
     partial: "部分", discontinuity: "计数中断", unknown: "未知",
   })[quality] || quality;
+}
+
+function effortLabel(effort) {
+  return ({ none: "NONE", low: "LOW", medium: "MEDIUM", high: "HIGH", xhigh: "XHIGH", max: "MAX", ultra: "ULTRA" })[effort]
+    || (effort ? String(effort).toLocaleUpperCase() : "未知");
 }
 
 function shortId(value) {

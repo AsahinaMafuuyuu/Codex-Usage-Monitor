@@ -1,6 +1,6 @@
 # Codex Usage Monitor
 
-一个只在本机运行、只读观察 `.codex` 数据的 Codex 子智能体用量面板。它把 rollout 中的累计 token 快照按 `thread_id + turn_id` 做边界差分，记录同一个子智能体执行的每次任务，并单独显示账号级额度快照。
+一个只在本机运行、只读观察 `.codex` 数据的 Codex 子智能体用量面板。它把 rollout 中的累计 token 快照按 `thread_id + turn_id` 做边界差分，记录同一个子智能体执行的每次任务，并显示模型、推理强度、标准 API 美元等值估算和独立的账号级额度快照。
 
 当前版本：`0.1.0`（MVP）。它提供可审计的客户端归因结果，不把本地估算伪装成账单级精度。
 
@@ -39,7 +39,8 @@ npm run start:no-open
 ## 页面能力
 
 - 搜索并选择根会话，只完整解析当前选择及其递归子智能体。
-- 展示子智能体树、自身合计、含后代合计和逐任务 token 字段。
+- 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
+- 逐任务展示 rollout 记录的模型、effort 和当前标准 API 短上下文 USD 等值估算；会话概览汇总主智能体及全部后代。未知模型或明细不足时明确显示不可估算。
 - 区分 `complete`、`provisional`、`estimated`、`partial`、`discontinuity` 和 `unknown` 数据质量。
 - 通过文件观察与 1 秒轮询实时增量更新，并用 SSE 刷新页面。
 - 按需读取任务首条父代理指令预览；原日志消失后仍保留用量记录，但预览会明确不可用。
@@ -51,6 +52,7 @@ npm run start:no-open
 - 用量来源是 `.codex/sessions/**/rollout-*.jsonl` 和 `.codex/archived_sessions`。
 - 任务 token 来自 `total_token_usage` 的任务边界差分；绝不累加可能重复或重置的 `last_token_usage`。
 - 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度。
+- 美元值使用版本化官方标准 API 价目计算，不是 Codex 订阅实际扣费；不包含无法从任务汇总证明的长上下文、服务层级、区域或工具费用。部分任务不可估算时，任务数量仍被保留，金额以 `≥` 标为已知下限。
 - `complete` 仅表示可见边界完整且累计值单调，不等同服务端账单的逐请求 usage。
 - 时间以 UTC ISO-8601 存储，页面按浏览器本地时区显示。
 
