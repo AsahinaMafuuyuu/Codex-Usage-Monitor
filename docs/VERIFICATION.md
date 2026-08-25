@@ -126,6 +126,21 @@ npm test
 - Chrome 捕获的 console warning / error 与 Runtime exception 均为 0。
 - 只读复核：对本轮 8 Agent 会话涉及的 9 个 rollout 在最终 Chrome 验收前后逐一计算 SHA-256，全部哈希完全一致；监控器未修改真实 `.codex` 历史。
 
+### Calendar usage ledger and daily reconciliation
+
+日期：2026-08-25。按主机本地时区 Asia/Shanghai 回放本机所有 root session 的 rollout，并按月、日、session 建立只读日期索引。
+
+- 本地审计范围：261 个 root session、405 个 rollout 文件。2026-08-24 有 4 个 root session、35 个任务，未归属任务为 0。
+- 昨日已知可审计总量：170,393,639 tokens；其中 input 169,604,230、cached input 165,259,520、output 789,409、reasoning output 267,285、cache write input 0。四个 root session 总量依次为 72,757,423、71,419,820、14,063,983、12,152,413。
+- 质量覆盖：34 个 complete，1 个 discontinuity；没有 partial、estimated、provisional 或 unknown 任务。累计值倒退的任务未被伪造成精确差分，因此该数是本机 rollout 可证明的已知总量，不是账单级日总额。
+- 已认证 GET /api/timeline 在首次打开时间视图时建立索引，返回倒序月、日和会话，并为每一层保留六类 token 与质量计数；工程视图、session snapshot 与 SSE 契约不变。
+- 真实浏览器桌面验证：1280px 宽度下切换到“时间”后，2026年8月 -> 8月24日周一 可展开，日期节点显示约 1.7亿，有 4 个会话；页面无文档级横向溢出。现有工程视图和 session dashboard 均正常加载。
+- 真实浏览器窄屏验证：390x844，document 宽度 375px，未出现页面级横向溢出；时间视图、月/日展开及会话条目仍可见。浏览器 console 为 0 error、0 warning。
+- 只读复核：对 C:/Users/SishuoXie/.codex/sessions/2026/08/24 的 16 个 rollout 在页面验收前后计算 SHA-256，全部一致；监控器未改写真实 .codex 历史。
+- 自动化验证：npm test 为 27 tests、26 passed、0 failed、1 skipped；唯一 skipped 是未配置 CODEX_MONITOR_REAL_FIXTURE 的既有真实五任务 fixture。npm run check 与 git diff --check 通过。
+
+个人资料显示的约 180,000,000 与本地已知量相差 9,606,361（约 5.34%）。本实现不把个人资料数字当作校准值补齐差额：差异可能来自那条不可安全差分的任务、服务端日界或时区，以及本地 rollout 无法证明的服务端计量口径。日期索引只报告可由 total_token_usage 边界差分证明的本地观测，不代表 Codex 订阅扣费。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。

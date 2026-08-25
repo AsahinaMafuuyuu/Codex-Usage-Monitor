@@ -383,6 +383,93 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 - [ ] Rebalance overview metrics into activity, token-flow, and cost information groups.
 - [ ] Define an agent expansion policy that avoids fully expanding large descendant trees by default.
 
+## Phase 10: Calendar usage ledger and daily reconciliation
+
+### Goals
+
+- [x] Provide a complete local-date usage ledger across every discovered root session, including sessions that have not been opened in the dashboard.
+- [x] Add a sidebar time view that expands from month to day to the contributing sessions while preserving the existing project view.
+- [x] Make the daily total and its quality coverage explicit so it can be compared with the Codex profile without claiming identical billing semantics.
+
+### Task 1: Build the all-session calendar aggregate
+
+**Description:** Reuse `SessionRolloutParser` and the existing cumulative boundary-delta contract to parse all discovered sessions into an in-memory month/day/session aggregate. The aggregate uses the host local timezone for date keys and retains quality counts and partial totals.
+
+**Acceptance criteria:**
+
+- [x] Every discovered rollout is eligible for the calendar aggregate regardless of whether its session was selected first.
+- [x] Usage is derived only from task boundary `deltaUsage` and `total_token_usage`, with `subagent_history_start_ordinal` and quality states preserved.
+- [x] A deterministic fixture proves that an unselected session appears under the correct local day and its total is not double-counted.
+
+**Verification:** `npm test -- --test-name-pattern "calendar aggregate"`, `npm run check`.
+
+**Dependencies:** None.
+
+**Files likely touched:** `src/monitor.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Expose the authenticated timeline API
+
+**Description:** Add a read-only authenticated endpoint returning ordered months, expandable days, session metadata, token totals, and quality coverage. Refresh the aggregate when rollout files change without changing the existing session snapshot or SSE contracts.
+
+**Acceptance criteria:**
+
+- [x] `GET /api/timeline` returns months descending, days descending within each month, and sessions descending by usage/date.
+- [x] The payload contains input, cached input, output, reasoning, and total tokens plus complete/partial/estimated/discontinuity counts.
+- [x] HTTP security tests cover authentication, method, and response shape.
+
+**Verification:** `npm test -- --test-name-pattern "timeline API"`, `npm run check`.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/server.js`, `src/monitor.js`, `test/database-server.test.js`, `docs/API.md`.
+
+**Estimated scope:** Medium.
+
+### Task 3: Add the month/day/session sidebar view
+
+**Description:** Add a mode control to switch between project and time navigation. The time mode renders month details containing day details, each day showing its total and quality state, with session buttons selecting the existing dashboard session.
+
+**Acceptance criteria:**
+
+- [x] Project grouping remains unchanged and search filters both modes.
+- [x] Time mode is keyboard-operable, defaults to the current month/day when present, and works on desktop and narrow-screen layouts without page-level horizontal overflow.
+- [x] Labels distinguish audited token usage from account quota and do not imply Codex billing equivalence.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`, desktop browser check, narrow-screen browser check.
+
+**Dependencies:** Task 2.
+
+**Files likely touched:** `public/index.html`, `public/app.js`, `public/styles.css`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Record the reconciliation contract and local evidence
+
+**Description:** Document the calendar grouping, local timezone, coverage states, and the observed 2026-08-24 total, including why it may differ from the profile total. Record the design decision and actual verification commands.
+
+**Acceptance criteria:**
+
+- [x] ADR, API docs, README, changelog, and verification evidence describe the new timeline behavior and its limitations.
+- [x] The observed local rollout audit reports `170,393,639` total tokens for 2026-08-24 with one discontinuous task, and source files remain unchanged.
+- [x] No documentation describes the daily total as Codex subscription billing or converts quota to tokens.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`.
+
+**Dependencies:** Tasks 1–3.
+
+**Files likely touched:** `docs/decisions/0012-calendar-usage-ledger.md`, `docs/decisions/README.md`, `README.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `CHANGELOG.md`, `docs/VERIFICATION.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Calendar usage ledger
+
+- [x] Full tests and syntax checks pass.
+- [x] Timeline API includes all sessions and preserves quality coverage.
+- [x] Desktop and narrow-screen browser checks confirm month/day/session navigation and existing project navigation.
+- [x] Real-history total is reported with its exact date, timezone, quality counts, and source-hash check.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |

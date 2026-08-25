@@ -47,3 +47,7 @@
 - [x] Improve task-ledger scrolling/sticky context as a separate visual commit
 - [ ] Rebalance overview metric hierarchy as a separate visual commit
 - [ ] Define and implement a scalable agent expansion policy as a separate visual commit
+- [x] Build all-session local calendar usage aggregate with quality coverage
+- [x] Expose authenticated month/day/session timeline API
+- [x] Add project/time navigation mode with month and day expansion
+- [x] Document calendar reconciliation semantics and real-history evidence

@@ -18,6 +18,47 @@ const SIBLING = "dddddddd-dddd-4ddd-8ddd-dddddddddddd";
 const SIBLING_TURN = "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee";
 const GRANDCHILD = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const GRANDCHILD_TURN = "11111111-1111-4111-8111-111111111111";
+const OTHER_ROOT = "22222222-2222-4222-8222-222222222222";
+const OTHER_TURN = "33333333-3333-4333-8333-333333333333";
+
+test("calendar aggregate includes unselected sessions and local-day quality", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-calendar-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `rollout-first-${ROOT}.jsonl`),
+    makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"),
+  );
+  await writeFile(
+    join(sessions, `rollout-second-${OTHER_ROOT}.jsonl`),
+    makeCalendarRootRollout(OTHER_ROOT, OTHER_TURN, 240, "2026-08-25T12:00:00.000Z"),
+  );
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  const repository = new CodexRepository(codexHome, database);
+  const monitor = new UsageMonitor({ repository, database });
+  t.after(() => {
+    monitor.close();
+    database.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+
+  await monitor.initialize();
+  const timeline = await monitor.timeline();
+  const sessionsById = new Map(
+    timeline.months.flatMap((month) => month.days.flatMap((day) => day.sessions))
+      .map((session) => [session.id, session]),
+  );
+  assert.equal(sessionsById.size, 2);
+  assert.equal(sessionsById.get(ROOT).usage.totalTokens, 100);
+  assert.equal(sessionsById.get(OTHER_ROOT).usage.totalTokens, 240);
+  assert.deepEqual(
+    [...sessionsById.values()].map((session) => session.date).sort(),
+    [localDayKey("2026-08-24T12:00:00.000Z"), localDayKey("2026-08-25T12:00:00.000Z")].sort(),
+  );
+  assert.equal(timeline.unattributed.taskCount, 0);
+  assert.equal(timeline.qualityCounts.complete, 2);
+});
 
 test("SQLite persists usage metadata without a prompt field", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-db-"));
@@ -271,6 +312,17 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assert.equal(payload.sessions[0].id, ROOT);
   assert.equal(payload.sessions[0].projectPath, "C:\\workspace\\project-alpha");
 
+  const timelineResponse = await fetch(`${base}/api/timeline`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(timelineResponse.status, 200);
+  const timeline = await timelineResponse.json();
+  assert.equal(Array.isArray(timeline.months), true);
+  assert.equal(timeline.months[0].days[0].sessions[0].id, ROOT);
+  assert.equal(timeline.months[0].days[0].sessions[0].usage.totalTokens, 150);
+  assert.equal(timeline.months[0].days[0].qualityCounts.complete, 2);
+  assert.equal(timeline.unattributed.taskCount, 0);
+
   const snapshotResponse = await fetch(`${base}/api/sessions/${ROOT}`, {
     headers: { Cookie: cookie },
   });
@@ -391,6 +443,47 @@ function makeSubagentRollout(threadId, turnId, totalTokens, options = {}) {
     { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
     { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ].map(JSON.stringify).join("\n") + "\n";
+}
+
+function makeCalendarRootRollout(rootId, turnId, totalTokens, timestamp) {
+  const usage = {
+    input_tokens: totalTokens - 10,
+    cached_input_tokens: 0,
+    cache_write_input_tokens: 0,
+    output_tokens: 10,
+    reasoning_output_tokens: 0,
+    total_tokens: totalTokens,
+  };
+  return [
+    {
+      timestamp,
+      ordinal: 0,
+      type: "session_meta",
+      payload: {
+        id: rootId,
+        session_id: rootId,
+        timestamp,
+        cwd: "C:\\workspace\\calendar",
+      },
+    },
+    { timestamp, ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: turnId, model: "gpt-5.6-terra", effort: "xhigh" } },
+    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
+    { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+  ].map(JSON.stringify).join("\n") + "\n";
+}
+
+function localDayKey(value) {
+  const date = new Date(value);
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+  return `${values.year}-${values.month}-${values.day}`;
 }
 
 function rawRequest(port, path, headers) {

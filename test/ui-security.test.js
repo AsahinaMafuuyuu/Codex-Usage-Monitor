@@ -23,6 +23,11 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /agent\.ownCostEstimate/u);
   assert.match(script, /agent\.subtreeCostEstimate/u);
   assert.match(script, /session\.projectPath/u);
+  assert.match(script, /data-session-view/u);
+  assert.match(script, /renderSessionsByTime/u);
+  assert.match(script, /formatMonthLabel/u);
+  assert.match(script, /formatDayLabel/u);
+  assert.match(script, /timeline\.months/u);
   assert.match(script, /replace\(\/\^\\\\\\\\\\\?\\\\\/u, ""\)/u);
   assert.match(script, /const sessionUsage = snapshot\.summary\.totalUsage/u);
   assert.match(script, /formatCacheHitRate\(sessionUsage\)/u);
@@ -36,6 +41,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(html, /id="cache-hit-rate"/u);
   assert.match(html, /content="light"/u);
   assert.match(html, /id="session-project"/u);
+  assert.match(html, /data-session-view="project"/u);
+  assert.match(html, /data-session-view="time"/u);
   assert.match(script, /class="agent-branch/u);
   assert.match(script, /class="agent-children/u);
   assert.match(script, /role-badge/u);

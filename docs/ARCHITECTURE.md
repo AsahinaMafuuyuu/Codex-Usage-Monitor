@@ -27,7 +27,7 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 | `src/usage.js` | 规范化六类 token、检查单调性、做边界差分和质量分类 |
 | `src/pricing.js` | 用版本化官方标准 API 价目生成逐任务 USD 等值，并合并智能体/会话覆盖摘要 |
 | `src/database.js` | 管理 schema v6、WAL、幂等 upsert、工程定位、任务快照和可恢复 ingest cursor |
-| `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation 和事件发布 |
+| `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation、全 session 日期聚合和事件发布 |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
 | `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、对齐任务明细、额度与健康状态 |
 
@@ -36,6 +36,12 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 启动时先读取 `session_index.jsonl` 和以 `PRAGMA query_only=ON` 打开的最新 `state_*.sqlite`，再扫描 `sessions` 与 `archived_sessions` 下 rollout 的首条 `session_meta`。父子关系优先采用 `thread_spawn_edges`；缺失时由 rollout 的 `parent_thread_id` 和 `source.subagent` 回退推断。根线程的 `cwd` 作为 `projectPath`，子智能体目录不得覆盖它。
 
 会话列表只保存索引级派生元数据，并按完整 `projectPath` 分组；浏览器将 Windows `\\?\` 扩展路径前缀视为同一目录的语法别名，缺少根目录时保持“未归类”。用户选择根会话后，才完整解析该会话及递归子智能体文件；切换选择会替换实时监听范围，数据库中已经导入的任务不会被删除。
+
+## 日期用量账页
+
+`GET /api/timeline` 是独立于当前选择会话的全局只读聚合。它为每个已发现根 session 创建临时 `SessionRolloutParser`，沿用任务边界 `deltaUsage`、累计单调性和 `subagent_history_start_ordinal` 规则，再按任务 `startedAt` 转换到监控器本地日期，聚合为 `month -> day -> session`。月份、日期和 session 节点都保留 token 用量、任务数和质量计数；有问题的边界只减少可计入的精确用量，不被补成猜测值。
+
+该聚合只在内存缓存，不新增 SQLite 表，也不改变已选 session 的 cursor 恢复流程。rollout 被追加、发现或重新索引时缓存失效，下次请求重新回放全部可见历史。时间导航因此能覆盖从未在主界面打开过的 session，但首次建立日历索引的读取成本高于单 session 选择。日期分组使用本地时区，不能与 `.codex/sessions/YYYY/MM/DD` 文件夹或服务端订阅账单直接等同。
 
 ## 任务归因
 
@@ -93,7 +99,7 @@ Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 r
 
 ## 界面信息架构
 
-页面沿“工程 → 会话 → 智能体谱系 → 任务账页”逐层展开。工程组使用原生 `details/summary`，默认只打开当前组；会话汇总采用 12 栏分割线账页，避免为每个指标制造独立卡片容器。
+页面沿“工程/时间 → 会话 → 智能体谱系 → 任务账页”逐层展开。工程组使用原生 `details/summary`，默认只打开当前组；时间组按月份、日期和当天 session 展开；会话汇总采用 12 栏分割线账页，避免为每个指标制造独立卡片容器。
 
 智能体树由递归的 `agent-branch` 与 `agent-children` 构成，children 容器绘制连续竖轨并由每个 child 绘制父子横线。角色 badge 是职责的主扫描入口，昵称和 agent path 是身份补充；颜色不参与模型、用量或质量推断。
 
@@ -107,7 +113,7 @@ Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 r
 - CSP 禁止第三方脚本、frame 和跨源连接。
 - URL 参数只能提供受正则约束的 session/thread/turn ID，不能提供任意文件路径。
 
-安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)，工程分类与缓存比率见 [ADR-0008](decisions/0008-project-directory-session-grouping.md)，界面结构见 [ADR-0009](decisions/0009-editorial-lineage-interface.md)。
+安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)，工程分类与缓存比率见 [ADR-0008](decisions/0008-project-directory-session-grouping.md)，界面结构见 [ADR-0009](decisions/0009-editorial-lineage-interface.md)，日期账页口径见 [ADR-0012](decisions/0012-calendar-usage-ledger.md)。
 
 ## 官方证据边界
 

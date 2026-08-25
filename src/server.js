@@ -103,6 +103,9 @@ async function handleApi({ request, response, url, monitor }) {
   if (url.pathname === "/api/sessions") {
     return sendJson(response, 200, { sessions: monitor.listSessions(url.searchParams.get("q") ?? "") });
   }
+  if (url.pathname === "/api/timeline") {
+    return sendJson(response, 200, await monitor.timeline());
+  }
   if (url.pathname === "/api/quota") return sendJson(response, 200, { quota: monitor.quota() });
   if (url.pathname === "/api/health") return sendJson(response, 200, { health: monitor.health() });
 

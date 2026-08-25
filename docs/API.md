@@ -33,6 +33,48 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 每个会话摘要包含 nullable `projectPath`，值来自根线程 `session_meta.cwd`。`q` 可选，按当前只读索引中的标题、session ID、source 和工程目录做本地包含搜索。数据库不持久化标题，但 schema v6 将 `projectPath` 作为定位元数据保留。
 
+### `GET /api/timeline`
+
+返回全部已发现根 session 的本地日期用量账页。该接口会完整回放尚未在页面中选择过的 rollout；结果只保存在监控器内存缓存中，不写入 `.codex`，也不改变当前 session 的 SQLite cursor。
+
+```json
+{
+  "generatedAt": "2026-08-25T03:22:56.706Z",
+  "timezone": "Asia/Shanghai",
+  "usage": { "inputTokens": 0, "cachedInputTokens": 0, "outputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 0 },
+  "qualityCounts": { "complete": 0, "provisional": 0, "estimated": 0, "partial": 0, "discontinuity": 0, "unknown": 0 },
+  "months": [{
+    "key": "2026-08",
+    "usage": {},
+    "taskCount": 0,
+    "activeTaskCount": 0,
+    "qualityCounts": {},
+    "days": [{
+      "key": "2026-08-24",
+      "usage": {},
+      "taskCount": 0,
+      "activeTaskCount": 0,
+      "qualityCounts": {},
+      "sessions": [{
+        "id": "session-id",
+        "title": "未命名会话",
+        "projectPath": "C:\\workspace\\example",
+        "date": "2026-08-24",
+        "usage": {},
+        "taskCount": 0,
+        "activeTaskCount": 0,
+        "qualityCounts": {}
+      }]
+    }]
+  }],
+  "unattributed": { "taskCount": 0, "usage": {}, "qualityCounts": {} }
+}
+```
+
+`months` 和 `days` 均按 key 降序排列；页面用原生 `details` 展开月份、日期和当天 session。日期 key 按运行监控器的本地时区从任务 `startedAt` 生成，而不是按 rollout 文件夹日期或 UTC 字符串截取。`usage` 只累加可计算的任务边界 `deltaUsage`；`qualityCounts` 保留 `complete`、`provisional`、`estimated`、`partial`、`discontinuity` 和 `unknown` 数量，因此含中断或缺边界的日期不能被误读为完整精确值。没有可归入本地日期的任务进入 `unattributed`。
+
+该接口的 total token 是本地 rollout 的审计汇总，不是 Codex 个人资料的订阅账单字段。个人资料可能采用不同的服务端时间边界、未公开的请求级计费口径或包含本地无法证明的记录；二者只应比较量级和质量覆盖，不应要求逐字相等。
+
 ### `GET /api/sessions/:id`
 
 选择并解析根会话，返回一个 snapshot：

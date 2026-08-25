@@ -15,6 +15,15 @@ import {
 } from "./rollout-parser.js";
 import { addUsage, zeroUsage } from "./usage.js";
 
+const QUALITY_KEYS = [
+  "complete",
+  "provisional",
+  "estimated",
+  "partial",
+  "discontinuity",
+  "unknown",
+];
+
 export class UsageMonitor extends EventEmitter {
   constructor({ repository, database }) {
     super();
@@ -31,6 +40,9 @@ export class UsageMonitor extends EventEmitter {
     this.reconcileTimer = null;
     this.lastUpdateAt = null;
     this.lastErrors = [];
+    this.timelineCache = null;
+    this.timelinePromise = null;
+    this.timelineVersion = 0;
     this.closed = false;
   }
 
@@ -60,6 +72,93 @@ export class UsageMonitor extends EventEmitter {
         .toLocaleLowerCase()
         .includes(normalized);
     });
+  }
+
+  async timeline() {
+    if (this.timelineCache) return this.timelineCache;
+    if (this.timelinePromise) return this.timelinePromise;
+    this.timelinePromise = this.buildFreshTimeline();
+    try {
+      return await this.timelinePromise;
+    } finally {
+      this.timelinePromise = null;
+    }
+  }
+
+  async buildFreshTimeline() {
+    const version = this.timelineVersion;
+    const timeline = await this.buildTimeline();
+    if (version !== this.timelineVersion) return this.buildFreshTimeline();
+    this.timelineCache = timeline;
+    return timeline;
+  }
+
+  async buildTimeline() {
+    const months = new Map();
+    const overallUsage = zeroUsage();
+    const qualityCounts = emptyQualityCounts();
+    const unattributed = {
+      taskCount: 0,
+      usage: zeroUsage(),
+      qualityCounts: emptyQualityCounts(),
+    };
+
+    for (const session of this.repository.sessions.values()) {
+      const parser = new SessionRolloutParser(session.id, session);
+      const parsed = await parser.parseFiles(this.repository.getFilesForRoot(session.id));
+      const sessionsByDay = new Map();
+      for (const task of parsed.tasks) {
+        const quality = task.quality ?? "unknown";
+        incrementQuality(qualityCounts, quality);
+        if (!task.startedAt) {
+          unattributed.taskCount += 1;
+          incrementQuality(unattributed.qualityCounts, quality);
+          if (task.deltaUsage) unattributed.usage = addUsage(unattributed.usage, task.deltaUsage);
+          continue;
+        }
+
+        const date = localDayKey(task.startedAt);
+        const monthKey = date.slice(0, 7);
+        const month = months.get(monthKey) ?? createMonth(monthKey);
+        const day = month.days.get(date) ?? createDay(date);
+        const sessionSummary = sessionsByDay.get(date) ?? createTimelineSession(session, date);
+        sessionSummary.taskCount += 1;
+        incrementQuality(sessionSummary.qualityCounts, quality);
+        if (task.status === "in_progress") sessionSummary.activeTaskCount += 1;
+        if (task.deltaUsage) {
+          sessionSummary.usage = addUsage(sessionSummary.usage, task.deltaUsage);
+          month.usage = addUsage(month.usage, task.deltaUsage);
+          day.usage = addUsage(day.usage, task.deltaUsage);
+          overallUsage.inputTokens += task.deltaUsage.inputTokens ?? 0;
+          overallUsage.cachedInputTokens += task.deltaUsage.cachedInputTokens ?? 0;
+          overallUsage.cacheWriteInputTokens += task.deltaUsage.cacheWriteInputTokens ?? 0;
+          overallUsage.outputTokens += task.deltaUsage.outputTokens ?? 0;
+          overallUsage.reasoningOutputTokens += task.deltaUsage.reasoningOutputTokens ?? 0;
+          overallUsage.totalTokens += task.deltaUsage.totalTokens ?? 0;
+        }
+        day.taskCount += 1;
+        incrementQuality(day.qualityCounts, quality);
+        if (task.status === "in_progress") day.activeTaskCount += 1;
+        day.sessions.set(session.id, sessionSummary);
+        month.days.set(date, day);
+        month.taskCount += 1;
+        incrementQuality(month.qualityCounts, quality);
+        if (task.status === "in_progress") month.activeTaskCount += 1;
+        sessionsByDay.set(date, sessionSummary);
+        months.set(monthKey, month);
+      }
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      timezone: localTimezone(),
+      usage: overallUsage,
+      qualityCounts,
+      unattributed,
+      months: [...months.values()]
+        .sort((left, right) => right.key.localeCompare(left.key))
+        .map(materializeMonth),
+    };
   }
 
   async selectSession(sessionId) {
@@ -239,6 +338,7 @@ export class UsageMonitor extends EventEmitter {
       try {
         const entry = this.repository.getEntry(path) ?? await this.repository.refreshFile(path);
         if (!entry) continue;
+        this.invalidateTimeline();
         if (this.parser && entry.rootSessionId === this.selectedSessionId) {
           const result = await this.parser.tailFile(entry);
           selectedChanged ||= result.changed;
@@ -269,6 +369,7 @@ export class UsageMonitor extends EventEmitter {
         const result = await this.parser.tailFile(entry);
         changed ||= result.changed;
         requiresRebuild ||= result.rebuilt;
+        if (result.changed) this.invalidateTimeline();
       } catch (error) {
         if (error?.code !== "ENOENT") this.recordError(`轮询失败：${entry.path}`, error);
       }
@@ -296,6 +397,7 @@ export class UsageMonitor extends EventEmitter {
     if (this.closed) return;
     try {
       const additions = await this.repository.discoverNewFiles();
+      if (additions.length) this.invalidateTimeline();
       for (const entry of additions) {
         if (entry.rootSessionId === this.selectedSessionId) this.schedulePath(entry.path);
       }
@@ -342,6 +444,11 @@ export class UsageMonitor extends EventEmitter {
     if (latest) this.database.saveQuota(latest);
   }
 
+  invalidateTimeline() {
+    this.timelineCache = null;
+    this.timelineVersion += 1;
+  }
+
   recordError(context, error) {
     this.lastErrors.push({
       at: new Date().toISOString(),
@@ -360,4 +467,96 @@ export class UsageMonitor extends EventEmitter {
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];
   }
+}
+
+function createMonth(key) {
+  return {
+    key,
+    usage: zeroUsage(),
+    taskCount: 0,
+    activeTaskCount: 0,
+    qualityCounts: emptyQualityCounts(),
+    days: new Map(),
+  };
+}
+
+function createDay(key) {
+  return {
+    key,
+    usage: zeroUsage(),
+    taskCount: 0,
+    activeTaskCount: 0,
+    qualityCounts: emptyQualityCounts(),
+    sessions: new Map(),
+  };
+}
+
+function createTimelineSession(session, date) {
+  return {
+    id: session.id,
+    title: session.title || "未命名会话",
+    projectPath: session.projectPath ?? null,
+    updatedAt: session.updatedAt ?? null,
+    date,
+    usage: zeroUsage(),
+    taskCount: 0,
+    activeTaskCount: 0,
+    qualityCounts: emptyQualityCounts(),
+  };
+}
+
+function materializeMonth(month) {
+  return {
+    key: month.key,
+    usage: month.usage,
+    taskCount: month.taskCount,
+    activeTaskCount: month.activeTaskCount,
+    qualityCounts: month.qualityCounts,
+    days: [...month.days.values()]
+      .sort((left, right) => right.key.localeCompare(left.key))
+      .map((day) => ({
+        key: day.key,
+        usage: day.usage,
+        taskCount: day.taskCount,
+        activeTaskCount: day.activeTaskCount,
+        qualityCounts: day.qualityCounts,
+        sessions: [...day.sessions.values()]
+          .sort(compareTimelineSessions)
+          .map((session) => ({
+            ...session,
+            qualityCounts: session.qualityCounts,
+          })),
+      })),
+  };
+}
+
+function compareTimelineSessions(left, right) {
+  return (right.usage.totalTokens ?? -1) - (left.usage.totalTokens ?? -1) ||
+    String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")) ||
+    left.id.localeCompare(right.id);
+}
+
+function emptyQualityCounts() {
+  return Object.fromEntries(QUALITY_KEYS.map((key) => [key, 0]));
+}
+
+function incrementQuality(counts, quality) {
+  const key = QUALITY_KEYS.includes(quality) ? quality : "unknown";
+  counts[key] += 1;
+}
+
+function localDayKey(value) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(new Date(value));
+  const values = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function localTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "当地时区";
 }

@@ -1,9 +1,11 @@
 const state = {
   sessions: [],
+  timeline: null,
   selectedId: null,
   snapshot: null,
   eventSource: null,
   search: "",
+  sessionView: localStorage.getItem("codex-monitor-session-view") === "time" ? "time" : "project",
   connected: false,
 };
 
@@ -29,6 +31,21 @@ elements["session-search"].addEventListener("input", (event) => {
   state.search = event.target.value;
   renderSessions();
 });
+document.querySelectorAll("[data-session-view]").forEach((button) => {
+  button.addEventListener("click", async () => {
+    state.sessionView = button.dataset.sessionView === "time" ? "time" : "project";
+    localStorage.setItem("codex-monitor-session-view", state.sessionView);
+    renderSessions();
+    if (state.sessionView === "time" && !state.timeline) {
+      try {
+        await ensureTimeline();
+        renderSessions();
+      } catch (error) {
+        toast(`日期汇总失败：${error.message}`);
+      }
+    }
+  });
+});
 elements["mobile-session-toggle"].addEventListener("click", () => document.body.classList.toggle("sessions-open"));
 elements["session-list"].addEventListener("click", (event) => {
   const button = event.target.closest("[data-session-id]");
@@ -42,6 +59,10 @@ async function initialize() {
     const payload = await fetchJson("/api/sessions");
     state.sessions = payload.sessions;
     renderSessions();
+    if (state.sessionView === "time") {
+      await ensureTimeline();
+      renderSessions();
+    }
     const remembered = localStorage.getItem("codex-monitor-session");
     const initial = state.sessions.find((item) => item.id === remembered)?.id ?? state.sessions[0]?.id;
     if (initial) await selectSession(initial);
@@ -50,6 +71,12 @@ async function initialize() {
     setHealth({ status: "warning", recentErrors: [{ message: error.message }] });
     setEmpty("无法读取本地会话", error.message);
   }
+}
+
+async function ensureTimeline() {
+  if (state.timeline) return state.timeline;
+  state.timeline = await fetchJson("/api/timeline");
+  return state.timeline;
 }
 
 async function selectSession(sessionId) {
@@ -109,8 +136,17 @@ function renderSessions() {
     `${session.title} ${session.id} ${session.projectPath ?? ""}`.toLocaleLowerCase().includes(query),
   );
   elements["session-count"].textContent = `${sessions.length}`;
+  document.querySelectorAll("[data-session-view]").forEach((button) => {
+    const active = button.dataset.sessionView === state.sessionView;
+    button.classList.toggle("active", active);
+    button.setAttribute("aria-pressed", String(active));
+  });
   if (!sessions.length) {
     elements["session-list"].innerHTML = '<p class="empty-agent">没有匹配的会话</p>';
+    return;
+  }
+  if (state.sessionView === "time") {
+    elements["session-list"].innerHTML = renderSessionsByTime(sessions);
     return;
   }
   elements["session-list"].innerHTML = groupSessionsByProject(sessions).map((group) => `
@@ -128,6 +164,100 @@ function renderSessions() {
         `).join("")}</div>
     </details>
   `).join("");
+}
+
+function renderSessionsByTime(sessions) {
+  if (!state.timeline?.months?.length) {
+    return '<p class="empty-agent">正在建立按日期索引…</p>';
+  }
+  const visibleIds = new Set(sessions.map((session) => session.id));
+  const selectedDate = findTimelineDate(state.timeline, state.selectedId);
+  const query = state.search.trim();
+  const months = state.timeline.months.map((month) => ({
+    ...month,
+    days: month.days.map((day) => ({
+      ...day,
+      sessions: day.sessions.filter((session) => visibleIds.has(session.id)),
+    })).filter((day) => day.sessions.length),
+  })).filter((month) => month.days.length);
+  if (!months.length) return '<p class="empty-agent">没有匹配的日期记录</p>';
+  return months.map((month) => {
+    const monthOpen = Boolean(query) || month.key === selectedDate?.slice(0, 7) || month.key === currentMonthKey();
+    return `<details class="time-group" ${monthOpen ? "open" : ""}>
+      <summary class="time-heading">
+        <span><strong>${escapeHtml(formatMonthLabel(month.key))}</strong><code>${escapeHtml(month.key)}</code></span>
+        <span class="time-meta"><b>${formatTokens(month.usage.totalTokens)}</b><i aria-hidden="true">›</i></span>
+      </summary>
+      <div class="time-days">${month.days.map((day) => {
+        const dayOpen = Boolean(query) || day.key === selectedDate || day.key === currentDayKey();
+        return `<details class="time-day" ${dayOpen ? "open" : ""}>
+          <summary class="time-day-heading">
+            <span><strong>${escapeHtml(formatDayLabel(day.key))}</strong><code>${escapeHtml(day.key)}</code></span>
+            <span class="time-meta"><b>${formatTokens(day.usage.totalTokens)}</b><i aria-hidden="true">›</i></span>
+          </summary>
+          <div class="time-sessions">${day.sessions.map(renderTimeSession).join("")}</div>
+        </details>`;
+      }).join("")}</div>
+    </details>`;
+  }).join("");
+}
+
+function renderTimeSession(session) {
+  const quality = summarizeQuality(session.qualityCounts);
+  return `<button class="session-item time-session-item ${session.id === state.selectedId ? "active" : ""}"
+    type="button" data-session-id="${escapeHtml(session.id)}">
+    <strong>${escapeHtml(session.title || "未命名会话")}</strong>
+    <span><time title="${escapeHtml(session.updatedAt || "")}">${formatTokens(session.usage.totalTokens)}</time><b>${escapeHtml(projectName(normalizeProjectPath(session.projectPath)))} · ${escapeHtml(quality)}</b></span>
+  </button>`;
+}
+
+function findTimelineDate(timeline, sessionId) {
+  if (!sessionId) return null;
+  for (const month of timeline?.months ?? []) {
+    for (const day of month.days) {
+      if (day.sessions.some((session) => session.id === sessionId)) return day.key;
+    }
+  }
+  return null;
+}
+
+function currentDayKey() {
+  return localDateKey(new Date());
+}
+
+function currentMonthKey() {
+  return currentDayKey().slice(0, 7);
+}
+
+function localDateKey(value) {
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric", month: "2-digit", day: "2-digit",
+  }).formatToParts(value);
+  const values = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function formatMonthLabel(value) {
+  const date = new Date(`${value}-01T00:00:00`);
+  return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat("zh-CN", {
+    year: "numeric", month: "long",
+  }).format(date);
+}
+
+function formatDayLabel(value) {
+  const date = new Date(`${value}T00:00:00`);
+  return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat("zh-CN", {
+    month: "long", day: "numeric", weekday: "short",
+  }).format(date);
+}
+
+function summarizeQuality(counts) {
+  const attention = (counts?.discontinuity ?? 0) + (counts?.partial ?? 0) + (counts?.unknown ?? 0);
+  if (attention) return `${attention} 条需注意`;
+  if ((counts?.provisional ?? 0) > 0) return "实时";
+  return "边界完整";
 }
 
 function renderDashboard() {

@@ -24,8 +24,12 @@
         </label>
 
         <div class="session-list-heading">
-          <span>工程与会话</span>
+          <span>浏览记录</span>
           <span id="session-count">—</span>
+        </div>
+        <div class="session-view-switch" role="group" aria-label="会话导航方式">
+          <button type="button" class="session-view-button active" data-session-view="project" aria-pressed="true">工程</button>
+          <button type="button" class="session-view-button" data-session-view="time" aria-pressed="false">时间</button>
         </div>
         <nav id="session-list" class="session-list" aria-live="polite"></nav>
 
