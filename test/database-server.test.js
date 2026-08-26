@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { mkdtemp, mkdir, rm, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, rm, unlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -58,6 +58,84 @@ test("calendar aggregate includes unselected sessions and local-day quality", as
   );
   assert.equal(timeline.unattributed.taskCount, 0);
   assert.equal(timeline.qualityCounts.complete, 2);
+  assert.equal(monitor.health().timeline.sessionsSynced, 2);
+  assert.equal(monitor.health().timeline.replayedFiles, 2);
+
+  const hotTimeline = await monitor.timeline();
+  assert.equal(hotTimeline.usage.totalTokens, timeline.usage.totalTokens);
+  assert.equal(monitor.health().timeline.sessionsSynced, 0);
+  assert.equal(monitor.health().timeline.replayedFiles, 0);
+  assert.equal(monitor.health().timeline.tailedFiles, 0);
+});
+
+test("incremental timeline survives restart without replaying unchanged rollout history", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-calendar-restart-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `rollout-first-${ROOT}.jsonl`),
+    makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"),
+  );
+  let second = null;
+  t.after(async () => {
+    second?.monitor.close();
+    second?.database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const first = await bootMonitor(codexHome, databasePath);
+  const firstTimeline = await first.monitor.timeline();
+  assert.equal(firstTimeline.usage.totalTokens, 100);
+  assert.equal(first.monitor.health().timeline.replayedFiles, 1);
+  first.monitor.close();
+  first.database.close();
+
+  second = await bootMonitor(codexHome, databasePath);
+  assert.equal(second.monitor.health().timeline.dirtySessions, 0);
+  const secondTimeline = await second.monitor.timeline();
+  assert.equal(secondTimeline.usage.totalTokens, 100);
+  assert.equal(second.monitor.health().timeline.sessionsSynced, 0);
+  assert.equal(second.monitor.health().timeline.replayedFiles, 0);
+  assert.equal(second.monitor.health().timeline.tailedFiles, 0);
+});
+
+test("incremental timeline tails only the changed session after rollout append", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-calendar-tail-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  await mkdir(sessions, { recursive: true });
+  const firstPath = join(sessions, `rollout-first-${ROOT}.jsonl`);
+  const secondPath = join(sessions, `rollout-second-${OTHER_ROOT}.jsonl`);
+  await writeFile(firstPath, makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"));
+  await writeFile(secondPath, makeCalendarRootRollout(OTHER_ROOT, OTHER_TURN, 240, "2026-08-24T13:00:00.000Z"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  const repository = new CodexRepository(codexHome, database);
+  const monitor = new UsageMonitor({ repository, database });
+  t.after(async () => {
+    monitor.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  await monitor.initialize();
+  const initial = await monitor.timeline();
+  assert.equal(initial.usage.totalTokens, 340);
+
+  await appendFile(
+    firstPath,
+    makeCalendarTaskAppend(SIBLING_TURN, 160, "2026-08-24T14:00:00.000Z"),
+  );
+  monitor.pendingPaths.add(firstPath);
+  await monitor.processPendingPaths();
+  assert.equal(monitor.health().timeline.dirtySessions, 1);
+
+  const updated = await monitor.timeline();
+  assert.equal(updated.usage.totalTokens, 400);
+  assert.equal(monitor.health().timeline.sessionsSynced, 1);
+  assert.equal(monitor.health().timeline.replayedFiles, 0);
+  assert.equal(monitor.health().timeline.tailedFiles, 1);
 });
 
 test("SQLite persists usage metadata without a prompt field", async (t) => {
@@ -81,10 +159,29 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(stored.session.projectPath, "C:\\workspace\\codex-usage-monitor");
   const columns = reopened.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(columns.some((name) => /prompt|preview|content|message/iu.test(name)), false);
-  assert.equal(reopened.getHealthStats().schemaVersion, 6);
+  assert.equal(columns.includes("delta_total_tokens"), true);
+  const normalized = reopened.db.prepare(`
+    SELECT delta_input_tokens, delta_output_tokens, delta_total_tokens FROM tasks
+    WHERE thread_id=? AND turn_id=?
+  `).get(CHILD, TURN);
+  assert.equal(normalized.delta_input_tokens, 40);
+  assert.equal(normalized.delta_output_tokens, 2);
+  assert.equal(normalized.delta_total_tokens, 42);
+  const calendar = reopened.getTimeline(new Map([[ROOT, {
+    title: "Test",
+    projectPath: "C:\\workspace\\codex-usage-monitor",
+    updatedAt: "2026-08-24T00:01:00.000Z",
+  }]]));
+  assert.equal(calendar.months[0].days[0].sessions[0].usage.totalTokens, 42);
+  assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
+  assert.equal(reopened.getHealthStats().calendarRows, 1);
+  assert.equal(reopened.getHealthStats().schemaVersion, 7);
+  assert.equal(reopened.getHealthStats().cacheSize, -2000);
+  assert.equal(reopened.getHealthStats().mmapSize, 0);
+  assert.equal(reopened.getHealthStats().walAutoCheckpoint, 256);
 });
 
-test("schema v1 ingest cursors migrate to resumable schema v6", async (t) => {
+test("schema v1 ingest cursors migrate to resumable schema v7", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -120,7 +217,7 @@ test("schema v1 ingest cursors migrate to resumable schema v6", async (t) => {
   assert.equal(columns.some((column) => column.name === "skipped_records"), true);
   assert.equal(columns.some((column) => column.name === "last_usage"), true);
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 6);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 7);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].byteOffset, 120);
@@ -168,7 +265,7 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 6);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 7);
 });
 
 test("pre-v5 cursors replay once to rebuild diagnostics and cumulative usage state", async (t) => {
@@ -470,6 +567,23 @@ function makeCalendarRootRollout(rootId, turnId, totalTokens, timestamp) {
     { timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: turnId, model: "gpt-5.6-terra", effort: "xhigh" } },
     { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
     { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+  ].map(JSON.stringify).join("\n") + "\n";
+}
+
+function makeCalendarTaskAppend(turnId, cumulativeTotalTokens, timestamp) {
+  const usage = {
+    input_tokens: cumulativeTotalTokens - 20,
+    cached_input_tokens: 0,
+    cache_write_input_tokens: 0,
+    output_tokens: 20,
+    reasoning_output_tokens: 0,
+    total_tokens: cumulativeTotalTokens,
+  };
+  return [
+    { timestamp, ordinal: 5, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
+    { timestamp, ordinal: 6, type: "turn_context", payload: { turn_id: turnId, model: "gpt-5.6-terra", effort: "xhigh" } },
+    { timestamp, ordinal: 7, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
+    { timestamp, ordinal: 8, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ].map(JSON.stringify).join("\n") + "\n";
 }
 

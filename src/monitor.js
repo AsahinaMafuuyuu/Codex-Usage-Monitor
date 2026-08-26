@@ -15,15 +15,6 @@ import {
 } from "./rollout-parser.js";
 import { addUsage, zeroUsage } from "./usage.js";
 
-const QUALITY_KEYS = [
-  "complete",
-  "provisional",
-  "estimated",
-  "partial",
-  "discontinuity",
-  "unknown",
-];
-
 export class UsageMonitor extends EventEmitter {
   constructor({ repository, database }) {
     super();
@@ -40,14 +31,22 @@ export class UsageMonitor extends EventEmitter {
     this.reconcileTimer = null;
     this.lastUpdateAt = null;
     this.lastErrors = [];
-    this.timelineCache = null;
     this.timelinePromise = null;
-    this.timelineVersion = 0;
+    this.timelineDirtySessions = new Set();
+    this.timelineStats = {
+      dirtySessions: 0,
+      sessionsSynced: 0,
+      replayedFiles: 0,
+      tailedFiles: 0,
+      lastSyncMs: 0,
+      lastSyncAt: null,
+    };
     this.closed = false;
   }
 
   async initialize() {
     await this.repository.initialize();
+    this.refreshTimelineDirtySessions();
     await this.refreshGlobalQuota();
     this.startWatchers();
     this.pollTimer = setInterval(() => void this.pollSelectedFiles(), 1000);
@@ -75,9 +74,8 @@ export class UsageMonitor extends EventEmitter {
   }
 
   async timeline() {
-    if (this.timelineCache) return this.timelineCache;
     if (this.timelinePromise) return this.timelinePromise;
-    this.timelinePromise = this.buildFreshTimeline();
+    this.timelinePromise = this.buildSqlTimeline();
     try {
       return await this.timelinePromise;
     } finally {
@@ -85,80 +83,113 @@ export class UsageMonitor extends EventEmitter {
     }
   }
 
-  async buildFreshTimeline() {
-    const version = this.timelineVersion;
-    const timeline = await this.buildTimeline();
-    if (version !== this.timelineVersion) return this.buildFreshTimeline();
-    this.timelineCache = timeline;
-    return timeline;
-  }
-
-  async buildTimeline() {
-    const months = new Map();
-    const overallUsage = zeroUsage();
-    const qualityCounts = emptyQualityCounts();
-    const unattributed = {
-      taskCount: 0,
-      usage: zeroUsage(),
-      qualityCounts: emptyQualityCounts(),
-    };
-
-    for (const session of this.repository.sessions.values()) {
-      const parser = new SessionRolloutParser(session.id, session);
-      const parsed = await parser.parseFiles(this.repository.getFilesForRoot(session.id));
-      const sessionsByDay = new Map();
-      for (const task of parsed.tasks) {
-        const quality = task.quality ?? "unknown";
-        incrementQuality(qualityCounts, quality);
-        if (!task.startedAt) {
-          unattributed.taskCount += 1;
-          incrementQuality(unattributed.qualityCounts, quality);
-          if (task.deltaUsage) unattributed.usage = addUsage(unattributed.usage, task.deltaUsage);
-          continue;
-        }
-
-        const date = localDayKey(task.startedAt);
-        const monthKey = date.slice(0, 7);
-        const month = months.get(monthKey) ?? createMonth(monthKey);
-        const day = month.days.get(date) ?? createDay(date);
-        const sessionSummary = sessionsByDay.get(date) ?? createTimelineSession(session, date);
-        sessionSummary.taskCount += 1;
-        incrementQuality(sessionSummary.qualityCounts, quality);
-        if (task.status === "in_progress") sessionSummary.activeTaskCount += 1;
-        if (task.deltaUsage) {
-          sessionSummary.usage = addUsage(sessionSummary.usage, task.deltaUsage);
-          month.usage = addUsage(month.usage, task.deltaUsage);
-          day.usage = addUsage(day.usage, task.deltaUsage);
-          overallUsage.inputTokens += task.deltaUsage.inputTokens ?? 0;
-          overallUsage.cachedInputTokens += task.deltaUsage.cachedInputTokens ?? 0;
-          overallUsage.cacheWriteInputTokens += task.deltaUsage.cacheWriteInputTokens ?? 0;
-          overallUsage.outputTokens += task.deltaUsage.outputTokens ?? 0;
-          overallUsage.reasoningOutputTokens += task.deltaUsage.reasoningOutputTokens ?? 0;
-          overallUsage.totalTokens += task.deltaUsage.totalTokens ?? 0;
-        }
-        day.taskCount += 1;
-        incrementQuality(day.qualityCounts, quality);
-        if (task.status === "in_progress") day.activeTaskCount += 1;
-        day.sessions.set(session.id, sessionSummary);
-        month.days.set(date, day);
-        month.taskCount += 1;
-        incrementQuality(month.qualityCounts, quality);
-        if (task.status === "in_progress") month.activeTaskCount += 1;
-        sessionsByDay.set(date, sessionSummary);
-        months.set(monthKey, month);
+  async buildSqlTimeline() {
+    const started = Date.now();
+    const dirtySessions = [...this.timelineDirtySessions];
+    let replayedFiles = 0;
+    let tailedFiles = 0;
+    let sessionsSynced = 0;
+    for (const sessionId of dirtySessions) {
+      this.timelineDirtySessions.delete(sessionId);
+      try {
+        const result = await this.syncTimelineSession(sessionId);
+        replayedFiles += result.replayedFiles;
+        tailedFiles += result.tailedFiles;
+        sessionsSynced += 1;
+      } catch (error) {
+        this.timelineDirtySessions.add(sessionId);
+        this.recordError(`日期索引增量同步失败：${sessionId}`, error);
+        throw error;
       }
     }
-
-    return {
-      generatedAt: new Date().toISOString(),
-      timezone: localTimezone(),
-      usage: overallUsage,
-      qualityCounts,
-      unattributed,
-      months: [...months.values()]
-        .sort((left, right) => right.key.localeCompare(left.key))
-        .map(materializeMonth),
+    this.timelineStats = {
+      dirtySessions: this.timelineDirtySessions.size,
+      sessionsSynced,
+      replayedFiles,
+      tailedFiles,
+      lastSyncMs: Date.now() - started,
+      lastSyncAt: new Date().toISOString(),
     };
+    return this.database.getTimeline(this.repository.sessions);
+  }
+
+  refreshTimelineDirtySessions() {
+    this.timelineDirtySessions.clear();
+    for (const session of this.repository.sessions.values()) {
+      if (!this.isTimelineSessionCurrent(session.id)) this.timelineDirtySessions.add(session.id);
+    }
+    this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
+  }
+
+  isTimelineSessionCurrent(sessionId) {
+    const files = this.repository.getFilesForRoot(sessionId);
+    if (!files.length) return true;
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!indexState || indexState.parseStatus === "not_imported") return false;
+    const cursors = new Map(this.database.getCursors(sessionId).map((cursor) => [cursor.path, cursor]));
+    return files.every((entry) => {
+      const cursor = cursors.get(entry.path);
+      if (!cursor || cursor.fileSize !== entry.fileSize) return false;
+      if (cursor.modifiedAtMs == null || entry.modifiedAtMs == null) return true;
+      return Math.abs(cursor.modifiedAtMs - entry.modifiedAtMs) < 1;
+    });
+  }
+
+  markTimelineDirty(sessionId) {
+    if (!sessionId) return;
+    this.timelineDirtySessions.add(sessionId);
+    this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
+  }
+
+  async syncTimelineSession(sessionId) {
+    const session = this.repository.getSession(sessionId) ?? this.database.getSession(sessionId)?.session;
+    if (!session) return { replayedFiles: 0, tailedFiles: 0 };
+    const files = this.repository.getFilesForRoot(sessionId);
+    if (!files.length) return { replayedFiles: 0, tailedFiles: 0 };
+
+    if (this.parser && this.selectedSessionId === sessionId) {
+      let changed = false;
+      let requiresRebuild = false;
+      for (const entry of files) {
+        const result = await this.parser.tailFile(entry);
+        changed ||= result.changed;
+        requiresRebuild ||= result.rebuilt;
+      }
+      if (requiresRebuild) {
+        this.selectedSessionId = null;
+        await this.selectSession(sessionId);
+        return { replayedFiles: files.length, tailedFiles: 0 };
+      }
+      if (changed) this.persistAndBroadcast();
+      return { replayedFiles: 0, tailedFiles: files.length };
+    }
+
+    const parser = new SessionRolloutParser(sessionId, session);
+    const storedSnapshot = this.database.getSession(sessionId);
+    const cursors = this.database.getCursors(sessionId);
+    let parsed;
+    let replayedFiles = 0;
+    let tailedFiles = 0;
+    if (storedSnapshot && cursors.length) {
+      const recovery = await parser.restore(storedSnapshot, cursors, files);
+      const restoredPaths = new Set(recovery.restoredPaths);
+      const replayPaths = new Set(recovery.replayPaths);
+      for (const entry of files) {
+        if (restoredPaths.has(entry.path) && !replayPaths.has(entry.path)) {
+          await parser.tailFile(entry);
+          tailedFiles += 1;
+        } else {
+          await parser.parseFile(entry, { reset: true });
+          replayedFiles += 1;
+        }
+      }
+      parsed = parser.snapshot();
+    } else {
+      parsed = await parser.parseFiles(files);
+      replayedFiles = files.length;
+    }
+    this.database.replaceSession(parsed);
+    return { replayedFiles, tailedFiles };
   }
 
   async selectSession(sessionId) {
@@ -195,6 +226,8 @@ export class UsageMonitor extends EventEmitter {
         parsed = await parser.parseFiles(files);
       }
       this.database.replaceSession(parsed);
+      this.timelineDirtySessions.delete(sessionId);
+      this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
       this.parser = parser;
       this.selectedSessionId = sessionId;
       this.selectedEntries = files;
@@ -297,6 +330,10 @@ export class UsageMonitor extends EventEmitter {
       lastUpdateAt: this.lastUpdateAt,
       repository: this.repository.summary(),
       storage: this.database.getHealthStats(),
+      timeline: {
+        ...this.timelineStats,
+        dirtySessions: this.timelineDirtySessions.size,
+      },
       parser: parserHealth,
       recentErrors: this.lastErrors.slice(-5),
     };
@@ -336,9 +373,9 @@ export class UsageMonitor extends EventEmitter {
     let requiresRebuild = false;
     for (const path of paths) {
       try {
-        const entry = this.repository.getEntry(path) ?? await this.repository.refreshFile(path);
+        const entry = await this.repository.refreshFile(path);
         if (!entry) continue;
-        this.invalidateTimeline();
+        this.markTimelineDirty(entry.rootSessionId);
         if (this.parser && entry.rootSessionId === this.selectedSessionId) {
           const result = await this.parser.tailFile(entry);
           selectedChanged ||= result.changed;
@@ -369,7 +406,7 @@ export class UsageMonitor extends EventEmitter {
         const result = await this.parser.tailFile(entry);
         changed ||= result.changed;
         requiresRebuild ||= result.rebuilt;
-        if (result.changed) this.invalidateTimeline();
+        if (result.changed) this.markTimelineDirty(entry.rootSessionId);
       } catch (error) {
         if (error?.code !== "ENOENT") this.recordError(`轮询失败：${entry.path}`, error);
       }
@@ -387,6 +424,8 @@ export class UsageMonitor extends EventEmitter {
     if (!this.parser || !this.selectedSessionId) return;
     const parsed = this.parser.snapshot();
     this.database.replaceSession(parsed);
+    this.timelineDirtySessions.delete(this.selectedSessionId);
+    this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
     this.saveLatestParsedQuota(parsed.quotas);
     this.lastUpdateAt = new Date().toISOString();
     const snapshot = this.snapshot(this.selectedSessionId);
@@ -397,8 +436,8 @@ export class UsageMonitor extends EventEmitter {
     if (this.closed) return;
     try {
       const additions = await this.repository.discoverNewFiles();
-      if (additions.length) this.invalidateTimeline();
       for (const entry of additions) {
+        this.markTimelineDirty(entry.rootSessionId);
         if (entry.rootSessionId === this.selectedSessionId) this.schedulePath(entry.path);
       }
       await this.refreshGlobalQuota();
@@ -444,11 +483,6 @@ export class UsageMonitor extends EventEmitter {
     if (latest) this.database.saveQuota(latest);
   }
 
-  invalidateTimeline() {
-    this.timelineCache = null;
-    this.timelineVersion += 1;
-  }
-
   recordError(context, error) {
     this.lastErrors.push({
       at: new Date().toISOString(),
@@ -467,96 +501,4 @@ export class UsageMonitor extends EventEmitter {
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];
   }
-}
-
-function createMonth(key) {
-  return {
-    key,
-    usage: zeroUsage(),
-    taskCount: 0,
-    activeTaskCount: 0,
-    qualityCounts: emptyQualityCounts(),
-    days: new Map(),
-  };
-}
-
-function createDay(key) {
-  return {
-    key,
-    usage: zeroUsage(),
-    taskCount: 0,
-    activeTaskCount: 0,
-    qualityCounts: emptyQualityCounts(),
-    sessions: new Map(),
-  };
-}
-
-function createTimelineSession(session, date) {
-  return {
-    id: session.id,
-    title: session.title || "未命名会话",
-    projectPath: session.projectPath ?? null,
-    updatedAt: session.updatedAt ?? null,
-    date,
-    usage: zeroUsage(),
-    taskCount: 0,
-    activeTaskCount: 0,
-    qualityCounts: emptyQualityCounts(),
-  };
-}
-
-function materializeMonth(month) {
-  return {
-    key: month.key,
-    usage: month.usage,
-    taskCount: month.taskCount,
-    activeTaskCount: month.activeTaskCount,
-    qualityCounts: month.qualityCounts,
-    days: [...month.days.values()]
-      .sort((left, right) => right.key.localeCompare(left.key))
-      .map((day) => ({
-        key: day.key,
-        usage: day.usage,
-        taskCount: day.taskCount,
-        activeTaskCount: day.activeTaskCount,
-        qualityCounts: day.qualityCounts,
-        sessions: [...day.sessions.values()]
-          .sort(compareTimelineSessions)
-          .map((session) => ({
-            ...session,
-            qualityCounts: session.qualityCounts,
-          })),
-      })),
-  };
-}
-
-function compareTimelineSessions(left, right) {
-  return (right.usage.totalTokens ?? -1) - (left.usage.totalTokens ?? -1) ||
-    String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")) ||
-    left.id.localeCompare(right.id);
-}
-
-function emptyQualityCounts() {
-  return Object.fromEntries(QUALITY_KEYS.map((key) => [key, 0]));
-}
-
-function incrementQuality(counts, quality) {
-  const key = QUALITY_KEYS.includes(quality) ? quality : "unknown";
-  counts[key] += 1;
-}
-
-function localDayKey(value) {
-  const parts = new Intl.DateTimeFormat("en-CA", {
-    year: "numeric",
-    month: "2-digit",
-    day: "2-digit",
-  }).formatToParts(new Date(value));
-  const values = Object.fromEntries(
-    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
-  );
-  return `${values.year}-${values.month}-${values.day}`;
-}
-
-function localTimezone() {
-  return Intl.DateTimeFormat().resolvedOptions().timeZone || "当地时区";
 }

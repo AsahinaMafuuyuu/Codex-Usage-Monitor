@@ -1,20 +1,38 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { addUsage, sumTaskUsage } from "./usage.js";
+import { addUsage, sumTaskUsage, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 6;
+const SCHEMA_VERSION = 7;
+const QUALITY_KEYS = ["complete", "provisional", "estimated", "partial", "discontinuity", "unknown"];
+const TASK_USAGE_COLUMNS = [
+  ["inputTokens", "delta_input_tokens"],
+  ["cachedInputTokens", "delta_cached_input_tokens"],
+  ["cacheWriteInputTokens", "delta_cache_write_input_tokens"],
+  ["outputTokens", "delta_output_tokens"],
+  ["reasoningOutputTokens", "delta_reasoning_output_tokens"],
+  ["totalTokens", "delta_total_tokens"],
+];
 
 export class MonitorDatabase {
   constructor(databasePath) {
     mkdirSync(dirname(databasePath), { recursive: true });
     this.path = databasePath;
     this.db = new DatabaseSync(databasePath);
-    this.db.exec("PRAGMA journal_mode=WAL; PRAGMA foreign_keys=ON; PRAGMA busy_timeout=5000;");
+    this.db.exec(`
+      PRAGMA journal_mode=WAL;
+      PRAGMA foreign_keys=ON;
+      PRAGMA busy_timeout=5000;
+      PRAGMA cache_size=-2000;
+      PRAGMA mmap_size=0;
+      PRAGMA wal_autocheckpoint=256;
+      PRAGMA journal_size_limit=2097152;
+    `);
     this.migrate();
   }
 
   migrate() {
+    const previousVersion = Number(this.db.prepare("PRAGMA user_version").get().user_version ?? 0);
     this.db.exec(`
       CREATE TABLE IF NOT EXISTS sessions (
         id TEXT PRIMARY KEY,
@@ -68,6 +86,12 @@ export class MonitorDatabase {
         baseline_usage TEXT,
         end_usage TEXT,
         delta_usage TEXT,
+        delta_input_tokens INTEGER,
+        delta_cached_input_tokens INTEGER,
+        delta_cache_write_input_tokens INTEGER,
+        delta_output_tokens INTEGER,
+        delta_reasoning_output_tokens INTEGER,
+        delta_total_tokens INTEGER,
         source_path TEXT,
         start_ordinal INTEGER,
         end_ordinal INTEGER,
@@ -107,9 +131,39 @@ export class MonitorDatabase {
         parsed_at TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS session_day_usage (
+        day TEXT NOT NULL,
+        root_session_id TEXT NOT NULL,
+        input_tokens INTEGER NOT NULL DEFAULT 0,
+        cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+        cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+        output_tokens INTEGER NOT NULL DEFAULT 0,
+        reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+        total_tokens INTEGER NOT NULL DEFAULT 0,
+        task_count INTEGER NOT NULL DEFAULT 0,
+        active_task_count INTEGER NOT NULL DEFAULT 0,
+        complete_count INTEGER NOT NULL DEFAULT 0,
+        provisional_count INTEGER NOT NULL DEFAULT 0,
+        estimated_count INTEGER NOT NULL DEFAULT 0,
+        partial_count INTEGER NOT NULL DEFAULT 0,
+        discontinuity_count INTEGER NOT NULL DEFAULT 0,
+        unknown_count INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY (day, root_session_id),
+        FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS derived_state (
+        key TEXT PRIMARY KEY,
+        value TEXT NOT NULL
+      );
+
       CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_root ON agents(root_session_id, depth, thread_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_root ON tasks(root_session_id, thread_id, sequence);
+      CREATE INDEX IF NOT EXISTS idx_tasks_unattributed ON tasks(root_session_id, quality)
+        WHERE started_at IS NULL;
+      CREATE INDEX IF NOT EXISTS idx_session_day_usage_day
+        ON session_day_usage(day DESC, total_tokens DESC, root_session_id);
       CREATE INDEX IF NOT EXISTS idx_quota_observed ON quota_snapshots(observed_at DESC);
     `);
     const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
@@ -141,6 +195,33 @@ export class MonitorDatabase {
       // Invalidate non-empty offsets once so the parser safely replays and rebuilds them.
       this.db.exec("UPDATE ingest_cursors SET line_number=0 WHERE byte_offset>0;");
     }
+
+    const taskColumns = this.db.prepare("PRAGMA table_info(tasks)").all();
+    for (const [, column] of TASK_USAGE_COLUMNS) {
+      if (!taskColumns.some((item) => item.name === column)) {
+        this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} INTEGER;`);
+      }
+    }
+    this.db.exec(`
+      UPDATE tasks SET
+        delta_input_tokens=CAST(json_extract(delta_usage, '$.inputTokens') AS INTEGER),
+        delta_cached_input_tokens=CAST(json_extract(delta_usage, '$.cachedInputTokens') AS INTEGER),
+        delta_cache_write_input_tokens=CAST(json_extract(delta_usage, '$.cacheWriteInputTokens') AS INTEGER),
+        delta_output_tokens=CAST(json_extract(delta_usage, '$.outputTokens') AS INTEGER),
+        delta_reasoning_output_tokens=CAST(json_extract(delta_usage, '$.reasoningOutputTokens') AS INTEGER),
+        delta_total_tokens=CAST(json_extract(delta_usage, '$.totalTokens') AS INTEGER)
+      WHERE delta_usage IS NOT NULL AND delta_total_tokens IS NULL;
+    `);
+
+    const timezone = localTimezone();
+    const storedTimezone = this.db.prepare("SELECT value FROM derived_state WHERE key='calendar_timezone'").get()?.value;
+    if (previousVersion < SCHEMA_VERSION || storedTimezone !== timezone) {
+      this.rebuildAllCalendarIndex();
+    }
+    this.db.prepare(`
+      INSERT INTO derived_state (key, value) VALUES ('calendar_timezone', ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(timezone);
     this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION};`);
     // Session names can be derived from prompt text. Keep them in the live read-only
     // repository index, never in the monitor's durable archive.
@@ -185,9 +266,11 @@ export class MonitorDatabase {
         INSERT INTO tasks (
           root_session_id, thread_id, turn_id, sequence, status, quality,
           started_at, completed_at, duration_ms, model, effort,
-          baseline_usage, end_usage, delta_usage, source_path,
+          baseline_usage, end_usage, delta_usage,
+          delta_input_tokens, delta_cached_input_tokens, delta_cache_write_input_tokens,
+          delta_output_tokens, delta_reasoning_output_tokens, delta_total_tokens, source_path,
           start_ordinal, end_ordinal, start_line, end_line, start_byte, end_byte
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id, turn_id) DO UPDATE SET
           root_session_id=excluded.root_session_id,
           sequence=excluded.sequence,
@@ -208,6 +291,12 @@ export class MonitorDatabase {
           baseline_usage=COALESCE(excluded.baseline_usage, tasks.baseline_usage),
           end_usage=COALESCE(excluded.end_usage, tasks.end_usage),
           delta_usage=COALESCE(excluded.delta_usage, tasks.delta_usage),
+          delta_input_tokens=COALESCE(excluded.delta_input_tokens, tasks.delta_input_tokens),
+          delta_cached_input_tokens=COALESCE(excluded.delta_cached_input_tokens, tasks.delta_cached_input_tokens),
+          delta_cache_write_input_tokens=COALESCE(excluded.delta_cache_write_input_tokens, tasks.delta_cache_write_input_tokens),
+          delta_output_tokens=COALESCE(excluded.delta_output_tokens, tasks.delta_output_tokens),
+          delta_reasoning_output_tokens=COALESCE(excluded.delta_reasoning_output_tokens, tasks.delta_reasoning_output_tokens),
+          delta_total_tokens=COALESCE(excluded.delta_total_tokens, tasks.delta_total_tokens),
           source_path=COALESCE(excluded.source_path, tasks.source_path),
           start_ordinal=COALESCE(excluded.start_ordinal, tasks.start_ordinal),
           end_ordinal=COALESCE(excluded.end_ordinal, tasks.end_ordinal),
@@ -300,6 +389,7 @@ export class MonitorDatabase {
       }
 
       for (const task of snapshot.tasks) {
+        const usage = task.deltaUsage ?? null;
         this.statements.insertTask.run(
           rootId,
           task.threadId,
@@ -315,6 +405,12 @@ export class MonitorDatabase {
           jsonOrNull(task.baselineUsage),
           jsonOrNull(task.endUsage),
           jsonOrNull(task.deltaUsage),
+          usage?.inputTokens ?? null,
+          usage?.cachedInputTokens ?? null,
+          usage?.cacheWriteInputTokens ?? null,
+          usage?.outputTokens ?? null,
+          usage?.reasoningOutputTokens ?? null,
+          usage?.totalTokens ?? null,
           task.sourcePath ?? null,
           task.startOrdinal ?? null,
           task.endOrdinal ?? null,
@@ -344,6 +440,8 @@ export class MonitorDatabase {
           new Date().toISOString(),
         );
       }
+
+      this.rebuildCalendarForSession(rootId);
 
       const counts = this.refreshAggregates(rootId);
 
@@ -431,6 +529,105 @@ export class MonitorDatabase {
     return row ? parseJson(row.payload) : null;
   }
 
+  getSessionIndexState(rootSessionId) {
+    const session = this.db.prepare(`
+      SELECT parse_status, parser_version, imported_at FROM sessions WHERE id=?
+    `).get(rootSessionId);
+    if (!session) return null;
+    const cursorCount = Number(this.db.prepare(`
+      SELECT COUNT(*) AS count FROM ingest_cursors WHERE root_session_id=?
+    `).get(rootSessionId)?.count ?? 0);
+    return {
+      parseStatus: session.parse_status ?? "not_imported",
+      parserVersion: Number(session.parser_version ?? 0),
+      importedAt: session.imported_at ?? null,
+      cursorCount,
+    };
+  }
+
+  getTimeline(sessionMetadata = new Map()) {
+    const rows = this.db.prepare(`
+      SELECT day, root_session_id,
+             input_tokens, cached_input_tokens, cache_write_input_tokens,
+             output_tokens, reasoning_output_tokens, total_tokens,
+             task_count, active_task_count,
+             complete_count, provisional_count, estimated_count,
+             partial_count, discontinuity_count, unknown_count
+      FROM session_day_usage
+      ORDER BY day DESC, total_tokens DESC, root_session_id
+    `).all();
+    const unattributedRows = this.db.prepare(`
+      SELECT quality, status,
+             delta_input_tokens, delta_cached_input_tokens, delta_cache_write_input_tokens,
+             delta_output_tokens, delta_reasoning_output_tokens, delta_total_tokens
+      FROM tasks WHERE started_at IS NULL
+    `).all();
+
+    const months = new Map();
+    const overallUsage = zeroUsage();
+    const qualityCounts = emptyQualityCounts();
+    for (const row of rows) {
+      const usage = usageFromCalendarRow(row);
+      const rowQuality = qualityFromCalendarRow(row);
+      const monthKey = row.day.slice(0, 7);
+      const month = months.get(monthKey) ?? createCalendarMonth(monthKey);
+      const day = month.days.get(row.day) ?? createCalendarDay(row.day);
+      const metadata = sessionMetadata.get(row.root_session_id) ?? {};
+      const session = {
+        id: row.root_session_id,
+        title: metadata.title || "未命名会话",
+        projectPath: metadata.projectPath ?? null,
+        updatedAt: metadata.updatedAt ?? null,
+        date: row.day,
+        usage,
+        taskCount: Number(row.task_count ?? 0),
+        activeTaskCount: Number(row.active_task_count ?? 0),
+        qualityCounts: rowQuality,
+      };
+      day.sessions.push(session);
+      day.usage = addUsage(day.usage, usage);
+      day.taskCount += session.taskCount;
+      day.activeTaskCount += session.activeTaskCount;
+      addQualityCounts(day.qualityCounts, rowQuality);
+      month.usage = addUsage(month.usage, usage);
+      month.taskCount += session.taskCount;
+      month.activeTaskCount += session.activeTaskCount;
+      addQualityCounts(month.qualityCounts, rowQuality);
+      overallUsageFrom(overallUsage, usage);
+      addQualityCounts(qualityCounts, rowQuality);
+      month.days.set(row.day, day);
+      months.set(monthKey, month);
+    }
+
+    const unattributed = {
+      taskCount: 0,
+      usage: zeroUsage(),
+      qualityCounts: emptyQualityCounts(),
+    };
+    for (const row of unattributedRows) {
+      const quality = QUALITY_KEYS.includes(row.quality) ? row.quality : "unknown";
+      const usage = usageFromTaskRow(row);
+      unattributed.taskCount += 1;
+      unattributed.qualityCounts[quality] += 1;
+      qualityCounts[quality] += 1;
+      if (usage) {
+        unattributed.usage = addUsage(unattributed.usage, usage);
+        overallUsageFrom(overallUsage, usage);
+      }
+    }
+
+    return {
+      generatedAt: new Date().toISOString(),
+      timezone: localTimezone(),
+      usage: overallUsage,
+      qualityCounts,
+      unattributed,
+      months: [...months.values()]
+        .sort((left, right) => right.key.localeCompare(left.key))
+        .map(materializeCalendarMonth),
+    };
+  }
+
   getHealthStats() {
     const cursors = this.db.prepare(`
       SELECT COUNT(*) AS files, COALESCE(SUM(invalid_lines), 0) AS invalid_lines,
@@ -441,6 +638,13 @@ export class MonitorDatabase {
              MAX(parsed_at) AS last_parsed_at
       FROM ingest_cursors
     `).get();
+    const pageSize = Number(this.db.prepare("PRAGMA page_size").get().page_size ?? 0);
+    const pageCount = Number(this.db.prepare("PRAGMA page_count").get().page_count ?? 0);
+    const freelistCount = Number(this.db.prepare("PRAGMA freelist_count").get().freelist_count ?? 0);
+    const cacheSize = Number(this.db.prepare("PRAGMA cache_size").get().cache_size ?? 0);
+    const walAutoCheckpoint = Number(this.db.prepare("PRAGMA wal_autocheckpoint").get().wal_autocheckpoint ?? 0);
+    const mmapSize = Number(this.db.prepare("PRAGMA mmap_size").get().mmap_size ?? 0);
+    const calendarRows = Number(this.db.prepare("SELECT COUNT(*) AS count FROM session_day_usage").get().count ?? 0);
     return {
       databasePath: this.path,
       schemaVersion: SCHEMA_VERSION,
@@ -451,7 +655,73 @@ export class MonitorDatabase {
       skippedRecords: Number(cursors.skipped_records),
       discontinuities: Number(cursors.discontinuities),
       lastParsedAt: cursors.last_parsed_at ?? null,
+      calendarRows,
+      pageSize,
+      pageCount,
+      freelistCount,
+      cacheSize,
+      walAutoCheckpoint,
+      mmapSize,
     };
+  }
+
+  rebuildAllCalendarIndex() {
+    this.db.exec("DELETE FROM session_day_usage;");
+    const roots = this.db.prepare("SELECT id FROM sessions").all();
+    for (const row of roots) this.rebuildCalendarForSession(row.id);
+  }
+
+  rebuildCalendarForSession(rootId) {
+    this.db.prepare("DELETE FROM session_day_usage WHERE root_session_id=?").run(rootId);
+    const tasks = this.db.prepare(`
+      SELECT started_at, status, quality,
+             delta_input_tokens, delta_cached_input_tokens, delta_cache_write_input_tokens,
+             delta_output_tokens, delta_reasoning_output_tokens, delta_total_tokens
+      FROM tasks WHERE root_session_id=? AND started_at IS NOT NULL
+    `).all(rootId);
+    const days = new Map();
+    for (const task of tasks) {
+      const dayKey = localDayKey(task.started_at);
+      if (!dayKey) continue;
+      const aggregate = days.get(dayKey) ?? createCalendarAggregate();
+      aggregate.taskCount += 1;
+      if (task.status === "in_progress") aggregate.activeTaskCount += 1;
+      const quality = QUALITY_KEYS.includes(task.quality) ? task.quality : "unknown";
+      aggregate.qualityCounts[quality] += 1;
+      const usage = usageFromTaskRow(task);
+      if (usage) aggregate.usage = addUsage(aggregate.usage, usage);
+      days.set(dayKey, aggregate);
+    }
+    const insert = this.db.prepare(`
+      INSERT INTO session_day_usage (
+        day, root_session_id,
+        input_tokens, cached_input_tokens, cache_write_input_tokens,
+        output_tokens, reasoning_output_tokens, total_tokens,
+        task_count, active_task_count,
+        complete_count, provisional_count, estimated_count,
+        partial_count, discontinuity_count, unknown_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const [day, aggregate] of days) {
+      insert.run(
+        day,
+        rootId,
+        aggregate.usage.inputTokens ?? 0,
+        aggregate.usage.cachedInputTokens ?? 0,
+        aggregate.usage.cacheWriteInputTokens ?? 0,
+        aggregate.usage.outputTokens ?? 0,
+        aggregate.usage.reasoningOutputTokens ?? 0,
+        aggregate.usage.totalTokens ?? 0,
+        aggregate.taskCount,
+        aggregate.activeTaskCount,
+        aggregate.qualityCounts.complete,
+        aggregate.qualityCounts.provisional,
+        aggregate.qualityCounts.estimated,
+        aggregate.qualityCounts.partial,
+        aggregate.qualityCounts.discontinuity,
+        aggregate.qualityCounts.unknown,
+      );
+    }
   }
 
   refreshAggregates(rootId) {
@@ -511,6 +781,11 @@ export class MonitorDatabase {
   }
 
   close() {
+    try {
+      this.db.exec("PRAGMA wal_checkpoint(TRUNCATE);");
+    } catch {
+      // Closing must still release the database even if a checkpoint cannot complete.
+    }
     this.db.close();
   }
 }
@@ -594,6 +869,119 @@ function parseJson(value) {
   } catch {
     return null;
   }
+}
+
+function createCalendarAggregate() {
+  return {
+    usage: zeroUsage(),
+    taskCount: 0,
+    activeTaskCount: 0,
+    qualityCounts: emptyQualityCounts(),
+  };
+}
+
+function createCalendarMonth(key) {
+  return { key, ...createCalendarAggregate(), days: new Map() };
+}
+
+function createCalendarDay(key) {
+  return { key, ...createCalendarAggregate(), sessions: [] };
+}
+
+function emptyQualityCounts() {
+  return Object.fromEntries(QUALITY_KEYS.map((key) => [key, 0]));
+}
+
+function addQualityCounts(target, source) {
+  for (const key of QUALITY_KEYS) target[key] += Number(source?.[key] ?? 0);
+}
+
+function usageFromTaskRow(row) {
+  const values = {
+    inputTokens: numberOrNull(row.delta_input_tokens),
+    cachedInputTokens: numberOrNull(row.delta_cached_input_tokens),
+    cacheWriteInputTokens: numberOrNull(row.delta_cache_write_input_tokens),
+    outputTokens: numberOrNull(row.delta_output_tokens),
+    reasoningOutputTokens: numberOrNull(row.delta_reasoning_output_tokens),
+    totalTokens: numberOrNull(row.delta_total_tokens),
+  };
+  return Object.values(values).some((value) => value != null) ? values : null;
+}
+
+function usageFromCalendarRow(row) {
+  return {
+    inputTokens: Number(row.input_tokens ?? 0),
+    cachedInputTokens: Number(row.cached_input_tokens ?? 0),
+    cacheWriteInputTokens: Number(row.cache_write_input_tokens ?? 0),
+    outputTokens: Number(row.output_tokens ?? 0),
+    reasoningOutputTokens: Number(row.reasoning_output_tokens ?? 0),
+    totalTokens: Number(row.total_tokens ?? 0),
+  };
+}
+
+function qualityFromCalendarRow(row) {
+  return {
+    complete: Number(row.complete_count ?? 0),
+    provisional: Number(row.provisional_count ?? 0),
+    estimated: Number(row.estimated_count ?? 0),
+    partial: Number(row.partial_count ?? 0),
+    discontinuity: Number(row.discontinuity_count ?? 0),
+    unknown: Number(row.unknown_count ?? 0),
+  };
+}
+
+function overallUsageFrom(target, usage) {
+  for (const [field] of TASK_USAGE_COLUMNS) target[field] += usage?.[field] ?? 0;
+}
+
+function materializeCalendarMonth(month) {
+  return {
+    key: month.key,
+    usage: month.usage,
+    taskCount: month.taskCount,
+    activeTaskCount: month.activeTaskCount,
+    qualityCounts: month.qualityCounts,
+    days: [...month.days.values()]
+      .sort((left, right) => right.key.localeCompare(left.key))
+      .map((day) => ({
+        key: day.key,
+        usage: day.usage,
+        taskCount: day.taskCount,
+        activeTaskCount: day.activeTaskCount,
+        qualityCounts: day.qualityCounts,
+        sessions: day.sessions.sort(compareCalendarSessions),
+      })),
+  };
+}
+
+function compareCalendarSessions(left, right) {
+  return (right.usage.totalTokens ?? -1) - (left.usage.totalTokens ?? -1) ||
+    String(right.updatedAt ?? "").localeCompare(String(left.updatedAt ?? "")) ||
+    left.id.localeCompare(right.id);
+}
+
+function localDayKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.valueOf())) return null;
+  const parts = new Intl.DateTimeFormat("en-CA", {
+    year: "numeric",
+    month: "2-digit",
+    day: "2-digit",
+  }).formatToParts(date);
+  const values = Object.fromEntries(
+    parts.filter((part) => part.type !== "literal").map((part) => [part.type, part.value]),
+  );
+  return `${values.year}-${values.month}-${values.day}`;
+}
+
+function localTimezone() {
+  return Intl.DateTimeFormat().resolvedOptions().timeZone || "当地时区";
+}
+
+function numberOrNull(value) {
+  if (value == null) return null;
+  const number = Number(value);
+  return Number.isFinite(number) ? number : null;
 }
 
 export { SCHEMA_VERSION };
