@@ -113,20 +113,24 @@ test("portable source keys survive Codex home relocation without path-only repla
   await mkdir(sessions, { recursive: true });
   const rolloutPath = join(sessions, `rollout-portable-${CHILD}.jsonl`);
   await writeFile(rolloutPath, makePortablePreviewRollout());
+  let first = null;
   let second = null;
   t.after(async () => {
+    first?.monitor.close();
+    first?.database.close();
     second?.monitor.close();
     second?.database.close();
     await rm(directory, { recursive: true, force: true });
   });
 
-  const first = await bootMonitor(oldCodexHome, databasePath);
+  first = await bootMonitor(oldCodexHome, databasePath);
   const initial = await first.monitor.selectSession(ROOT);
   assert.equal(initial.summary.taskCount, 1);
   assert.equal(first.database.getCursors(ROOT)[0].sourceKey,
     `sessions/2026/08/24/rollout-portable-${CHILD}.jsonl`);
   first.monitor.close();
   first.database.close();
+  first = null;
 
   await mkdir(join(directory, "new-drive"), { recursive: true });
   await rename(oldCodexHome, newCodexHome);
