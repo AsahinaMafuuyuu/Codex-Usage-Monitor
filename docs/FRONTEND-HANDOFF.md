@@ -1,9 +1,9 @@
 # Frontend Handoff：Phase 9 视觉迭代接手说明
 
-**交付日期：** 2026-08-24  
-**目标读者：** 后续负责 `public/**` 的智能体 / 开发者  
-**当前分支：** `codex/project-grouping-claude-redesign`  
-**接手基线：** `1beb8dc feat(ui): preserve task context while scrolling`
+**交付日期：** 2026-08-25
+**目标读者：** 后续负责 `public/**` 的智能体 / 开发者
+**当前分支：** `codex/project-grouping-claude-redesign`
+**接手基线：** `58a7eb2 feat(ui): add restrained navigation motion`
 
 ## 1. 接手前必须确认
 
@@ -26,14 +26,14 @@ npm run check
 git diff --check
 ```
 
-预期基线至少包含：
+预期最新基线至少包含：
 
 ```text
-1beb8dc feat(ui): preserve task context while scrolling
-705c7d5 docs: advance frontend handoff after lineage compaction
-fd8e5c9 refactor(ui): compact deep agent lineage gutters
-7c80576 docs: add frontend iteration handoff
-aed004a feat(ui): establish readable typography hierarchy
+58a7eb2 feat(ui): add restrained navigation motion
+046b23d feat(ui): refine themed scrollbars
+0a8dc58 refactor(ui): simplify task ledger presentation
+68ad758 feat(ui): group overview metrics by purpose
+21daac7 feat(ui): add calendar usage navigation
 ```
 
 开始新的视觉决策前，工作区必须 clean。不要 reset、stash 或覆盖其他工作者的改动。
@@ -47,7 +47,7 @@ aed004a feat(ui): establish readable typography hierarchy
 - `public/styles.css`：Phase 8/9 的全部视觉、排版、响应式和谱系布局。
 - `test/ui-security.test.js`：CSP、关键 UI 合同与 Typography v1 静态约束。
 
-当前界面已经具备：工程分组、Session 概览、输入/输出/缓存命中率、USD API 等值、额度快照、递归 Agent lineage、角色标签、14 列任务审计表、桌面/窄屏响应式与独立表格横向滚动。
+当前界面已经具备：工程/时间双导航、Session 概览、输入/输出/缓存命中率、USD API 等值、额度快照、递归 Agent lineage、角色标签、13 列任务审计表、桌面/窄屏响应式、主题化滚动条与原生过渡动画。
 
 ## 3. 已冻结的视觉契约
 
@@ -71,10 +71,17 @@ aed004a feat(ui): establish readable typography hierarchy
 
 ### Phase 9 / Task ledger context
 
-- 14 个审计字段和 `1390px` 固定表宽继续完整保留；不得通过隐藏 model / effort / token / cost / quality 字段解决宽度问题。
+- 主任务账页为 13 列 / `1314px` 固定表宽；独立 reasoning 展示列已按用户决策移除，但底层 `reasoningOutputTokens`、费用计算和 API 数据契约继续保留。不得继续通过设备断点隐藏 model / effort / token / cost / quality 字段。
 - Task 与 Status 是唯一 sticky 审计上下文，分别固定在 `left: 0` 与 `left: 160px`；不要继续增加冻结列。
 - `.task-table-wrap` 仍是唯一横向 overflow 边界，同时是 `tabindex="0"` 的可聚焦 `region`。
-- 横向 scrollbar 在 Chromium 下为 10px 高，并继续使用 clay / paper-deep 视觉提示；不要用 `scrollbar-gutter: stable` 额外损失窄屏内容宽度。
+- 表头和对应数据单元格统一居中；机器数据仍使用 monospace + tabular numerals。
+- 横向 scrollbar 在 Chromium 下为 8px 高，使用 muted clay / warm track；页面和侧栏纵向 scrollbar 使用 8px warm taupe。不要用 `scrollbar-gutter: stable` 额外损失窄屏内容宽度。
+
+### Phase 9 / Motion
+
+- 工程、日期和 Agent 的 `<details>` 内容使用 `::details-content` 的 block-size + opacity 过渡；不为动画改写数据状态。
+- 会话切换与工程/时间导航在支持浏览器中使用 View Transitions API；当前应用没有独立路由层，因此不要为了“页面过渡”额外引入 router。
+- `prefers-reduced-motion: reduce` 是硬约束；不引入远程动画资源或第三方动画运行时。
 
 ## 4. Phase 9 后续工作顺序
 
@@ -115,11 +122,23 @@ fd8e5c9 refactor(ui): compact deep agent lineage gutters
 1beb8dc feat(ui): preserve task context while scrolling
 ```
 
-### Decision 4：Overview 信息层级 — 下一项
+### Decision 4：Overview 信息层级 — 已完成
 
-将当前七项近似等权指标重新组织成更符合监控任务的语义层，例如 Activity / Token Flow / Cost；不要恢复多层圆角 card grid。
+已在 `68ad758` 完成。原七项近似等权指标改为 Activity / Token Flow / Cost 三个语义组；Cost 仅使用短 clay 顶线与轻纸色区分，仍保持编辑式账页。会话总计 USD 直接显示 `amountUsd`，覆盖不完整由辅助文案和 title 披露，不再在主数值前加 `≥`。
 
-### Decision 5：Agent 展开策略
+随后三个独立提交完成本轮用户指定的细化：
+
+```text
+0a8dc58 refactor(ui): simplify task ledger presentation
+046b23d feat(ui): refine themed scrollbars
+58a7eb2 feat(ui): add restrained navigation motion
+```
+
+- 任务表移除独立“推理”列，收敛到 13 列 / 1314px，header / cell 全部居中。
+- 页面、侧栏与任务表滚动条统一为更轻的 8px 主题化样式。
+- `<details>`、会话选择、工程/时间导航与工作区状态增加原生 motion，并保留 reduced-motion fallback。
+
+### Decision 5：Agent 展开策略 — 下一项
 
 当前非 root Agent 基本默认展开，大会话会生成很长页面。应设计 root、一级、活跃节点、深层节点的明确策略，并在需要时记忆用户展开状态。
 
@@ -160,6 +179,14 @@ git diff --check
 涉及真实 `.codex` 历史时继续遵守只读要求；不得为了视觉验收修改真实 rollout。
 
 ## 7. 当前验证基线
+
+2026-08-25 本轮 UI polish 自动化基线：
+
+- `npm test`：27 tests，26 passed，0 failed，1 skipped；skip 为未配置 `CODEX_MONITOR_REAL_FIXTURE`。
+- `npm run check`：通过。
+- `git diff --check`：通过。
+- Headless Chrome 已分别按 1440×900 与 390×844 启动经过认证的真实页面并生成截图工件；本轮没有把未执行的 CDP console/精确几何检查冒充为已执行验证。
+- 静态 UI 契约新增：13 列 / 1314px、无 reasoning 表头、全列居中、8px scrollbar、View Transitions、`::details-content` 与 reduced-motion。
 
 Typography v1 提交前后的最近验收：
 
@@ -204,4 +231,4 @@ Decision 3 最新增量：
 
 ## 9. 给下一位智能体的直接任务
 
-接手后先验证本文件第 1 节的 Git/测试基线。若基线一致，从 **Decision 4：Overview 信息层级** 开始；只拥有该决策所需的 `public/**`、对应测试和交付文档，不提前混入 Agent 展开策略。目标是把当前七项近似等权指标重新组织为 Activity / Token Flow / Cost 等语义组，同时保持编辑式账页而不是恢复 card grid。完成并提交后汇报：目标、修改文件、视觉契约变化、精确验证结果、浏览器数据、commit hash、风险和下一项建议。
+接手后先验证本文件第 1 节的 Git/测试基线。若基线一致，从 **Decision 5：Agent 展开策略** 开始；不要重新修改本轮已冻结的 Overview / 13 列任务账页 / scrollbar / motion 契约，除非用户提出新的明确方向。完成并提交后汇报：目标、修改文件、视觉契约变化、精确验证结果、浏览器数据、commit hash、风险和下一项建议。

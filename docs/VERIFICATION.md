@@ -141,6 +141,18 @@ npm test
 
 个人资料显示的约 180,000,000 与本地已知量相差 9,606,361（约 5.34%）。本实现不把个人资料数字当作校准值补齐差额：差异可能来自那条不可安全差分的任务、服务端日界或时区，以及本地 rollout 无法证明的服务端计量口径。日期索引只报告可由 total_token_usage 边界差分证明的本地观测，不代表 Codex 订阅扣费。
 
+### 2026-08-25：Overview / task ledger / scrollbar / motion polish
+
+本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。
+
+- `68ad758 feat(ui): group overview metrics by purpose`：Overview 改为 Activity / Token Flow / Cost 三个语义组；会话总计 USD 直接格式化 `amountUsd`，不再添加 `≥` 前缀，partial/unavailable 仍由 coverage 文案和 title 说明。
+- `0a8dc58 refactor(ui): simplify task ledger presentation`：任务表移除独立 reasoning 列，主账页从 14 列 / 1390px 收敛到 13 列 / 1314px；所有 th/td 统一居中，Task/Status sticky 偏移保持 `0 / 160px`。
+- `046b23d feat(ui): refine themed scrollbars`：页面与侧栏使用 8px warm-taupe vertical thumb，任务表使用 8px muted-clay horizontal thumb；不新增 `scrollbar-gutter`。
+- `58a7eb2 feat(ui): add restrained navigation motion`：工程/日期/Agent `<details>` 使用 `::details-content` 过渡；会话与工程/时间导航在 Chrome 支持时使用 View Transitions API；`prefers-reduced-motion` 继续关闭实质动画。
+- 每个功能提交前均执行 `npm test`、`npm run check` 与 `git diff --check`；最近一次结果为 27 tests / 26 passed / 0 failed / 1 skipped，唯一 skipped 为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的既有真实五任务 fixture。
+- Headless Chrome 认证页面截图已成功生成：1440×900 desktop 与 390×844 narrow。该步骤证明当前静态资源、认证入口和页面脚本可在真实 Chrome 中加载；本轮未执行新的 CDP console/error 采样或精确 overflow 几何断言，因此不新增“0 warning / 0 overflow”类未验证结论。
+- `.impeccable/` 中的浏览器 QA 工件保持忽略状态，不进入 Git；本轮没有修改 `.codex` 源文件，也没有把截图或运行时数据库纳入提交。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。
