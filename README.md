@@ -39,7 +39,7 @@ npm run start:no-open
 ## 页面能力
 
 - 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话，只完整解析当前选择及其递归子智能体；目录缺失时明确归入“未归类”。
-- 左侧可切换“工程”和“时间”两种导航；时间视图按本地时区从月展开到日，再列出当天 session 和已审计 total token。
+- 左侧可切换“工程”和“时间”两种导航；时间视图按本地时区从月展开到日，再列出当天 session 和已审计 total token。历史只在首次导入时建立 task/cursor ledger，之后按变化 session 增量 tail，并直接查询轻量 SQLite session-day 索引。
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
@@ -57,7 +57,7 @@ npm run start:no-open
 - 任务 token 来自 `total_token_usage` 的任务边界差分；绝不累加可能重复或重置的 `last_token_usage`。
 - 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
 - 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度。
-- 美元值使用版本化官方标准 API 价目计算，不是 Codex 订阅实际扣费；不包含无法从任务汇总证明的长上下文、服务层级、区域或工具费用。部分任务不可估算时，任务数量仍被保留，金额以 `≥` 标为已知下限。
+- 美元值使用版本化官方标准 API 价目计算，不是 Codex 订阅实际扣费；不包含无法从任务汇总证明的长上下文、服务层级、区域或工具费用。部分任务不可估算时，任务数量和 coverage 文案仍被保留，显示金额只是已知部分。
 - `complete` 仅表示可见边界完整且累计值单调，不等同服务端账单的逐请求 usage。
 - 时间以 UTC ISO-8601 存储，页面按浏览器本地时区显示。
 - 按日总量来自所有已发现 rollout 的任务边界差分，包含未被用户打开过的 session；有 `partial`、`estimated`、`discontinuity` 或 `unknown` 的日期会保留质量标记。
@@ -69,7 +69,7 @@ npm run start:no-open
 
 - 不修改 `config.toml`，不启动 App Server，不启用 Hooks/OTel，不调用模型，不联网。
 - Codex 的 SQLite 和 rollout 文件始终只读。
-- 监控 SQLite 只新增根会话工程目录这类定位元数据，不保存 prompt、response、消息正文或会话标题。
+- 监控 SQLite 只保存工程目录等定位元数据、派生 task/cursor、token delta 和可重算的日期聚合；不保存 prompt、response、消息正文或会话标题。
 - 页面使用一次性随机令牌、严格 Cookie、Host/Origin 校验、CSP 和只读 HTTP 方法。
 - API 的 ID 受固定格式约束，不能传入任意文件路径。
 

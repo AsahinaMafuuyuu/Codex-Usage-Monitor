@@ -141,6 +141,19 @@ npm test
 
 个人资料显示的约 180,000,000 与本地已知量相差 9,606,361（约 5.34%）。本实现不把个人资料数字当作校准值补齐差额：差异可能来自那条不可安全差分的任务、服务端日界或时区，以及本地 rollout 无法证明的服务端计量口径。日期索引只报告可由 total_token_usage 边界差分证明的本地观测，不代表 Codex 订阅扣费。
 
+### Incremental calendar index and SQLite memory
+
+日期：2026-08-25。Phase 11 将上述日期口径保持不变，但把 Timeline 的实现从全历史内存回放改为 SQLite schema v7 的 task/cursor ledger + `session_day_usage` 物化索引。性能验证均使用真实 `.codex` 作为只读来源；全新导入使用临时监控数据库，不改写 rollout。
+
+- 旧基线：267 个 root session、408 个 rollout、约 1.23 GB JSONL；旧 Timeline 冷构建约 16–24 秒，构建过程额外 RSS 峰值约 156 MiB。任意 rollout 变化会使整份内存 Timeline 缓存失效。
+- 全新临时 schema v7 数据库一次性 backfill：408 个 rollout 全部 replay，得到 2,340 tasks、408 cursors 和 279 个 session-day；耗时 18,016.3 ms。该路径仍会出现约 +165.02 MiB RSS 峰值，因此本轮不声称消除了“第一次导入全部历史”的内存成本；改造目标是让这项成本只发生一次。
+- 同一临时数据库 backfill 后立即再次查询 Timeline：6.45 ms。另一次完全无 dirty session 的稳定热查询为 2.07 ms，1 ms RSS/heap 采样未观察到额外峰值。
+- 已有 v7 索引但本机仍有活跃追加时，重启后的实际同步命中 13 个 dirty session、0 个 replay、49 个 cursor tail，Timeline 用时 36.62 ms；RSS 从 132.24 MiB 到 134.50 MiB，额外峰值约 2.26 MiB。说明正常增量路径与全部历史体积解耦。
+- 全新临时数据库磁盘：主 SQLite 约 3.05 MiB；写入阶段 WAL 约 1.69 MiB；`session_day_usage` 表连同主键/查询索引约 72 KiB；tasks 表约 1.85 MiB。Timeline 后台补齐关闭历史 quota 批量持久化后，冷导入只保留 latest-quota 路径产生的 1 条 quota，而不是数千条历史快照。
+- SQLite 运行约束实测：`page_size=4096`、`cache_size=-2000`（约 2 MiB）、`mmap_size=0`、`wal_autocheckpoint=256`。正常关闭执行 truncate checkpoint；测试中的 WAL 关闭后归零。
+- 增量行为回归覆盖：无变化的第二次 Timeline 不 replay/tail；进程重启后未变化历史不 replay；向两个 session 中的一个 rollout 追加任务后，只同步该 root session，并命中 1 个 cursor tail / 0 replay。
+- 最终自动化验证：`npm test` 为 30 tests、29 passed、0 failed、1 skipped；唯一 skipped 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的既有真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+
 ### 2026-08-25：Overview / task ledger / scrollbar / motion polish
 
 本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。

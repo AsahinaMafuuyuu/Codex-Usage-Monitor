@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-08-25
 
+> 后续实现说明：本 ADR 的日期口径和覆盖范围继续有效；“内存缓存失效后全量回放全部 rollout”的实现策略已由 [ADR-0013](0013-incremental-calendar-index.md) 替换为持久化 session-day 索引和 cursor 增量同步。
+
 ## Context
 
 当前页面以根 session 和智能体谱系为入口。它适合审计单个工作，但用户无法直接回答“某一天全部 Codex 工作合计用了多少 token”，因为启动时只索引 session 元数据，只有用户选择某个 session 后才完整解析其 rollout。按会话更新时间或 rollout 目录日期聚合也会漏掉未选择的 session，并且不能明确日期时区。

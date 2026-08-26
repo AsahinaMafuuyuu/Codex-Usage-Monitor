@@ -16,6 +16,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0010](0010-typography-hierarchy.md) | Accepted | 建立实体、正文、辅助与机器数据分离的字体职责和可读字号层级 |
 | [0011](0011-sticky-task-ledger-context.md) | Accepted | 固定任务与状态上下文并强化 14 列审计表的横向浏览可发现性 |
 | [0012](0012-calendar-usage-ledger.md) | Accepted | 用本地日期聚合全部 rollout，并以月→日→session 展开 |
+| [0013](0013-incremental-calendar-index.md) | Accepted | 用 SQLite session-day 物化索引和 cursor 增量同步替代 Timeline 全历史回放 |
 
 ## 新增 ADR
 

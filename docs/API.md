@@ -31,11 +31,13 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 { "sessions": ["session summary objects"] }
 ```
 
-每个会话摘要包含 nullable `projectPath`，值来自根线程 `session_meta.cwd`。`q` 可选，按当前只读索引中的标题、session ID、source 和工程目录做本地包含搜索。数据库不持久化标题，但 schema v6 将 `projectPath` 作为定位元数据保留。
+每个会话摘要包含 nullable `projectPath`，值来自根线程 `session_meta.cwd`。`q` 可选，按当前只读索引中的标题、session ID、source 和工程目录做本地包含搜索。数据库不持久化标题，但 schema v7 将 `projectPath` 作为定位元数据保留。
 
 ### `GET /api/timeline`
 
-返回全部已发现根 session 的本地日期用量账页。该接口会完整回放尚未在页面中选择过的 rollout；结果只保存在监控器内存缓存中，不写入 `.codex`，也不改变当前 session 的 SQLite cursor。
+返回全部已发现根 session 的本地日期用量账页。schema v7 会先检查各 root session 的持久化 task/cursor 状态：从未导入的历史只在第一次建立派生 ledger 时完整解析；可信的 append-only cursor 只读取新增字节；无变化的 session 不读取 rollout 正文。同步完成后，接口从 SQLite `session_day_usage` 物化索引生成响应，不再依赖“任意文件变化即全量回放”的内存缓存。
+
+该同步只写监控器自己的派生 SQLite（task、cursor、session-day aggregate），从不修改 `.codex`。Timeline 后台补齐不会把历史 rollout 中的全部 quota 快照批量归档；账号额度仍由现有 latest-quota/实时路径维护。cursor 不可信、文件收缩或持久化状态不足时，parser 会回退到原有安全 replay 规则。
 
 ```json
 {

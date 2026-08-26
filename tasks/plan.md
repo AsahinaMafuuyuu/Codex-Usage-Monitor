@@ -476,9 +476,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 ### Goals
 
-- [ ] Replace the all-history Timeline replay with a durable SQLite-derived calendar index so opening the time view does not reread the full rollout archive.
-- [ ] Reuse persisted parser cursors so historical sessions are imported once and later refreshes process only new or invalidated rollout bytes.
-- [ ] Keep SQLite memory bounded and make WAL growth observable/controlled without weakening the read-only `.codex` boundary.
+- [x] Replace the all-history Timeline replay with a durable SQLite-derived calendar index so opening the time view does not reread the full rollout archive.
+- [x] Reuse persisted parser cursors so historical sessions are imported once and later refreshes process only new or invalidated rollout bytes.
+- [x] Keep SQLite memory bounded and make WAL growth observable/controlled without weakening the read-only `.codex` boundary.
 
 ### Task 1: Persist normalized task usage and session-day aggregates
 
@@ -486,11 +486,11 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] Existing databases migrate without losing sessions, tasks, cursors, quota snapshots, or source-locator metadata.
-- [ ] Six normalized usage counters preserve `NULL` when no precise task delta exists, while `session_day_usage` preserves task counts, active counts, six token totals, and all quality counters.
-- [ ] Calendar rows contain no prompt/response text and can be rebuilt solely from derived task metadata.
+- [x] Existing databases migrate without losing sessions, tasks, cursors, quota snapshots, or source-locator metadata.
+- [x] Six normalized usage counters preserve `NULL` when no precise task delta exists, while `session_day_usage` preserves task counts, active counts, six token totals, and all quality counters.
+- [x] Calendar rows contain no prompt/response text and can be rebuilt solely from derived task metadata.
 
-**Verification:** `npm test -- --test-name-pattern "calendar index|schema v6"`, `npm run check`.
+**Verification:** `npm test -- --test-name-pattern "calendar index|schema v7"`, `npm run check`.
 
 **Dependencies:** Phase 10.
 
@@ -504,9 +504,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] A second Timeline request with unchanged rollouts performs no rollout replay and returns the same aggregate.
-- [ ] Appending to one rollout updates only that root session's derived ledger/calendar rows; unrelated sessions are not replayed.
-- [ ] A source file shrink, stale cursor, or missing durable task state falls back to the parser's existing safe replay path rather than trusting stale data.
+- [x] A second Timeline request with unchanged rollouts performs no rollout replay and returns the same aggregate.
+- [x] Appending to one rollout updates only that root session's derived ledger/calendar rows; unrelated sessions are not replayed.
+- [x] A source file shrink, stale cursor, or missing durable task state falls back to the parser's existing safe replay path rather than trusting stale data.
 
 **Verification:** `npm test -- --test-name-pattern "incremental timeline|calendar aggregate"`, `npm run check`.
 
@@ -522,9 +522,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] SQLite page cache remains approximately 2 MiB and mmap is not expanded implicitly for this workload.
-- [ ] WAL auto-checkpointing prevents unbounded steady-state WAL growth while preserving current transaction semantics.
-- [ ] Verification records database size, calendar-index size, Timeline cold migration cost, subsequent hot-query latency, and process RSS delta on the real local dataset.
+- [x] SQLite page cache remains approximately 2 MiB and mmap is not expanded implicitly for this workload.
+- [x] WAL auto-checkpointing prevents unbounded steady-state WAL growth while preserving current transaction semantics.
+- [x] Verification records database size, calendar-index size, Timeline cold migration cost, subsequent hot-query latency, and process RSS delta on the real local dataset.
 
 **Verification:** `npm test`, `npm run check`, `git diff --check`, local performance harness.
 
@@ -540,9 +540,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] A new ADR documents the performance evidence, schema choice, invalidation model, memory bounds, and fallback replay semantics.
-- [ ] Architecture/API/README/changelog documentation no longer claims that every Timeline cache invalidation rereads all rollout files.
-- [ ] Documentation retains the distinction between audited local deltas and Codex subscription/billing semantics.
+- [x] A new ADR documents the performance evidence, schema choice, invalidation model, memory bounds, and fallback replay semantics.
+- [x] Architecture/API/README/changelog documentation no longer claims that every Timeline cache invalidation rereads all rollout files.
+- [x] Documentation retains the distinction between audited local deltas and Codex subscription/billing semantics.
 
 **Verification:** `npm test`, `npm run check`, `git diff --check`.
 
@@ -554,10 +554,10 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 ### Checkpoint: Incremental calendar index
 
-- [ ] Full tests and syntax checks pass.
-- [ ] First migration/backfill is one-time; unchanged subsequent Timeline requests do not scan rollout history.
-- [ ] Real-history hot Timeline latency and additional RSS are materially below the Phase 10 full-replay baseline (~16–24 s and ~156 MiB additional RSS).
-- [ ] SQLite main/WAL sizes and page-cache settings are recorded after the migration.
+- [x] Full tests and syntax checks pass.
+- [x] First migration/backfill is one-time; unchanged subsequent Timeline requests do not scan rollout history.
+- [x] Real-history hot Timeline latency and additional RSS are materially below the Phase 10 full-replay baseline (~16–24 s and ~156 MiB additional RSS).
+- [x] SQLite main/WAL sizes and page-cache settings are recorded after the migration.
 
 ## Risks and Mitigations
 
