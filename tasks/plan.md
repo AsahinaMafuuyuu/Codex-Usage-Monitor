@@ -655,8 +655,8 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 ### Goals
 
-- [ ] 把“经累计快照验证的新增模型 usage”建模为一等审计事件，同时保留现有 Task Boundary Ledger 作为迁移期独立校验器。
-- [ ] 用 `total_token_usage` 做 cumulative verifier / deduplicator / generation detector，而不是继续依赖跨任务永远单调的假设。
+- [x] 把“经累计快照验证的新增模型 usage”建模为一等审计事件，同时保留现有 Task Boundary Ledger 作为迁移期独立校验器。
+- [x] 用 `total_token_usage` 做 cumulative verifier / deduplicator / generation detector，而不是继续依赖跨任务永远单调的假设。
 - [ ] 可靠处理 duplicate broadcast、generation reset、missing baseline、历史缺字段和跨 rollout 文件 continuation，不裸累加 `last_token_usage`。
 - [ ] 在没有损失审计质量的前提下，从 Request Ledger 聚合 Task / Agent / Session / Day，并提供模型请求数、tokens/request 等后续指标的数据基础。
 - [ ] 保持 Profile / 订阅额度与本地可审计 usage 分离；不得通过补偿系数追平 Profile。
@@ -687,10 +687,10 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] Duplicate replay / cursor restore is idempotent and cannot insert the same usage event twice.
-- [ ] Stored events contain only derived usage and locator metadata permitted by existing privacy rules.
-- [ ] Existing schema v8 task/calendar data migrates without loss; request-ledger backfill can be rebuilt from rollout and does not require Profile data.
-- [ ] Database size and migration/backfill cost are measured on the real local history before accepting the schema.
+- [x] Duplicate replay / cursor restore is idempotent and cannot insert the same usage event twice; durable identity is `(source_key, line_number)` and session replacement rebuilds the same deterministic event set.
+- [x] Stored events contain only derived usage and locator metadata permitted by existing privacy rules; schema tests reject prompt/content/message and absolute source-path columns.
+- [x] Existing schema v8 task/calendar data migrates without loss; v8 sessions remain `requestLedgerReady=false` until one safe replay backfills the ledger, after which normal cursor restore resumes without repeat replay.
+- [x] Database size and migration/backfill cost are measured on the real local history before accepting the schema: 412 rollout / 42,183 events backfill in about 22.7 s to a temporary ~31.4 MB SQLite database with the existing ~2 MiB page-cache bound.
 
 **Verification:** schema migration tests, replay/idempotency tests, `npm test`, `npm run check`, database-size measurement.
 

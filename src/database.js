@@ -4,7 +4,8 @@ import { DatabaseSync } from "node:sqlite";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import { addUsage, sumTaskUsage, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 8;
+const SCHEMA_VERSION = 9;
+const REQUEST_LEDGER_SCHEMA_VERSION = 9;
 const QUALITY_KEYS = ["complete", "provisional", "estimated", "partial", "discontinuity", "unknown"];
 const TASK_USAGE_COLUMNS = [
   ["inputTokens", "delta_input_tokens"],
@@ -157,6 +158,28 @@ export class MonitorDatabase {
         FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
 
+      CREATE TABLE IF NOT EXISTS model_usage_events (
+        source_key TEXT NOT NULL,
+        line_number INTEGER NOT NULL,
+        root_session_id TEXT NOT NULL,
+        thread_id TEXT,
+        turn_id TEXT,
+        event_ordinal INTEGER,
+        observed_at TEXT,
+        generation INTEGER NOT NULL DEFAULT 0,
+        classification TEXT NOT NULL,
+        quality TEXT NOT NULL,
+        reason TEXT,
+        input_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        cache_write_input_tokens INTEGER,
+        output_tokens INTEGER,
+        reasoning_output_tokens INTEGER,
+        total_tokens INTEGER,
+        PRIMARY KEY (source_key, line_number),
+        FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
       CREATE TABLE IF NOT EXISTS derived_state (
         key TEXT PRIMARY KEY,
         value TEXT NOT NULL
@@ -169,6 +192,10 @@ export class MonitorDatabase {
         WHERE started_at IS NULL;
       CREATE INDEX IF NOT EXISTS idx_session_day_usage_day
         ON session_day_usage(day DESC, total_tokens DESC, root_session_id);
+      CREATE INDEX IF NOT EXISTS idx_model_usage_events_root
+        ON model_usage_events(root_session_id, thread_id, turn_id, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_model_usage_events_observed
+        ON model_usage_events(observed_at, classification);
       CREATE INDEX IF NOT EXISTS idx_quota_observed ON quota_snapshots(observed_at DESC);
     `);
     const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
@@ -341,6 +368,30 @@ export class MonitorDatabase {
           plan_type=excluded.plan_type,
           source_key=COALESCE(excluded.source_key, quota_snapshots.source_key),
           payload=excluded.payload
+      `),
+      upsertModelUsageEvent: this.db.prepare(`
+        INSERT INTO model_usage_events (
+          source_key, line_number, root_session_id, thread_id, turn_id,
+          event_ordinal, observed_at, generation, classification, quality, reason,
+          input_tokens, cached_input_tokens, cache_write_input_tokens,
+          output_tokens, reasoning_output_tokens, total_tokens
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ON CONFLICT(source_key, line_number) DO UPDATE SET
+          root_session_id=excluded.root_session_id,
+          thread_id=excluded.thread_id,
+          turn_id=excluded.turn_id,
+          event_ordinal=excluded.event_ordinal,
+          observed_at=excluded.observed_at,
+          generation=excluded.generation,
+          classification=excluded.classification,
+          quality=excluded.quality,
+          reason=excluded.reason,
+          input_tokens=excluded.input_tokens,
+          cached_input_tokens=excluded.cached_input_tokens,
+          cache_write_input_tokens=excluded.cache_write_input_tokens,
+          output_tokens=excluded.output_tokens,
+          reasoning_output_tokens=excluded.reasoning_output_tokens,
+          total_tokens=excluded.total_tokens
       `),
     };
   }
@@ -570,6 +621,31 @@ export class MonitorDatabase {
         );
       }
 
+      this.db.prepare("DELETE FROM model_usage_events WHERE root_session_id=?").run(rootId);
+      for (const event of snapshot.modelUsageEvents ?? []) {
+        if (!event?.sourceKey || event.lineNumber == null) continue;
+        const usage = event.usage ?? null;
+        this.statements.upsertModelUsageEvent.run(
+          event.sourceKey,
+          event.lineNumber,
+          rootId,
+          event.threadId ?? null,
+          event.turnId ?? null,
+          event.eventOrdinal ?? null,
+          event.observedAt ?? null,
+          event.generation ?? 0,
+          event.classification,
+          event.quality,
+          event.reason ?? null,
+          usage?.inputTokens ?? null,
+          usage?.cachedInputTokens ?? null,
+          usage?.cacheWriteInputTokens ?? null,
+          usage?.outputTokens ?? null,
+          usage?.reasoningOutputTokens ?? null,
+          usage?.totalTokens ?? null,
+        );
+      }
+
       this.rebuildCalendarForSession(rootId);
 
       const counts = this.refreshAggregates(rootId);
@@ -621,7 +697,8 @@ export class MonitorDatabase {
     const tasks = this.db.prepare(`
       SELECT * FROM tasks WHERE root_session_id=? ORDER BY thread_id, sequence
     `).all(id).map(mapTask);
-    return { session: mapSession(sessionRow), agents, tasks };
+    const modelUsageEvents = this.getModelUsageEvents(id);
+    return { session: mapSession(sessionRow), agents, tasks, modelUsageEvents };
   }
 
   getTask(threadId, turnId) {
@@ -654,6 +731,18 @@ export class MonitorDatabase {
     }));
   }
 
+  getModelUsageEvents(rootSessionId) {
+    return this.db.prepare(`
+      SELECT source_key, line_number, root_session_id, thread_id, turn_id,
+             event_ordinal, observed_at, generation, classification, quality, reason,
+             input_tokens, cached_input_tokens, cache_write_input_tokens,
+             output_tokens, reasoning_output_tokens, total_tokens
+      FROM model_usage_events
+      WHERE root_session_id=?
+      ORDER BY source_key, line_number
+    `).all(rootSessionId).map(mapModelUsageEvent);
+  }
+
   getLatestQuota() {
     const row = this.db.prepare(`
       SELECT payload FROM quota_snapshots ORDER BY observed_at DESC LIMIT 1
@@ -669,9 +758,11 @@ export class MonitorDatabase {
     const cursorCount = Number(this.db.prepare(`
       SELECT COUNT(*) AS count FROM ingest_cursors WHERE root_session_id=?
     `).get(rootSessionId)?.count ?? 0);
+    const parserVersion = Number(session.parser_version ?? 0);
     return {
       parseStatus: session.parse_status ?? "not_imported",
-      parserVersion: Number(session.parser_version ?? 0),
+      parserVersion,
+      requestLedgerReady: parserVersion >= REQUEST_LEDGER_SCHEMA_VERSION,
       importedAt: session.imported_at ?? null,
       cursorCount,
     };
@@ -777,6 +868,9 @@ export class MonitorDatabase {
     const walAutoCheckpoint = Number(this.db.prepare("PRAGMA wal_autocheckpoint").get().wal_autocheckpoint ?? 0);
     const mmapSize = Number(this.db.prepare("PRAGMA mmap_size").get().mmap_size ?? 0);
     const calendarRows = Number(this.db.prepare("SELECT COUNT(*) AS count FROM session_day_usage").get().count ?? 0);
+    const modelUsageEventRows = Number(
+      this.db.prepare("SELECT COUNT(*) AS count FROM model_usage_events").get().count ?? 0,
+    );
     return {
       databasePath: this.path,
       schemaVersion: SCHEMA_VERSION,
@@ -788,6 +882,7 @@ export class MonitorDatabase {
       discontinuities: Number(cursors.discontinuities),
       lastParsedAt: cursors.last_parsed_at ?? null,
       calendarRows,
+      modelUsageEventRows,
       pageSize,
       pageCount,
       freelistCount,
@@ -984,6 +1079,35 @@ function mapTask(row) {
     startByte: row.start_byte == null ? null : Number(row.start_byte),
     endByte: row.end_byte == null ? null : Number(row.end_byte),
   };
+}
+
+function mapModelUsageEvent(row) {
+  return {
+    sourceKey: row.source_key,
+    lineNumber: Number(row.line_number),
+    rootSessionId: row.root_session_id,
+    threadId: row.thread_id ?? null,
+    turnId: row.turn_id ?? null,
+    eventOrdinal: row.event_ordinal == null ? null : Number(row.event_ordinal),
+    observedAt: row.observed_at ?? null,
+    generation: Number(row.generation ?? 0),
+    classification: row.classification,
+    quality: row.quality,
+    reason: row.reason ?? null,
+    usage: usageFromModelUsageRow(row),
+  };
+}
+
+function usageFromModelUsageRow(row) {
+  const values = {
+    inputTokens: numberOrNull(row.input_tokens),
+    cachedInputTokens: numberOrNull(row.cached_input_tokens),
+    cacheWriteInputTokens: numberOrNull(row.cache_write_input_tokens),
+    outputTokens: numberOrNull(row.output_tokens),
+    reasoningOutputTokens: numberOrNull(row.reasoning_output_tokens),
+    totalTokens: numberOrNull(row.total_tokens),
+  };
+  return Object.values(values).some((value) => value != null) ? values : null;
 }
 
 function json(value) {

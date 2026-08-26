@@ -91,6 +91,8 @@ npm test
 - 另有 `45` 条文件首记录无法仅凭单文件证明，其中多数表现为 `total_tokens = 0` 且 `last_token_usage > 0`；必须保留为 `unverified` 或通过同一 thread 的跨文件前序状态继续验证，禁止猜测计入。
 - Request Ledger 对 2026-08-22 / 08-23 / 08-24 的可审计总量分别为 `60,289,305` / `64,066,930` / `175,486,562`。前两日与用户提供的 Profile `61,819,000` / `65,058,000` 仍分别相差约 `2.47%` / `1.52%`；08-24 与此前约 `180,000,000` 的 Profile 值相差约 `2.51%`。这些差额不得用补偿系数抹平。
 
+2026-08-26 实施进度：Phase 13 Task 1–2 已完成。分类器和 SQLite schema v9 `model_usage_events` 已落地，旧 v8 session 会在首次升级时安全 replay 一次建立完整 Request Ledger；现有 Task Boundary Ledger、Timeline 和页面统计口径仍保持不变。真实 412 个 rollout 的临时 backfill 得到 42,183 条事件，数据库约 31.4 MB、冷构建约 22.7 s。按 thread 连续解析比逐文件独立实验多验证出 1 条 file-first 事件（40,389 vs 40,388），该差异留给 Task 3 continuity fixture 与 Task 4 reconciliation 明确证明，不作为补偿值处理。
+
 下一阶段实施顺序固定如下：
 
 1. **冻结 usage-event 分类契约。** 用 fixture 和真实历史验证 `verified_increment`、`duplicate`、`generation_start`、`unverified`、`anomaly`；逐字段比较 input / cached input / cache-write input（字段存在时）/ output / reasoning / total，而不是只比较 total。

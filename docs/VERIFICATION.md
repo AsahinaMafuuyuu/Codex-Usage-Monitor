@@ -175,6 +175,17 @@ npm test
 - 与交付实验相比新增 24 条 `token_count` 全部属于 `missing_total_usage`；原有 `missing_baseline` 仍精确为 45，说明 `42,159 -> 42,183` 是新增未验证记录，而不是分类器改变历史结果。
 - 同一只读回放仍得到 2026-08-22 / 08-23 / 08-24 的 60,289,305 / 64,066,930 / 175,486,562 tokens；412 个 rollout 扫描前后 SHA-256 全部一致（`hashChangedFiles=0`）。
 
+### Phase 13 Task 2：privacy-safe Request Ledger / schema v9
+
+日期：2026-08-26。SQLite 增加 `model_usage_events` 双账本，但 Task Boundary Ledger 继续作为迁移期正式聚合来源。
+
+- durable event identity 为 `(source_key, line_number)`；同一 snapshot 连续 `replaceSession`、进程重启 cursor restore 和 portable Codex-home relocation 均验证事件数不增长、不重复插入。
+- `model_usage_events` 只保存 portable source key、thread/turn、line/ordinal、时间、generation、classification/quality/reason 与六类派生 usage。schema 测试确认不存在 prompt/preview/content/message、`source_path` 或 `rollout_path` 字段。
+- v8→v9 fixture 删除 Request Ledger 并把 session `parser_version` 回退为 8 后重启：session 明确为 `requestLedgerReady=false`，首次 Timeline 安全 replay 1 个 rollout，补建事件后切换为 ready；之后正常重启不重复 replay。
+- `npm run benchmark:request-ledger` 使用临时 SQLite 对当前 412 个真实 rollout 做一次完整 backfill：42,183 条 `model_usage_events`、2,347 条 task，耗时约 22,705.81 ms；关闭后数据库 31,399,936 bytes（约 29.95 MiB / 十进制 31.4 MB）。page size 4096、`cache_size=-2000`、`mmap_size=0`、`wal_autocheckpoint=256` 保持既有内存/WAL 约束。
+- session/thread 连续 parser 在该 backfill 中得到 40,389 verified、1,726 duplicate、68 unverified、0 anomaly；相比 Task 1“每文件重置 baseline”的只读实验多证明 1 条、少 1 条 unverified。该结果说明跨文件 continuity 确实存在可恢复信息，Task 3 必须用 deterministic multi-file fixture 固化其前序状态规则后才能进入 reconciliation。
+- Task 2 最终自动化验证：`npm test` 为 37 tests、36 passed、0 failed、1 skipped；唯一 skipped 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的既有真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+
 ### 2026-08-25：Overview / task ledger / scrollbar / motion polish
 
 本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。

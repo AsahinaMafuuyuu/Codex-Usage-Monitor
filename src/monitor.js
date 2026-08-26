@@ -126,6 +126,7 @@ export class UsageMonitor extends EventEmitter {
     if (!files.length) return true;
     const indexState = this.database.getSessionIndexState(sessionId);
     if (!indexState || indexState.parseStatus === "not_imported") return false;
+    if (!indexState.requestLedgerReady) return false;
     const cursors = new Map(
       this.database.getCursors(sessionId).map((cursor) => [cursor.sourceKey, cursor]),
     );
@@ -169,10 +170,11 @@ export class UsageMonitor extends EventEmitter {
     const parser = new SessionRolloutParser(sessionId, session);
     const storedSnapshot = this.database.getSession(sessionId);
     const cursors = this.database.getCursors(sessionId);
+    const indexState = this.database.getSessionIndexState(sessionId);
     let parsed;
     let replayedFiles = 0;
     let tailedFiles = 0;
-    if (storedSnapshot && cursors.length) {
+    if (storedSnapshot && cursors.length && indexState?.requestLedgerReady) {
       const recovery = await parser.restore(storedSnapshot, cursors, files);
       const restoredPaths = new Set(recovery.restoredPaths);
       const replayPaths = new Set(recovery.replayPaths);
@@ -211,8 +213,9 @@ export class UsageMonitor extends EventEmitter {
       const parser = new SessionRolloutParser(sessionId, session);
       const storedSnapshot = this.database.getSession(sessionId);
       const cursors = this.database.getCursors(sessionId);
+      const indexState = this.database.getSessionIndexState(sessionId);
       let parsed;
-      if (storedSnapshot?.tasks.length && cursors.length) {
+      if (storedSnapshot?.tasks.length && cursors.length && indexState?.requestLedgerReady) {
         const recovery = await parser.restore(storedSnapshot, cursors, files);
         const restoredPaths = new Set(recovery.restoredPaths);
         const replayPaths = new Set(recovery.replayPaths);

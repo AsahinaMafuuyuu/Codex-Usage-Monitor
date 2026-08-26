@@ -90,6 +90,7 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   const firstTimeline = await first.monitor.timeline();
   assert.equal(firstTimeline.usage.totalTokens, 100);
   assert.equal(first.monitor.health().timeline.replayedFiles, 1);
+  assert.equal(first.database.getModelUsageEvents(ROOT).length, 1);
   first.monitor.close();
   first.database.close();
 
@@ -100,6 +101,7 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   assert.equal(second.monitor.health().timeline.sessionsSynced, 0);
   assert.equal(second.monitor.health().timeline.replayedFiles, 0);
   assert.equal(second.monitor.health().timeline.tailedFiles, 0);
+  assert.equal(second.database.getModelUsageEvents(ROOT).length, 1);
 });
 
 test("portable source keys survive Codex home relocation without path-only replay", async (t) => {
@@ -134,6 +136,7 @@ test("portable source keys survive Codex home relocation without path-only repla
   const selected = await second.monitor.selectSession(ROOT);
   assert.equal(selected.health.parser.restoredFiles, 1);
   assert.equal(selected.health.parser.replayedFiles, 0);
+  assert.equal(second.database.getModelUsageEvents(ROOT).length, 1);
   const preview = await second.monitor.taskPreview(CHILD, TURN);
   assert.equal(preview.available, true);
   assert.equal(preview.text, "Portable preview survives source rebinding.");
@@ -245,7 +248,13 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-db-"));
   const path = join(directory, "usage.sqlite");
   const database = new MonitorDatabase(path);
-  database.replaceSession(snapshot());
+  const fixture = snapshot();
+  database.replaceSession(fixture);
+  database.replaceSession(fixture);
+  assert.equal(
+    database.db.prepare("SELECT COUNT(*) AS count FROM model_usage_events").get().count,
+    1,
+  );
   database.close();
 
   const reopened = new MonitorDatabase(path);
@@ -258,11 +267,17 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(stored.tasks[0].deltaUsage.totalTokens, 42);
   assert.equal(stored.tasks[0].model, "gpt-5.6-terra");
   assert.equal(stored.tasks[0].effort, "xhigh");
+  assert.equal(stored.modelUsageEvents.length, 1);
+  assert.equal(stored.modelUsageEvents[0].classification, "generation_start");
+  assert.equal(stored.modelUsageEvents[0].usage.totalTokens, 42);
   assert.equal(stored.session.title, "");
   assert.equal(stored.session.projectPath, "C:\\workspace\\codex-usage-monitor");
   const columns = reopened.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(columns.some((name) => /prompt|preview|content|message/iu.test(name)), false);
   assert.equal(columns.includes("delta_total_tokens"), true);
+  const eventColumns = reopened.db.prepare("PRAGMA table_info(model_usage_events)").all()
+    .map((row) => row.name);
+  assert.equal(eventColumns.some((name) => /prompt|preview|content|message|source_path|rollout_path/iu.test(name)), false);
   const normalized = reopened.db.prepare(`
     SELECT delta_input_tokens, delta_output_tokens, delta_total_tokens FROM tasks
     WHERE thread_id=? AND turn_id=?
@@ -278,7 +293,8 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(calendar.months[0].days[0].sessions[0].usage.totalTokens, 42);
   assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
   assert.equal(reopened.getHealthStats().calendarRows, 1);
-  assert.equal(reopened.getHealthStats().schemaVersion, 8);
+  assert.equal(reopened.getHealthStats().schemaVersion, 9);
+  assert.equal(reopened.getHealthStats().modelUsageEventRows, 1);
   assert.equal(reopened.getHealthStats().cacheSize, -2000);
   assert.equal(reopened.getHealthStats().mmapSize, 0);
   assert.equal(reopened.getHealthStats().walAutoCheckpoint, 256);
@@ -318,7 +334,7 @@ test("calendar-only persistence does not archive historical quota snapshots", as
   assert.equal(database.db.prepare("SELECT COUNT(*) AS count FROM quota_snapshots").get().count, 2);
 });
 
-test("schema v1 ingest cursors migrate to portable resumable schema v8", async (t) => {
+test("schema v1 ingest cursors migrate to portable resumable schema v9", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -356,7 +372,7 @@ test("schema v1 ingest cursors migrate to portable resumable schema v8", async (
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
   assert.equal(columns.some((column) => column.name === "source_key"), true);
   assert.equal(columns.some((column) => column.name === "path"), false);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 8);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 9);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].sourceKey, "sessions/2026/08/24/rollout-fixture.jsonl");
@@ -405,7 +421,48 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 8);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 9);
+});
+
+test("schema v8 sessions replay once to backfill the request ledger", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v8-request-ledger-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(sessions, { recursive: true });
+  const rollout = join(sessions, `rollout-v8-${ROOT}.jsonl`);
+  await writeFile(rollout, makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"));
+  let monitor = null;
+  let database = null;
+  t.after(async () => {
+    monitor?.close();
+    database?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  ({ monitor, database } = await bootMonitor(codexHome, databasePath));
+  await monitor.timeline();
+  monitor.close();
+  database.close();
+  monitor = null;
+  database = null;
+
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    DROP TABLE model_usage_events;
+    UPDATE sessions SET parser_version=8;
+    PRAGMA user_version=8;
+  `);
+  legacy.close();
+
+  ({ monitor, database } = await bootMonitor(codexHome, databasePath));
+  assert.equal(database.getSessionIndexState(ROOT).requestLedgerReady, false);
+  await monitor.timeline();
+  assert.equal(monitor.health().timeline.replayedFiles, 1);
+  assert.equal(database.getSessionIndexState(ROOT).requestLedgerReady, true);
+  assert.equal(database.getModelUsageEvents(ROOT).length, 1);
+  assert.equal(database.getModelUsageEvents(ROOT)[0].classification, "generation_start");
+  assert.equal(database.getModelUsageEvents(ROOT)[0].usage.totalTokens, 100);
 });
 
 test("schema v7 absolute rollout locators migrate to portable keys without losing derived data", async (t) => {
@@ -747,7 +804,7 @@ function makeSubagentRollout(threadId, turnId, totalTokens, options = {}) {
     },
     { timestamp, ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
     { timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: turnId, model, effort: "xhigh" } },
-    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
+    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: usage } } },
     { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ].map(JSON.stringify).join("\n") + "\n";
 }
@@ -807,6 +864,14 @@ function makePortablePreviewRollout() {
             reasoning_output_tokens: 0,
             total_tokens: 100,
           },
+          last_token_usage: {
+            input_tokens: 90,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 10,
+            reasoning_output_tokens: 0,
+            total_tokens: 100,
+          },
         },
       },
     },
@@ -837,7 +902,7 @@ function makeCalendarRootRollout(rootId, turnId, totalTokens, timestamp) {
     },
     { timestamp, ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
     { timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: turnId, model: "gpt-5.6-terra", effort: "xhigh" } },
-    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
+    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: usage } } },
     { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ].map(JSON.stringify).join("\n") + "\n";
 }
@@ -851,10 +916,18 @@ function makeCalendarTaskAppend(turnId, cumulativeTotalTokens, timestamp) {
     reasoning_output_tokens: 0,
     total_tokens: cumulativeTotalTokens,
   };
+  const lastUsage = {
+    input_tokens: cumulativeTotalTokens - 110,
+    cached_input_tokens: 0,
+    cache_write_input_tokens: 0,
+    output_tokens: 10,
+    reasoning_output_tokens: 0,
+    total_tokens: cumulativeTotalTokens - 100,
+  };
   return [
     { timestamp, ordinal: 5, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
     { timestamp, ordinal: 6, type: "turn_context", payload: { turn_id: turnId, model: "gpt-5.6-terra", effort: "xhigh" } },
-    { timestamp, ordinal: 7, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage } } },
+    { timestamp, ordinal: 7, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: lastUsage } } },
     { timestamp, ordinal: 8, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ].map(JSON.stringify).join("\n") + "\n";
 }
@@ -943,6 +1016,20 @@ function snapshot() {
       sourceKey,
       startByte: 0,
       endByte: 100,
+    }],
+    modelUsageEvents: [{
+      rootSessionId: ROOT,
+      sourceKey,
+      threadId: CHILD,
+      turnId: TURN,
+      lineNumber: 4,
+      eventOrdinal: 3,
+      observedAt: "2026-08-24T00:00:30.000Z",
+      generation: 1,
+      classification: "generation_start",
+      quality: "verified",
+      reason: "zero_baseline_proven",
+      usage,
     }],
     cursors: [],
     quotas: [],

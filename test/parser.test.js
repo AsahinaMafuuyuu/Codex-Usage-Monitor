@@ -38,7 +38,7 @@ test("paginated copied history is skipped and cumulative snapshots are differenc
     }),
     token(10, usage(100), { used_percent: 20 }),
     token(11, usage(100), { used_percent: 20 }, usage(100)),
-    token(12, usage(150), { used_percent: 21 }),
+    token(12, usage(150), { used_percent: 21 }, usageDelta(100, 150)),
     event(13, "task_complete", {
       turn_id: TURN,
       started_at: 1_700_000_100,
@@ -157,7 +157,7 @@ test("tailing completes an active task without rereading or double counting", as
 
   await appendFile(
     fixture.path,
-    [token(3, usage(125)), event(4, "task_complete", { turn_id: TURN, completed_at: 1_700_000_130 })]
+    [token(3, usage(125), null, usageDelta(80, 125)), event(4, "task_complete", { turn_id: TURN, completed_at: 1_700_000_130 })]
       .map((record) => JSON.stringify(record))
       .join("\n") + "\n",
   );
@@ -299,10 +299,10 @@ test("restored cursors tail active and subsequent tasks without losing cumulativ
   await appendFile(
     fixture.path,
     [
-      token(3, usage(125)),
+      token(3, usage(125), null, usageDelta(80, 125)),
       event(4, "task_complete", { turn_id: TURN }),
       event(5, "task_started", { turn_id: PARENT_TURN }),
-      token(6, usage(200)),
+      token(6, usage(200), null, usageDelta(125, 200)),
       event(7, "task_complete", { turn_id: PARENT_TURN }),
     ].map((record) => JSON.stringify(record)).join("\n") + "\n",
   );
@@ -321,7 +321,7 @@ test("restored cursors preserve cumulative usage observed between tasks", async 
     event(1, "task_started", { turn_id: TURN }),
     token(2, usage(100)),
     event(3, "task_complete", { turn_id: TURN }),
-    token(4, usage(120)),
+    token(4, usage(120), null, usageDelta(100, 120)),
   ]);
   t.after(() => rm(fixture.directory, { recursive: true, force: true }));
   const metadata = await scanRolloutMetadata(fixture.path);
@@ -337,7 +337,7 @@ test("restored cursors preserve cumulative usage observed between tasks", async 
     fixture.path,
     [
       event(5, "task_started", { turn_id: PARENT_TURN }),
-      token(6, usage(150)),
+      token(6, usage(150), null, usageDelta(120, 150)),
       event(7, "task_complete", { turn_id: PARENT_TURN }),
     ].map((record) => JSON.stringify(record)).join("\n") + "\n",
   );
@@ -505,6 +505,19 @@ function usage(total) {
     output_tokens: 20,
     reasoning_output_tokens: 5,
     total_tokens: total,
+  };
+}
+
+function usageDelta(previousTotal, currentTotal) {
+  const previous = normalizeUsage(usage(previousTotal));
+  const current = normalizeUsage(usage(currentTotal));
+  return {
+    input_tokens: current.inputTokens - previous.inputTokens,
+    cached_input_tokens: current.cachedInputTokens - previous.cachedInputTokens,
+    cache_write_input_tokens: current.cacheWriteInputTokens - previous.cacheWriteInputTokens,
+    output_tokens: current.outputTokens - previous.outputTokens,
+    reasoning_output_tokens: current.reasoningOutputTokens - previous.reasoningOutputTokens,
+    total_tokens: current.totalTokens - previous.totalTokens,
   };
 }
 

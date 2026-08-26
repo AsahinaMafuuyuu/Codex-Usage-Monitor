@@ -49,6 +49,7 @@ export class SessionRolloutParser {
     this.threads = new Map();
     this.fileContexts = new Map();
     this.quotaStates = new Map();
+    this.modelUsageEvents = new Map();
     this.health = {
       invalidLines: 0,
       unknownRecords: 0,
@@ -73,6 +74,7 @@ export class SessionRolloutParser {
     this.threads.clear();
     this.fileContexts.clear();
     this.quotaStates.clear();
+    this.modelUsageEvents.clear();
     this.health.invalidLines = 0;
     this.health.unknownRecords = 0;
     this.health.skippedRecords = 0;
@@ -115,6 +117,17 @@ export class SessionRolloutParser {
       const list = tasksByThread.get(storedTask.threadId) ?? [];
       list.push(storedTask);
       tasksByThread.set(storedTask.threadId, list);
+    }
+    const usageGenerationByThread = new Map();
+    for (const storedEvent of storedSnapshot.modelUsageEvents ?? []) {
+      if (!storedEvent?.sourceKey || storedEvent.lineNumber == null) continue;
+      if (replayThreadIds.has(storedEvent.threadId)) continue;
+      const event = restoreModelUsageEvent(storedEvent);
+      this.modelUsageEvents.set(modelUsageEventKey(event.sourceKey, event.lineNumber), event);
+      usageGenerationByThread.set(
+        event.threadId,
+        Math.max(usageGenerationByThread.get(event.threadId) ?? 0, event.generation ?? 0),
+      );
     }
 
     for (const storedAgent of storedSnapshot.agents ?? []) {
@@ -159,6 +172,7 @@ export class SessionRolloutParser {
         sequence,
         currentTaskId,
         lastUsage,
+        usageGeneration: usageGenerationByThread.get(storedAgent.threadId) ?? 0,
         safeZeroBaseline:
           isRoot ||
           Boolean(source?.subagent?.thread_spawn) ||
@@ -226,6 +240,7 @@ export class SessionRolloutParser {
   async parseFile(entry, { reset }) {
     let context = this.fileContexts.get(entry.path);
     if (!context || reset) {
+      if (reset) this.removeModelUsageEventsForSource(entry.sourceKey ?? entry.path);
       context = {
         path: entry.path,
         sourceKey: entry.sourceKey ?? entry.path,
@@ -399,6 +414,7 @@ export class SessionRolloutParser {
       sequence: 0,
       currentTaskId: null,
       lastUsage: null,
+      usageGeneration: 0,
       safeZeroBaseline: isRoot || Boolean(source?.subagent?.thread_spawn),
     };
     this.threads.set(threadId, thread);
@@ -479,11 +495,30 @@ export class SessionRolloutParser {
     }
 
     const usage = normalizeUsage(payload.info?.total_token_usage);
-    if (!usage) return;
     const lastUsage = normalizeUsage(payload.info?.last_token_usage);
     const usageEvent = classifyModelUsageEvent(thread.lastUsage, usage, lastUsage);
-    context.lastUsage = structuredClone(usage);
     const task = thread.currentTaskId ? thread.tasks.get(thread.currentTaskId) : null;
+    if (usageEvent.classification === "generation_start") thread.usageGeneration += 1;
+    const modelUsageEvent = {
+      rootSessionId: this.rootSessionId,
+      sourceKey,
+      threadId: thread.threadId,
+      turnId: task?.turnId ?? null,
+      lineNumber: position.lineNumber,
+      eventOrdinal: ordinal,
+      observedAt: normalizeTimestamp(record.timestamp),
+      generation: thread.usageGeneration,
+      classification: usageEvent.classification,
+      quality: modelUsageEventQuality(usageEvent.classification),
+      reason: usageEvent.reason,
+      usage: usageEvent.usage ? structuredClone(usageEvent.usage) : null,
+    };
+    this.modelUsageEvents.set(
+      modelUsageEventKey(modelUsageEvent.sourceKey, modelUsageEvent.lineNumber),
+      modelUsageEvent,
+    );
+    if (!usage) return;
+    context.lastUsage = structuredClone(usage);
     if (usageEvent.classification === "duplicate") {
       if (task) {
         task.sawUsage = true;
@@ -633,6 +668,11 @@ export class SessionRolloutParser {
       quotas: [...this.quotaStates.values()].sort((a, b) =>
         compareText(a.observedAt, b.observedAt),
       ),
+      modelUsageEvents: [...this.modelUsageEvents.values()]
+        .sort((left, right) =>
+          compareText(left.sourceKey, right.sourceKey) || left.lineNumber - right.lineNumber
+        )
+        .map((event) => structuredClone(event)),
       cursors,
       health: {
         status: warningCount ? "warning" : "healthy",
@@ -647,6 +687,12 @@ export class SessionRolloutParser {
         cliVersions: [...this.health.cliVersions].sort(),
       },
     };
+  }
+
+  removeModelUsageEventsForSource(sourceKey) {
+    for (const [key, event] of this.modelUsageEvents) {
+      if (event.sourceKey === sourceKey) this.modelUsageEvents.delete(key);
+    }
   }
 }
 
@@ -900,6 +946,36 @@ function restoreTask(storedTask, entry = null) {
     sawUsage: Boolean(storedTask.endUsage),
     discontinuity: storedTask.quality === "discontinuity",
   };
+}
+
+function restoreModelUsageEvent(storedEvent) {
+  return {
+    rootSessionId: storedEvent.rootSessionId,
+    sourceKey: storedEvent.sourceKey,
+    threadId: storedEvent.threadId ?? null,
+    turnId: storedEvent.turnId ?? null,
+    lineNumber: numberOrNull(storedEvent.lineNumber) ?? 0,
+    eventOrdinal: numberOrNull(storedEvent.eventOrdinal),
+    observedAt: normalizeTimestamp(storedEvent.observedAt),
+    generation: numberOrNull(storedEvent.generation) ?? 0,
+    classification: storedEvent.classification,
+    quality: storedEvent.quality,
+    reason: storedEvent.reason ?? null,
+    usage: storedEvent.usage ? structuredClone(storedEvent.usage) : null,
+  };
+}
+
+function modelUsageEventKey(sourceKey, lineNumber) {
+  return `${sourceKey}\u0000${lineNumber}`;
+}
+
+function modelUsageEventQuality(classification) {
+  if (classification === "verified_increment" || classification === "generation_start") {
+    return "verified";
+  }
+  if (classification === "duplicate") return "duplicate";
+  if (classification === "anomaly") return "anomaly";
+  return "unverified";
 }
 
 function computeSubtreeUsage(agents) {

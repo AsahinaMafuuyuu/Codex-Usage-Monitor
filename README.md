@@ -50,7 +50,7 @@ codex-usage-monitor\
    └─ archived_sessions\...
 ```
 
-schema v8 不再用 `C:\Users\...\.codex\...` 绝对路径作为 cursor/任务来源身份，而持久化 `sessions/.../rollout-*.jsonl` 形式的 `.codex` 相对 source key。新电脑用户名、工程盘符或 `.codex` 根目录改变后，启动时会把这些 key 绑定到当前 Codex home；文件本身未变化时可以继续原 byte cursor，而不是仅因为路径变化重扫历史。首次创建全新数据库仍需要一次性建立历史索引。
+从 schema v8 起，数据库不再用 `C:\Users\...\.codex\...` 绝对路径作为 cursor/任务来源身份，而持久化 `sessions/.../rollout-*.jsonl` 形式的 `.codex` 相对 source key。schema v9 在此基础上新增内部 `model_usage_events` Request Ledger，用 `(source_key, line_number)` 幂等保存经累计快照分类的模型 usage 事件；它不保存 prompt/response/tool 内容，也尚未替代现有 Task Boundary Ledger 作为页面聚合事实源。新电脑用户名、工程盘符或 `.codex` 根目录改变后，启动时会把 source key 绑定到当前 Codex home；文件本身未变化时可以继续原 byte cursor，而不是仅因为路径变化重扫历史。首次创建全新数据库仍需要一次性建立历史索引。
 
 根 session 的 `projectPath` 仍会保留旧会话当时的工程 `cwd`，用于历史分组和审计；它不是 rollout locator，不影响迁移恢复。非标准 `.codex` 位置请设置 `CODEX_MONITOR_HOME`，程序不会扫描所有盘符猜测数据目录。完整步骤见 [运行与故障处理](docs/OPERATIONS.md) 和 [ADR-0014](docs/decisions/0014-portable-source-locators.md)。
 

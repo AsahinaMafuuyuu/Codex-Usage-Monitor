@@ -24,10 +24,10 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 |---|---|
 | `src/repository.js` | 读取 session index、只读 state DB 和 rollout 元数据；建立根会话、线程与父子关系 |
 | `src/rollout-parser.js` | 读取完整 JSONL 行、识别任务边界、快照、quota、ordinal 和预览位置 |
-| `src/usage.js` | 规范化六类 token、检查单调性、做边界差分和质量分类 |
+| `src/usage.js` | 规范化六类 token、做任务边界差分，并以累计快照验证/去重/识别 model-usage event generation |
 | `src/pricing.js` | 用版本化官方标准 API 价目生成逐任务 USD 等值，并合并智能体/会话覆盖摘要 |
 | `src/source-locator.js` | 在当前 Codex home 的绝对 runtime path 与可持久化 `.codex` 相对 source key 之间做安全转换和旧路径恢复 |
-| `src/database.js` | 管理 schema v8、WAL、幂等 upsert、工程元数据、portable source key、任务快照、可恢复 ingest cursor 和 session-day 物化索引 |
+| `src/database.js` | 管理 schema v9、WAL、幂等 upsert、工程元数据、portable source key、Task Boundary Ledger、Request Ledger、可恢复 ingest cursor 和 session-day 物化索引 |
 | `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation、Timeline dirty-session 同步和事件发布 |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
 | `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、对齐任务明细、额度与健康状态 |
@@ -44,6 +44,8 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 
 schema v7 把查询热路径改为持久化派生索引；schema v8 保留这套索引，同时把文件身份从绝对路径改为 portable source key。`tasks` 除原始派生 `delta_usage` JSON 外保存六个 nullable INTEGER delta，`session_day_usage` 以 `(day, root_session_id)` 保存轻量物化合计。启动时 `UsageMonitor` 用当前 rollout 元数据和持久化 cursor 的 size/mtime 标记 dirty root session；从未导入的 session 首次回放一次，可信 append-only cursor 只 tail 新增字节，不可信 cursor 才安全 replay。每次 session ledger 更新都在同一 SQLite 事务中重建该 root 的日记录。无 dirty session 时 Timeline 只查询数百行 session-day 数据，不读取 rollout 内容。
 
+schema v9 另外建立 `model_usage_events`，但迁移期内 `tasks.delta_usage` / `session_day_usage` 仍是页面与 Timeline 的正式聚合来源。旧 v8 session 的 cursor 本身不足以证明此前每条 `token_count` 的 Request Ledger 已完整建立，因此 `parser_version<9` 会触发一次安全 replay；完成 backfill 后才恢复正常 cursor tail，避免把“空 Request Ledger + 新 parser version”误标成已迁移。
+
 `derived_state` 保存建立日历索引时的本地时区；运行环境时区发生变化时，只从已持久化 task 重新物化日期，而不回放 JSONL。日期分组仍不能与 `.codex/sessions/YYYY/MM/DD` 文件夹或服务端订阅账单直接等同。该实现替代 ADR-0012 首版的全历史内存缓存策略，详见 [ADR-0013](decisions/0013-incremental-calendar-index.md)。
 
 ## 任务归因
@@ -57,6 +59,12 @@ delta[field] = end.total_token_usage[field] - baseline.total_token_usage[field]
 ```
 
 重复累计快照不产生新用量；累计倒退不计算伪精确 delta。`last_token_usage` 可能重复或重置，因而不参与相加。`subagent_history_start_ordinal` 之前的分页复制历史被排除。
+
+### Verified Request Ledger（迁移期）
+
+parser 同时把每条 `token_count` 建模为独立审计事件。`last_token_usage` 只作为“本次新增 usage”的候选值，必须由相邻 `total_token_usage` 逐字段验证：累计不变先判 `duplicate`；累计增量与 `last` 一致才是 `verified_increment`；累计回退只有在新累计快照本身与 `last` 一致、可证明零 baseline 时才是 `generation_start`；缺 baseline/关键字段保留 `unverified`，无法解释的矛盾保留 `anomaly`。历史 schema 缺少 cache-write 字段时，仅该字段保持不可验证，不把整条记录强制判错。
+
+Request Ledger 的 durable identity 是 portable `(source_key, line_number)`，另保存 thread/turn、event ordinal、时间、generation、classification/quality/reason 与六类经验证 usage。它表示“经累计快照证明的模型 usage 单元”，**不保证与底层 HTTP 请求一一对应**。Phase 13 双账本 reconciliation 完成前，Request Ledger 不改变现有任务、智能体、会话、日期或 USD 的用户可见统计口径。
 
 缓存命中率只做展示层确定性派生：`cachedInputTokens / inputTokens`。会话使用 `summary.totalUsage`，智能体使用 `ownUsage`，任务使用 `deltaUsage`；输入非正、字段缺失或缓存大于输入时不输出百分比。
 
@@ -90,11 +98,11 @@ Snapshot 先为每个任务重算费用，再沿与 token 完全相同的 `paren
 
 ## 持久化边界
 
-SQLite schema v8 包含 `sessions`、`agents`、`tasks`、`quota_snapshots`、`ingest_cursors`、`session_day_usage` 和 `derived_state`。sessions 保留 nullable `project_path` 历史工程元数据，同时以 `rollout_key` 记录 source identity；agents 同样使用 `rollout_key`，tasks/quota 使用 `source_key`，`ingest_cursors` 直接以 `source_key` 为主键。source key 仅允许 `sessions/.../rollout-*.jsonl` / `archived_sessions/.../rollout-*.jsonl`，统一使用 `/`，不携带 Windows 用户名或盘符。
+SQLite schema v9 包含 `sessions`、`agents`、`tasks`、`model_usage_events`、`quota_snapshots`、`ingest_cursors`、`session_day_usage` 和 `derived_state`。sessions 保留 nullable `project_path` 历史工程元数据，同时以 `rollout_key` 记录 source identity；agents 同样使用 `rollout_key`，tasks/quota 与 Request Ledger 使用 `source_key`，`ingest_cursors` 直接以 `source_key` 为主键。source key 仅允许 `sessions/.../rollout-*.jsonl` / `archived_sessions/.../rollout-*.jsonl`，统一使用 `/`，不携带 Windows 用户名或盘符。
 
 旧 schema 的 `rollout_path` / `source_path` 只作为迁移兼容列存在：能够确定映射到 `.codex` 内 rollout 的路径会提取相对 key，随后绝对 locator 置空；无法安全映射的 cursor 不被猜测，而是在后续需要时安全 replay。quota JSON 中的绝对 `sourcePath` 同样被移除。`project_path` 不做这种转换，因为它描述的是会话发生时的工程 `cwd`，不是源文件身份。
 
-运行中的 repository 仍保留当前机器的绝对 path 进行 `stat`、tail 和 preview，但 path 由 active Codex home + source key 重新绑定，不写回 durable identity。任务保存边界、baseline/end/delta、六个正规化 delta INTEGER 和字节偏移；cursor 保存行号、unknown/skipped/discontinuity 诊断及线程最新累计 usage，以便重启或换路径后安全续读且不丢失 warning 或任务间 baseline。日历表只保存由任务 ledger 可重算的日期聚合，不保存正文。详见 [ADR-0014](decisions/0014-portable-source-locators.md)。
+运行中的 repository 仍保留当前机器的绝对 path 进行 `stat`、tail 和 preview，但 path 由 active Codex home + source key 重新绑定，不写回 durable identity。任务保存边界、baseline/end/delta、六个正规化 delta INTEGER 和字节偏移；Request Ledger 只保存派生 usage/event metadata；cursor 保存行号、unknown/skipped/discontinuity 诊断及线程最新累计 usage，以便重启或换路径后安全续读且不丢失 warning 或任务间 baseline。日历表只保存由任务 ledger 可重算的日期聚合，不保存正文。详见 [ADR-0014](decisions/0014-portable-source-locators.md)。
 
 监控数据库使用 WAL，同时显式限制 `cache_size=-2000`（约 2 MiB）、`mmap_size=0`、`wal_autocheckpoint=256` 和 2 MiB journal size limit；正常关闭时尝试 `wal_checkpoint(TRUNCATE)`。这样 Timeline 性能来自减少历史 I/O，而不是把 SQLite cache 扩大到几十或几百 MiB。数据库不保存 prompt、response、消息正文或会话标题。
 
