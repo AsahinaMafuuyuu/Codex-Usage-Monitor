@@ -10,6 +10,7 @@
 
 ```powershell
 cd C:\path\to\codex-usage-monitor
+npm install
 npm start
 ```
 
@@ -29,6 +30,8 @@ npm run start:no-open
 | `npm run start:no-open` | 启动但不自动打开浏览器 |
 | `npm test` | 运行 parser、SQLite、HTTP 和文档契约测试 |
 | `npm run check` | 检查关键 JavaScript 文件语法 |
+
+前端保持无框架实现。额度刷新按钮使用本地安装的 `lucide@1.34.0` 图标库，并由本地 HTTP 服务从 `/vendor/lucide.min.js` 提供，不依赖 CDN，也不需要放宽现有 `script-src 'self'` CSP。
 
 可选环境变量：
 
@@ -69,6 +72,20 @@ codex-usage-monitor\
 - 任务表不显示指令正文；受认证的旧 preview API 暂时保留，供后续完整对话功能重新设计。
 - 任务表固定 14 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏审计字段。
 - 展示独立的账号级 `rate_limits` 快照；同一 reset 窗口内若并发 rollout 返回互相回退的 `used_percent`，运行时按该窗口观测到的最大已用比例保守收敛，避免把 100% 错降成 97%。页面统一显示 `100 - used_percent` 的剩余额度；额度卡右上角使用本地安装的 Lucide `refresh-cw` 图标，点击后立即重新扫描本机最新 rollout，刷新期间图标旋转。
+
+### 额度刷新语义
+
+额度卡右上角刷新按钮调用本地只读接口 `GET /api/quota?refresh=1`。一次手动刷新会重新发现 rollout、重新读取文件修改时间，并扫描最近的 `rate_limits` 记录，然后立即更新 5 小时和 1 周剩余额度。
+
+这个按钮不会主动向 OpenAI/Codex 发起模型请求，也不会为了查询额度生成一条新的远端请求；因此它只能读取 **Codex 已经写入本机 `.codex` 的最新额度快照**。如果 Codex 尚未产生新的 `rate_limits`，页面会保留当前额度并提示“暂未发现新的快照”。
+
+同一个 `windowMinutes + resetsAt` 窗口中，如果不同 rollout 的并发响应出现 `100% → 97%` 这类回退，current quota 会保守采用该窗口已观测到的最大 `used_percent`。只有进入新的 reset 窗口后，已用比例才允许重新降低。前端展示值始终为：
+
+```text
+剩余额度 = 100 - used_percent
+```
+
+例如底层观测到 `used_percent = 100` 时，页面显示 `剩余 0%`。
 
 ## 数据口径
 
