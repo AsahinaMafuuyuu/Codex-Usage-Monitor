@@ -25,6 +25,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /session\.projectPath/u);
   assert.match(script, /data-session-view/u);
   assert.match(script, /renderSessionsByTime/u);
+  assert.match(script, /document\.startViewTransition/u);
+  assert.match(script, /prefers-reduced-motion: reduce/u);
   assert.match(script, /formatMonthLabel/u);
   assert.match(script, /formatDayLabel/u);
   assert.match(script, /timeline\.months/u);
@@ -81,4 +83,7 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.task-table-wrap:focus-visible/iu);
   assert.match(styles, /font-variant-numeric:\s*tabular-nums/iu);
   assert.match(styles, /prefers-reduced-motion/u);
+  assert.match(styles, /::details-content/u);
+  assert.match(styles, /view-transition-name:\s*workspace-content/u);
+  assert.match(styles, /::view-transition-new\(workspace-content\)/u);
 });

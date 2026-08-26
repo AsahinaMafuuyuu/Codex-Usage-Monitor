@@ -33,13 +33,15 @@ elements["session-search"].addEventListener("input", (event) => {
 });
 document.querySelectorAll("[data-session-view]").forEach((button) => {
   button.addEventListener("click", async () => {
-    state.sessionView = button.dataset.sessionView === "time" ? "time" : "project";
-    localStorage.setItem("codex-monitor-session-view", state.sessionView);
-    renderSessions();
+    await withViewTransition(() => {
+      state.sessionView = button.dataset.sessionView === "time" ? "time" : "project";
+      localStorage.setItem("codex-monitor-session-view", state.sessionView);
+      renderSessions();
+    });
     if (state.sessionView === "time" && !state.timeline) {
       try {
         await ensureTimeline();
-        renderSessions();
+        await withViewTransition(() => renderSessions());
       } catch (error) {
         toast(`日期汇总失败：${error.message}`);
       }
@@ -83,19 +85,22 @@ async function selectSession(sessionId) {
   if (!sessionId) return;
   state.selectedId = sessionId;
   localStorage.setItem("codex-monitor-session", sessionId);
-  document.body.classList.remove("sessions-open");
-  renderSessions();
-  setLoading(true);
+  await withViewTransition(() => {
+    document.body.classList.remove("sessions-open");
+    renderSessions();
+    setLoading(true);
+  });
   closeEvents();
   try {
     state.snapshot = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
-    renderDashboard();
+    await withViewTransition(() => {
+      setLoading(false);
+      renderDashboard();
+    });
     connectEvents(sessionId);
   } catch (error) {
     toast(error.message);
-    setEmpty("会话解析失败", "健康状态中保留了具体错误；原始 .codex 文件未被修改。");
-  } finally {
-    setLoading(false);
+    await withViewTransition(() => setEmpty("会话解析失败", "健康状态中保留了具体错误；原始 .codex 文件未被修改。"));
   }
 }
 
@@ -452,6 +457,19 @@ function toast(message) {
   elements.toast.classList.add("visible");
   clearTimeout(toast.timer);
   toast.timer = setTimeout(() => elements.toast.classList.remove("visible"), 3200);
+}
+
+async function withViewTransition(update) {
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  if (typeof document.startViewTransition !== "function" || reduceMotion) {
+    return await update();
+  }
+  const transition = document.startViewTransition(() => update());
+  try {
+    await transition.finished;
+  } catch {
+    // A newer interaction may supersede the current visual transition; DOM state is already committed.
+  }
 }
 
 async function fetchJson(url) {

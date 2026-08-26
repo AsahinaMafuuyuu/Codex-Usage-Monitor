@@ -38,7 +38,11 @@
 
 * { box-sizing: border-box; }
 [hidden] { display: none !important; }
-html, body { min-height: 100%; }
+html {
+  min-height: 100%;
+  interpolate-size: allow-keywords;
+}
+body { min-height: 100%; }
 
 body {
   margin: 0;
@@ -182,6 +186,7 @@ summary:focus-visible,
   cursor: pointer;
   font-size: var(--text-label);
   font-weight: 650;
+  transition: color 150ms ease, background 150ms ease, box-shadow 150ms ease;
 }
 
 .session-view-button:hover,
@@ -198,6 +203,7 @@ summary:focus-visible,
   overscroll-behavior: contain;
   scrollbar-color: var(--scroll-thumb) transparent;
   scrollbar-width: thin;
+  view-transition-name: session-navigation;
 }
 
 .session-group {
@@ -340,10 +346,13 @@ summary:focus-visible,
   border: 0;
   border-radius: 3px;
   cursor: pointer;
-  transition: background 130ms ease, color 130ms ease;
+  transition: background 150ms ease, color 150ms ease, transform 150ms ease;
 }
 
-.session-item:hover { background: color-mix(in srgb, var(--paper) 58%, transparent); }
+.session-item:hover {
+  background: color-mix(in srgb, var(--paper) 58%, transparent);
+  transform: translateX(2px);
+}
 .session-item.active { background: var(--clay-soft); }
 .session-item.active::before {
   content: "";
@@ -468,7 +477,11 @@ summary:focus-visible,
   width: min(1540px, 100%);
   margin: 0 auto;
   padding: 44px clamp(24px, 4vw, 62px) 88px;
+  view-transition-name: workspace-content;
 }
+
+#empty-state,
+#loading-state { view-transition-name: workspace-content; }
 
 .session-hero {
   display: grid;
@@ -797,6 +810,7 @@ summary:focus-visible,
   padding: 19px 10px 19px 17px;
   cursor: pointer;
   list-style: none;
+  transition: background 170ms ease;
 }
 .agent-card summary::-webkit-details-marker { display: none; }
 .agent-card[open] > summary { background: color-mix(in srgb, var(--parchment) 46%, transparent); }
@@ -878,9 +892,27 @@ summary:focus-visible,
 .agent-chevron {
   color: var(--quiet);
   font-size: 17px;
-  transition: transform 150ms ease;
+  transition: transform 190ms cubic-bezier(.22, .8, .28, 1), color 150ms ease;
 }
 .agent-card[open] > summary .agent-chevron { transform: rotate(90deg); }
+
+.session-group::details-content,
+.time-group::details-content,
+.time-day::details-content,
+.agent-card::details-content {
+  block-size: 0;
+  overflow: clip;
+  opacity: 0;
+  transition: block-size 210ms cubic-bezier(.22, .8, .28, 1), opacity 150ms ease, content-visibility 210ms allow-discrete;
+  transition-behavior: allow-discrete;
+}
+.session-group[open]::details-content,
+.time-group[open]::details-content,
+.time-day[open]::details-content,
+.agent-card[open]::details-content {
+  block-size: auto;
+  opacity: 1;
+}
 
 .task-table-wrap {
   position: relative;
@@ -1101,8 +1133,21 @@ summary:focus-visible,
 
 @keyframes scan { from { transform: translateX(-100%); } to { transform: translateX(390%); } }
 @keyframes pulse { 50% { opacity: .35; transform: scale(.82); } }
+@keyframes workspace-in {
+  from { opacity: 0; transform: translateY(7px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes workspace-out {
+  from { opacity: 1; transform: translateY(0); }
+  to { opacity: 0; transform: translateY(-4px); }
+}
 .live-pulse,
 .agent-node.active::before { animation: pulse 1.7s ease-in-out infinite; }
+
+::view-transition-old(workspace-content) { animation: workspace-out 130ms ease both; }
+::view-transition-new(workspace-content) { animation: workspace-in 210ms cubic-bezier(.22, .8, .28, 1) both; }
+::view-transition-old(session-navigation),
+::view-transition-new(session-navigation) { animation-duration: 140ms; }
 
 @media (max-width: 1260px) {
   .app-shell { grid-template-columns: 300px minmax(0, 1fr); }
@@ -1183,4 +1228,7 @@ summary:focus-visible,
     animation-iteration-count: 1 !important;
     transition-duration: .01ms !important;
   }
+  ::view-transition-group(*),
+  ::view-transition-old(*),
+  ::view-transition-new(*) { animation-duration: .01ms !important; }
 }

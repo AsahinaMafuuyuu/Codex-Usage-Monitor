@@ -382,6 +382,7 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 - [x] Improve the task ledger with sticky context and clearer horizontal-scroll affordance. Task and Status remain pinned at `0px` / `160px`; after the later audit-presentation refinement the visible ledger is 13 columns / 1314px, omits the redundant reasoning display column, and centers every header/value pair while retaining reasoning in the underlying data contract.
 - [x] Rebalance overview metrics into activity, token-flow, and cost information groups. The overview now uses three semantic ruled groups instead of seven equal-weight cells; cost is visually isolated without returning to rounded cards, and session USD shows the stored known amount without a lower-bound prefix while coverage text still discloses unavailable tasks.
 - [x] Harmonize page and ledger scrollbars with the editorial palette. Vertical scroll regions use an 8px warm-taupe thumb; the task ledger uses an 8px muted-clay horizontal thumb, keeping discoverability without the heavier original treatment.
+- [x] Add restrained interaction motion without adding a frontend dependency. Native details transitions animate project/date/agent expansion, View Transitions cover session and navigation state changes when supported, and reduced-motion remains authoritative.
 - [ ] Define an agent expansion policy that avoids fully expanding large descendant trees by default.
 
 ## Phase 10: Calendar usage ledger and daily reconciliation
