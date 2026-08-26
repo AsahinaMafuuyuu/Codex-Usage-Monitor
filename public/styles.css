@@ -666,7 +666,7 @@ summary:focus-visible,
   padding: 20px 18px 18px;
   background: transparent;
 }
-.activity-group .metric-card:first-child {
+.activity-group .metric-card {
   display: flex;
   flex-direction: column;
   align-items: center;

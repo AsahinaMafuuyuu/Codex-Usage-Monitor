@@ -85,7 +85,7 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.task-table th\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.task-table td\s*\{[^}]*font-family:\s*var\(--mono\)/isu);
   assert.match(styles, /\.task-table td\s*\{[^}]*text-align:\s*center/isu);
-  assert.match(styles, /\.activity-group \.metric-card:first-child\s*\{[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*text-align:\s*center/isu);
+  assert.match(styles, /\.activity-group \.metric-card\s*\{[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.task-table\s*\{[^}]*min-width:\s*1314px/isu);
   assert.match(styles, /\.agent-stat span,\s*\.agent-stat strong\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.session-identity\s*\{[^}]*min-width:\s*0/isu);
