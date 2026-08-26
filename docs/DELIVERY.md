@@ -91,7 +91,7 @@ npm test
 - 另有 `45` 条文件首记录无法仅凭单文件证明，其中多数表现为 `total_tokens = 0` 且 `last_token_usage > 0`；必须保留为 `unverified` 或通过同一 thread 的跨文件前序状态继续验证，禁止猜测计入。
 - Request Ledger 对 2026-08-22 / 08-23 / 08-24 的可审计总量分别为 `60,289,305` / `64,066,930` / `175,486,562`。前两日与用户提供的 Profile `61,819,000` / `65,058,000` 仍分别相差约 `2.47%` / `1.52%`；08-24 与此前约 `180,000,000` 的 Profile 值相差约 `2.51%`。这些差额不得用补偿系数抹平。
 
-2026-08-26 实施进度：Phase 13 Task 1–3 已完成。分类器、SQLite schema v9 `model_usage_events` 和同一 thread 的跨 rollout cumulative continuity 已落地；旧 v8 session 会在首次升级时安全 replay 一次建立完整 Request Ledger，现有 Task Boundary Ledger、Timeline 和页面统计口径仍保持不变。Task 3 固化了 chronological replay / terminal-tail 规则：同一 thread 只有时间上最后一个 rollout 可以增量 tail；旧文件增长、截断、同大小重写或晚发现的更早文件都会让整个 thread 进入安全 replay，而不会在未来 baseline 上继续分类。真实 412 个 rollout 的临时 backfill 仍为 42,183 条事件、40,389 verified、1,726 duplicate、68 unverified、0 anomaly，数据库约 31.4 MB、冷构建约 23.2 s；相对逐文件独立实验多验证出的 1 条 file-first 事件现已由 deterministic multi-file fixture 明确证明，不作为补偿值处理。
+2026-08-26 实施进度：Phase 13 Task 1–4 已完成。分类器、SQLite schema v9 `model_usage_events`、同一 thread 的跨 rollout cumulative continuity 和双账本 reconciliation 已落地；现有页面/Timeline 仍未切换到 Request Ledger。全历史临时回放覆盖 412 rollout / 267 session / 2,347 task：1,335 个 `complete` task 全部逐字段精确一致，`mismatch=0`；4 个旧 Boundary Ledger `discontinuity` task 可由 Request Ledger 独立恢复。08-22 / 08-23 / 08-24 Request Ledger 日总量继续精确为 `60,289,305` / `64,066,930` / `175,486,562`。同时保留 1,726 duplicate 为零增量、68 unverified 为 coverage-only、38 个 verified 但未归属 task 的 usage event；这些未归属事件不会被偷偷塞进 task 精确值。单文件只读 classifier audit 再次确认 412 个 rollout 前后 `hashChangedFiles=0`。
 
 下一阶段实施顺序固定如下：
 

@@ -519,7 +519,10 @@ export class SessionRolloutParser {
     const lastUsage = normalizeUsage(payload.info?.last_token_usage);
     const usageEvent = classifyModelUsageEvent(thread.lastUsage, usage, lastUsage);
     const task = thread.currentTaskId ? thread.tasks.get(thread.currentTaskId) : null;
-    if (usageEvent.classification === "generation_start") thread.usageGeneration += 1;
+    if (usageEvent.classification === "generation_start") {
+      thread.usageGeneration += 1;
+      if (task && usageEvent.rollbackFields.length > 0) task.discontinuity = true;
+    }
     const modelUsageEvent = {
       rootSessionId: this.rootSessionId,
       sourceKey,

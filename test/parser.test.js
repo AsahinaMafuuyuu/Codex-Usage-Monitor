@@ -263,6 +263,23 @@ test("counter rollback is reported as a discontinuity", async (t) => {
   assert.equal(restoredParser.snapshot().health.status, "warning");
 });
 
+test("a verified generation reset invalidates the boundary ledger without becoming a parser anomaly", async (t) => {
+  const fixture = await createFixture([
+    line(0, "session_meta", childMeta()),
+    event(1, "task_started", { turn_id: TURN }),
+    token(2, usage(200), null, usage(200)),
+    token(3, usage(30), null, usage(30)),
+    event(4, "task_complete", { turn_id: TURN }),
+  ]);
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+  const parser = await parserFor(fixture.path);
+  const snapshot = parser.snapshot();
+  assert.equal(snapshot.modelUsageEvents.at(-1).classification, "generation_start");
+  assert.equal(snapshot.tasks[0].quality, "discontinuity");
+  assert.equal(snapshot.tasks[0].deltaUsage, null);
+  assert.equal(snapshot.health.discontinuities, 0);
+});
+
 test("unknown formats and malformed task boundaries surface in parser health", async (t) => {
   const fixture = await createFixture([
     line(0, "session_meta", childMeta()),

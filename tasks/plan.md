@@ -727,11 +727,11 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] Every task currently classified `complete` must satisfy exact per-field equality between `Σ verified request usage` and existing `deltaUsage`, unless a documented schema limitation makes a field unavailable.
-- [ ] Known 2026-08-22 and 2026-08-24 reset cases are recovered by Request Ledger without manual special-case IDs.
-- [ ] 2026-08-22 / 08-23 / 08-24 day totals reproduce `60,289,305` / `64,066,930` / `175,486,562` for the audited historical snapshot.
-- [ ] Duplicate broadcasts add exactly zero usage; unverified events are counted in coverage/quality metrics but do not silently enter precise totals.
-- [ ] Reconciliation output distinguishes local parser differences from Profile differences and never treats Profile as a test oracle.
+- [x] Every task currently classified `complete` must satisfy exact per-field equality between `Σ verified request usage` and existing `deltaUsage`, unless a documented schema limitation makes a field unavailable.
+- [x] Known 2026-08-22 and 2026-08-24 reset cases are recovered by Request Ledger without manual special-case IDs.
+- [x] 2026-08-22 / 08-23 / 08-24 day totals reproduce `60,289,305` / `64,066,930` / `175,486,562` for the audited historical snapshot.
+- [x] Duplicate broadcasts add exactly zero usage; unverified events are counted in coverage/quality metrics but do not silently enter precise totals.
+- [x] Reconciliation output distinguishes local parser differences from Profile differences and never treats Profile as a test oracle.
 
 **Verification:** full-history reconciliation harness, targeted parser/database tests, `npm test`, `npm run check`, `git diff --check`, source-hash verification.
 
@@ -740,6 +740,8 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 **Files likely touched:** `src/usage.js`, `src/rollout-parser.js`, `src/database.js`, `src/monitor.js`, tests, `docs/VERIFICATION.md`.
 
 **Estimated scope:** Large.
+
+**Delivered evidence (2026-08-26):** `npm run reconcile:request-ledger` replays the current 412 rollout / 267 session history into a temporary schema v9 database and compares both ledgers. After fixing a migration-audit bug where a proven generation reset had stopped marking the old boundary task as `discontinuity`, all 1,335 currently complete tasks reconcile with exact per-field equality (`mismatch=0`). Four discontinuity tasks are independently recoverable from verified request events. The historical 2026-08-22 / 08-23 / 08-24 totals reproduce exactly, duplicate events remain excluded, 68 unverified events remain coverage-only, and the separate read-only classifier audit reports `hashChangedFiles=0`.
 
 ### Task 5: Promote Request Ledger only after migration gates pass
 

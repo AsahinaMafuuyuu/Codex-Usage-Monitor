@@ -197,6 +197,17 @@ npm test
 - 真实 412 rollout 临时 backfill：42,183 event rows、2,347 task rows、40,389 verified、1,726 duplicate、68 unverified、0 anomaly；耗时 23,169.79 ms，关闭后 SQLite 31,399,936 bytes，page/cache/WAL 约束保持 `4096 / -2000 / 0 / 256`。该结果与 Task 2 的跨-thread连续 parser 基线一致，说明本轮没有制造新的历史分类异常。
 - 最终自动化验证：`npm test` 为 41 tests、40 passed、0 failed、1 skipped；唯一 skipped 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
 
+### Phase 13 Task 4：dual-ledger reconciliation
+
+日期：2026-08-26。新增 `src/reconciliation.js` 与 `npm run reconcile:request-ledger`，在临时 schema v9 数据库中同时保留 Boundary Ledger 与 Request Ledger，并按 task / day 输出一致性、恢复和覆盖状态；该任务仍没有切换产品事实源。
+
+- 首次全历史 reconciliation 暴露 1 个 Boundary `complete` task mismatch：Boundary `3,482,276` vs Request `5,092,923`。根因不是 Request Ledger 多算，而是已验证的 cumulative generation reset 没有继续把迁移期 Boundary task 标为 `discontinuity`。修复后该 task 与另外 3 个 reset task 都进入 `recovered`，parser anomaly/discontinuity health 不会把“已解释 reset”误报为未知异常。
+- 最终全历史结果：412 rollout、267 session、2,347 task；1,335 `exact_match`、0 `schema_limited_match`、0 `mismatch`、4 `recovered`、1,008 `not_comparable`。`not_comparable` 主要是非 complete / 无完整 Boundary delta 的任务，不被当作失败或补值。
+- Request Ledger coverage：40,389 verified、1,726 duplicate、68 unverified、0 anomaly，其中 38 个 verified event 没有 task attribution；duplicate 不进入精确总量，unverified 和 unattributed 单独报告。
+- 日聚合精确复现审计基线：2026-08-22=`60,289,305`，08-23=`64,066,930`，08-24=`175,486,562`。该报告不读取或校准 Profile 数字。
+- 独立 `npm run audit:request-ledger` 仍按单文件 baseline 得到 40,388 verified / 69 unverified，并确认 412 个真实 rollout 的 `hashChangedFiles=0`；跨文件 parser 比单文件审计多证明 1 条事件，差异与 Task 3 fixture 一致。
+- reconciliation 单元测试覆盖 exact match、duplicate=0、历史缺字段的 schema-limited 状态、discontinuity recovery 和按本地日聚合。
+
 ### 2026-08-25：Overview / task ledger / scrollbar / motion polish
 
 本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。

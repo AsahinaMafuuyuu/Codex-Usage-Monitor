@@ -62,5 +62,5 @@
 - [x] Freeze a schema-compatible verified model-usage event classifier
 - [x] Add privacy-safe Request Ledger persistence beside the existing Task Boundary Ledger
 - [x] Preserve usage continuity across rollout files and cumulative generations
-- [ ] Run full-history dual-ledger reconciliation and record mismatch/coverage evidence
+- [x] Run full-history dual-ledger reconciliation and record mismatch/coverage evidence
 - [ ] Promote Request Ledger to the primary aggregation source only after reconciliation gates pass
