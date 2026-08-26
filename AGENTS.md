@@ -17,13 +17,13 @@
 
 - `.codex` 是只读数据源：不得改写 rollout、`session_index.jsonl`、最新的 `state_*.sqlite` 或 `config.toml`。
 - 监控器不得启动或 resume Codex App Server，不得启用 Hooks/OTel，不得调用模型或联网补全数据。
-- 任务用量必须由 `total_token_usage` 的任务边界快照做逐字段差分；严禁累加 `last_token_usage`。
+- 主任务用量必须来自经相邻 `total_token_usage` 逐字段证明的 Request Ledger 事件；`last_token_usage` 只能作为候选新增量接受累计快照验证，严禁裸累加。任务边界 `total_token_usage` 差分继续作为独立 Boundary Ledger 审计器，不得删除或覆盖。
 - 必须尊重 `subagent_history_start_ordinal`，防止分页复制的父历史被重复归因。
-- 累计值倒退、缺边界、字段缺失或 total-only 增长时必须保留 `partial`、`estimated`、`discontinuity` 等质量状态，不得伪造精确值。
+- 累计值倒退、缺 baseline、字段缺失、unverified/anomaly 或 total-only 增长时必须保留对应质量/coverage 状态；只有已验证 Request Ledger 部分可以进入主用量，不得用 Boundary Ledger 或补偿系数填平缺口。
 - SQLite 只保存派生用量和定位元数据；不得保存 prompt、response、消息正文或会话标题。指令预览只能在已认证请求时从原日志按需读取，不落库、不缓存。
 - 服务只能监听 loopback。一次性启动令牌、Strict Cookie、Host/Origin 校验、CSP 和只读 HTTP 方法属于安全边界，不得无 ADR 和测试地弱化。
 - 额度是账号级 `rate_limits` 快照，不得换算成单任务百分比、美元价格或账单级精度。
-- 任务美元值只能按持久化的模型和逐字段 token 差分套用版本化官方标准 API 价目，并明确标为等值估算；不得称为 Codex 订阅实际扣费，也不得静默包含无法从 rollout 证明的长上下文、服务层级、区域或工具费用。
+- 任务美元值只能按持久化的模型和 Request Ledger 派生的规范化 token 字段套用版本化官方标准 API 价目，并明确标为等值估算；不得称为 Codex 订阅实际扣费，也不得静默包含无法从 rollout 证明的长上下文、服务层级、区域或工具费用。
 
 ## 多智能体角色与所有权
 

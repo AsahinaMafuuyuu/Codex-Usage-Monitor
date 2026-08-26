@@ -1,10 +1,11 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { materializeRequestLedgerTasks } from "./reconciliation.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import { addUsage, sumTaskUsage, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 9;
+const SCHEMA_VERSION = 10;
 const REQUEST_LEDGER_SCHEMA_VERSION = 9;
 const QUALITY_KEYS = ["complete", "provisional", "estimated", "partial", "discontinuity", "unknown"];
 const TASK_USAGE_COLUMNS = [
@@ -146,6 +147,7 @@ export class MonitorDatabase {
         output_tokens INTEGER NOT NULL DEFAULT 0,
         reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
         total_tokens INTEGER NOT NULL DEFAULT 0,
+        model_request_count INTEGER NOT NULL DEFAULT 0,
         task_count INTEGER NOT NULL DEFAULT 0,
         active_task_count INTEGER NOT NULL DEFAULT 0,
         complete_count INTEGER NOT NULL DEFAULT 0,
@@ -244,6 +246,10 @@ export class MonitorDatabase {
         delta_total_tokens=CAST(json_extract(delta_usage, '$.totalTokens') AS INTEGER)
       WHERE delta_usage IS NOT NULL AND json_valid(delta_usage) AND delta_total_tokens IS NULL;
     `);
+    const calendarColumns = this.db.prepare("PRAGMA table_info(session_day_usage)").all();
+    if (!calendarColumns.some((column) => column.name === "model_request_count")) {
+      this.db.exec("ALTER TABLE session_day_usage ADD COLUMN model_request_count INTEGER NOT NULL DEFAULT 0;");
+    }
 
     if (previousVersion < 8) this.migratePortableSourceLocators();
 
@@ -251,6 +257,10 @@ export class MonitorDatabase {
     const storedTimezone = this.db.prepare("SELECT value FROM derived_state WHERE key='calendar_timezone'").get()?.value;
     if (previousVersion < SCHEMA_VERSION || storedTimezone !== timezone) {
       this.rebuildAllCalendarIndex();
+    }
+    if (previousVersion < 10) {
+      const roots = this.db.prepare("SELECT id FROM sessions").all();
+      for (const row of roots) this.refreshAggregates(row.id);
     }
     this.db.prepare(`
       INSERT INTO derived_state (key, value) VALUES ('calendar_timezone', ?)
@@ -773,18 +783,30 @@ export class MonitorDatabase {
       SELECT day, root_session_id,
              input_tokens, cached_input_tokens, cache_write_input_tokens,
              output_tokens, reasoning_output_tokens, total_tokens,
+             model_request_count,
              task_count, active_task_count,
              complete_count, provisional_count, estimated_count,
              partial_count, discontinuity_count, unknown_count
       FROM session_day_usage
       ORDER BY day DESC, total_tokens DESC, root_session_id
     `).all();
-    const unattributedRows = this.db.prepare(`
-      SELECT quality, status,
-             delta_input_tokens, delta_cached_input_tokens, delta_cache_write_input_tokens,
-             delta_output_tokens, delta_reasoning_output_tokens, delta_total_tokens
-      FROM tasks WHERE started_at IS NULL
-    `).all();
+    const unattributedBoundaryTasks = this.db.prepare(`
+      SELECT * FROM tasks WHERE started_at IS NULL ORDER BY thread_id, sequence
+    `).all().map(mapTask);
+    const unattributedEvents = this.db.prepare(`
+      SELECT m.source_key, m.line_number, m.root_session_id, m.thread_id, m.turn_id,
+             m.event_ordinal, m.observed_at, m.generation, m.classification, m.quality, m.reason,
+             m.input_tokens, m.cached_input_tokens, m.cache_write_input_tokens,
+             m.output_tokens, m.reasoning_output_tokens, m.total_tokens
+      FROM model_usage_events m
+      INNER JOIN tasks t ON t.thread_id=m.thread_id AND t.turn_id=m.turn_id
+      WHERE t.started_at IS NULL
+      ORDER BY m.source_key, m.line_number
+    `).all().map(mapModelUsageEvent);
+    const unattributedRows = materializeRequestLedgerTasks(
+      unattributedBoundaryTasks,
+      unattributedEvents,
+    );
 
     const months = new Map();
     const overallUsage = zeroUsage();
@@ -803,16 +825,20 @@ export class MonitorDatabase {
         updatedAt: metadata.updatedAt ?? null,
         date: row.day,
         usage,
+        modelRequestCount: Number(row.model_request_count ?? 0),
+        tokensPerModelRequest: tokensPerRequest(usage, row.model_request_count),
         taskCount: Number(row.task_count ?? 0),
         activeTaskCount: Number(row.active_task_count ?? 0),
         qualityCounts: rowQuality,
       };
       day.sessions.push(session);
       day.usage = addUsage(day.usage, usage);
+      day.modelRequestCount += session.modelRequestCount;
       day.taskCount += session.taskCount;
       day.activeTaskCount += session.activeTaskCount;
       addQualityCounts(day.qualityCounts, rowQuality);
       month.usage = addUsage(month.usage, usage);
+      month.modelRequestCount += session.modelRequestCount;
       month.taskCount += session.taskCount;
       month.activeTaskCount += session.activeTaskCount;
       addQualityCounts(month.qualityCounts, rowQuality);
@@ -824,13 +850,15 @@ export class MonitorDatabase {
 
     const unattributed = {
       taskCount: 0,
+      modelRequestCount: 0,
       usage: zeroUsage(),
       qualityCounts: emptyQualityCounts(),
     };
     for (const row of unattributedRows) {
       const quality = QUALITY_KEYS.includes(row.quality) ? row.quality : "unknown";
-      const usage = usageFromTaskRow(row);
+      const usage = row.deltaUsage ?? null;
       unattributed.taskCount += 1;
+      unattributed.modelRequestCount += row.requestCount ?? 0;
       unattributed.qualityCounts[quality] += 1;
       qualityCounts[quality] += 1;
       if (usage) {
@@ -843,6 +871,15 @@ export class MonitorDatabase {
       generatedAt: new Date().toISOString(),
       timezone: localTimezone(),
       usage: overallUsage,
+      modelRequestCount: [...months.values()].reduce(
+        (sum, month) => sum + month.modelRequestCount,
+        0,
+      ) + unattributed.modelRequestCount,
+      tokensPerModelRequest: tokensPerRequest(
+        overallUsage,
+        [...months.values()].reduce((sum, month) => sum + month.modelRequestCount, 0) +
+          unattributed.modelRequestCount,
+      ),
       qualityCounts,
       unattributed,
       months: [...months.values()]
@@ -900,22 +937,22 @@ export class MonitorDatabase {
 
   rebuildCalendarForSession(rootId) {
     this.db.prepare("DELETE FROM session_day_usage WHERE root_session_id=?").run(rootId);
-    const tasks = this.db.prepare(`
-      SELECT started_at, status, quality,
-             delta_input_tokens, delta_cached_input_tokens, delta_cache_write_input_tokens,
-             delta_output_tokens, delta_reasoning_output_tokens, delta_total_tokens
-      FROM tasks WHERE root_session_id=? AND started_at IS NOT NULL
-    `).all(rootId);
+    const boundaryTasks = this.db.prepare(`
+      SELECT * FROM tasks WHERE root_session_id=? AND started_at IS NOT NULL
+      ORDER BY thread_id, sequence
+    `).all(rootId).map(mapTask);
+    const tasks = materializeRequestLedgerTasks(boundaryTasks, this.getModelUsageEvents(rootId));
     const days = new Map();
     for (const task of tasks) {
-      const dayKey = localDayKey(task.started_at);
+      const dayKey = localDayKey(task.startedAt);
       if (!dayKey) continue;
       const aggregate = days.get(dayKey) ?? createCalendarAggregate();
       aggregate.taskCount += 1;
+      aggregate.modelRequestCount += task.requestCount ?? 0;
       if (task.status === "in_progress") aggregate.activeTaskCount += 1;
       const quality = QUALITY_KEYS.includes(task.quality) ? task.quality : "unknown";
       aggregate.qualityCounts[quality] += 1;
-      const usage = usageFromTaskRow(task);
+      const usage = task.deltaUsage ?? null;
       if (usage) aggregate.usage = addUsage(aggregate.usage, usage);
       days.set(dayKey, aggregate);
     }
@@ -924,10 +961,11 @@ export class MonitorDatabase {
         day, root_session_id,
         input_tokens, cached_input_tokens, cache_write_input_tokens,
         output_tokens, reasoning_output_tokens, total_tokens,
+        model_request_count,
         task_count, active_task_count,
         complete_count, provisional_count, estimated_count,
         partial_count, discontinuity_count, unknown_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const [day, aggregate] of days) {
       insert.run(
@@ -939,6 +977,7 @@ export class MonitorDatabase {
         aggregate.usage.outputTokens ?? 0,
         aggregate.usage.reasoningOutputTokens ?? 0,
         aggregate.usage.totalTokens ?? 0,
+        aggregate.modelRequestCount,
         aggregate.taskCount,
         aggregate.activeTaskCount,
         aggregate.qualityCounts.complete,
@@ -955,9 +994,13 @@ export class MonitorDatabase {
     const agentRows = this.db.prepare(`
       SELECT thread_id, parent_thread_id, depth FROM agents WHERE root_session_id=?
     `).all(rootId);
-    const taskRows = this.db.prepare(`
+    const boundaryTaskRows = this.db.prepare(`
       SELECT * FROM tasks WHERE root_session_id=? ORDER BY thread_id, sequence
     `).all(rootId).map(mapTask);
+    const taskRows = materializeRequestLedgerTasks(
+      boundaryTaskRows,
+      this.getModelUsageEvents(rootId),
+    );
     const tasksByThread = new Map();
     for (const task of taskRows) {
       if (!tasksByThread.has(task.threadId)) tasksByThread.set(task.threadId, []);
@@ -1139,6 +1182,7 @@ function parseJson(value) {
 function createCalendarAggregate() {
   return {
     usage: zeroUsage(),
+    modelRequestCount: 0,
     taskCount: 0,
     activeTaskCount: 0,
     qualityCounts: emptyQualityCounts(),
@@ -1203,6 +1247,8 @@ function materializeCalendarMonth(month) {
   return {
     key: month.key,
     usage: month.usage,
+    modelRequestCount: month.modelRequestCount,
+    tokensPerModelRequest: tokensPerRequest(month.usage, month.modelRequestCount),
     taskCount: month.taskCount,
     activeTaskCount: month.activeTaskCount,
     qualityCounts: month.qualityCounts,
@@ -1211,12 +1257,21 @@ function materializeCalendarMonth(month) {
       .map((day) => ({
         key: day.key,
         usage: day.usage,
+        modelRequestCount: day.modelRequestCount,
+        tokensPerModelRequest: tokensPerRequest(day.usage, day.modelRequestCount),
         taskCount: day.taskCount,
         activeTaskCount: day.activeTaskCount,
         qualityCounts: day.qualityCounts,
         sessions: day.sessions.sort(compareCalendarSessions),
       })),
   };
+}
+
+function tokensPerRequest(usage, count) {
+  const requestCount = Number(count ?? 0);
+  const totalTokens = usage?.totalTokens;
+  if (!Number.isFinite(totalTokens) || requestCount <= 0) return null;
+  return totalTokens / requestCount;
 }
 
 function compareCalendarSessions(left, right) {

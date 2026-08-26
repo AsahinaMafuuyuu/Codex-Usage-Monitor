@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-08-24
 
+> 2026-08-26 更新：价目、公式与覆盖语义继续有效；schema v10 起传给定价器的主 `deltaUsage` 已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger 派生值，SQLite 中保留的 Boundary `delta_usage` 不再作为费用 fallback。
+
 ## Context
 
 任务已经持久化模型、effort 和六类累计 token 边界差分，但用户还需要逐任务、每个智能体及完整会话的美元计费效果。Codex Desktop 的本地 rollout 和账号级 `rate_limits` 不提供逐任务实际账单金额；订阅额度百分比也不能换算成美元。官方模型页提供标准 API 的 input、cached input、output 单价，GPT-5.6 还明确给出 cache write 为普通 input 的 1.25 倍。
@@ -15,7 +17,7 @@ Rollout 的任务边界差分聚合一个 turn 内的多次响应，不能证明
 - `src/pricing.js` 保存带 `version`、`capturedAt`、`reviewAfter`、来源 URL 和限制列表的本地只读价目表；运行时不联网。
 - 支持有官方价目证据的 GPT-5.4、GPT-5.5、GPT-5.6 Sol/Terra/Luna，以及可确定映射的 alias/日期 snapshot。未知内部模型不猜测价格。
 - 计算时从 input 中扣除 cached input；GPT-5.6 再扣除 cache write 并按 1.25 倍 input 价单独计算。reasoning tokens 已包含在 output 中，不重复计费。
-- 费用由持久化的 `model + deltaUsage` 在 API snapshot 生成时确定性重算，不新增 SQLite 金额列。响应携带价目版本、匹配模型、分项、来源、限制和过期状态。
+- 费用由持久化 `model` 与 API snapshot 的当前主 `deltaUsage` 确定性重算，不新增 SQLite 金额列。响应携带价目版本、匹配模型、分项、来源、限制和过期状态。
 - 任一必需 token 明细缺失或互相矛盾时返回 `unavailable`，不生成伪精确金额。
 - 智能体自身费用仅汇总该线程的任务；含后代费用沿现有 `parentThreadId` 拓扑递归汇总。会话总额覆盖根智能体和全部后代，并另给出子智能体专属合计。
 - 汇总保留已估算与不可估算任务数。只要两者并存就标为 `partial`，已知金额只能解释为下限；全部不可估算时金额为 `null`。

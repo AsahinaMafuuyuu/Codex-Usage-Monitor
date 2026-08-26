@@ -35,7 +35,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 ### `GET /api/timeline`
 
-返回全部已发现根 session 的本地日期用量账页。schema v8 会先按 portable `source_key` 匹配各 root session 的持久化 task/cursor 状态：从未导入的历史只在第一次建立派生 ledger 时完整解析；可信的 append-only cursor 只读取新增字节；无变化的 session 不读取 rollout 正文。同步完成后，接口从 SQLite `session_day_usage` 物化索引生成响应，不再依赖“任意文件变化即全量回放”的内存缓存。换 Windows 用户目录或盘符后，同一 source key 会重新绑定当前 Codex home，不会仅因绝对路径不同而失效。
+返回全部已发现根 session 的本地日期用量账页。schema v10 会先按 portable `source_key` 匹配各 root session 的持久化 task/cursor/Request Ledger 状态：从未导入或尚未完成 schema v9 Request Ledger backfill 的历史才完整解析；可信的 append-only cursor 只读取新增字节；无变化的 session 不读取 rollout 正文。同步完成后，接口从 SQLite `session_day_usage` 物化索引生成 request-derived 响应。v9→v10 只重建已有 Request Ledger 的 Agent/Calendar 派生 aggregate，不因事实源切换重新读取 rollout。
 
 该同步只写监控器自己的派生 SQLite（task、cursor、session-day aggregate），从不修改 `.codex`。Timeline 后台补齐不会把历史 rollout 中的全部 quota 快照批量归档；账号额度仍由现有 latest-quota/实时路径维护。cursor 不可信、文件收缩或持久化状态不足时，parser 会回退到原有安全 replay 规则。
 
@@ -44,16 +44,22 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
   "generatedAt": "2026-08-25T03:22:56.706Z",
   "timezone": "Asia/Shanghai",
   "usage": { "inputTokens": 0, "cachedInputTokens": 0, "outputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 0 },
+  "modelRequestCount": 0,
+  "tokensPerModelRequest": null,
   "qualityCounts": { "complete": 0, "provisional": 0, "estimated": 0, "partial": 0, "discontinuity": 0, "unknown": 0 },
   "months": [{
     "key": "2026-08",
     "usage": {},
+    "modelRequestCount": 0,
+    "tokensPerModelRequest": null,
     "taskCount": 0,
     "activeTaskCount": 0,
     "qualityCounts": {},
     "days": [{
       "key": "2026-08-24",
       "usage": {},
+      "modelRequestCount": 0,
+      "tokensPerModelRequest": null,
       "taskCount": 0,
       "activeTaskCount": 0,
       "qualityCounts": {},
@@ -63,6 +69,8 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
         "projectPath": "C:\\workspace\\example",
         "date": "2026-08-24",
         "usage": {},
+        "modelRequestCount": 0,
+        "tokensPerModelRequest": null,
         "taskCount": 0,
         "activeTaskCount": 0,
         "qualityCounts": {}
@@ -73,7 +81,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 }
 ```
 
-`months` 和 `days` 均按 key 降序排列；页面用原生 `details` 展开月份、日期和当天 session。日期 key 按运行监控器的本地时区从任务 `startedAt` 生成，而不是按 rollout 文件夹日期或 UTC 字符串截取。`usage` 只累加可计算的任务边界 `deltaUsage`；`qualityCounts` 保留 `complete`、`provisional`、`estimated`、`partial`、`discontinuity` 和 `unknown` 数量，因此含中断或缺边界的日期不能被误读为完整精确值。没有可归入本地日期的任务进入 `unattributed`。
+`months` 和 `days` 均按 key 降序排列；页面用原生 `details` 展开月份、日期和当天 session。日期 key 仍按任务 `startedAt` 的本地时区生成。`usage` 只累加 Request Ledger 中已验证且已归属 task 的 usage；同 task 存在 unverified/anomaly 时只保留已验证部分并以 `partial` 披露，不使用 Boundary delta 补齐。`modelRequestCount` 只统计 verified model usage units，`tokensPerModelRequest=usage.totalTokens/modelRequestCount`；它们不保证与 HTTP 请求或服务端计费请求一一对应。没有可归入本地日期的任务进入 `unattributed`。
 
 该接口的 total token 是本地 rollout 的审计汇总，不是 Codex 个人资料的订阅账单字段。个人资料可能采用不同的服务端时间边界、未公开的请求级计费口径或包含本地无法证明的记录；二者只应比较量级和质量覆盖，不应要求逐字相等。
 
@@ -87,7 +95,11 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
   "agents": [{
     "tasks": [],
     "ownCostEstimate": {},
-    "subtreeCostEstimate": {}
+    "subtreeCostEstimate": {},
+    "ownModelRequestCount": 0,
+    "subtreeModelRequestCount": 0,
+    "ownTokensPerModelRequest": null,
+    "subtreeTokensPerModelRequest": null
   }],
   "summary": {
     "agentCount": 0,
@@ -95,6 +107,10 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
     "activeTasks": 0,
     "totalUsage": {},
     "subagentUsage": {},
+    "modelRequestCount": 0,
+    "tokensPerModelRequest": null,
+    "subagentModelRequestCount": 0,
+    "subagentTokensPerModelRequest": null,
     "qualityCounts": {},
     "totalCostEstimate": {
       "status": "unavailable",
@@ -117,10 +133,16 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 }
 ```
 
-每个 `agents[].tasks[]` 任务包含 rollout 的 `model`、`effort` 以及运行时派生的 `costEstimate`：
+每个 `agents[].tasks[]` 任务的主 `deltaUsage` 来自 Request Ledger，并保留 Boundary Ledger 审计字段；同时包含 rollout 的 `model`、`effort` 以及运行时派生的 `costEstimate`：
 
 ```json
 {
+  "usageSource": "request_ledger",
+  "requestCount": 1,
+  "tokensPerModelRequest": 12345,
+  "requestLedgerCoverage": { "verified": 1, "duplicate": 0, "unverified": 0, "anomaly": 0 },
+  "boundaryQuality": "complete",
+  "boundaryDeltaUsage": {},
   "model": "gpt-5.6-terra",
   "effort": "xhigh",
   "costEstimate": {
@@ -140,11 +162,13 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 }
 ```
 
+`boundaryDeltaUsage` / `boundaryQuality` 是迁移期审计证据，不参与页面主汇总、费用或缓存命中率 fallback。若 task 同时包含 verified 与 unverified/anomaly 事件，主 `deltaUsage` 只保留 verified 部分并以 `partial` 标记；Boundary 值即使看似完整也不会被混入。
+
 `costEstimate.status` 为 `estimated` 或 `unavailable`；不可估算时 `amountUsd=null` 并给出 `reason`。`pricing` 返回本地价目表版本、抓取/复核日期、官方来源、支持模型和是否待复核。金额是当前标准 API 短上下文等值，不是 Codex 订阅扣费，也不包含无法从 rollout 证明的长上下文、服务层级、区域或工具费用。
 
 每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。四类摘要均返回 `estimatedTasks` 和 `unavailableTasks`：全部可计算为 `estimated`，混合覆盖为 `partial`，没有可计算任务为 `unavailable`。`partial.amountUsd` 只是已知任务的下限；页面用 `≥` 显示，不把它冒充完整总额。
 
-页面从 `summary.totalUsage` 计算完整会话输入、输出和缓存命中率，从 `agents[].ownUsage` 与 `tasks[].deltaUsage` 计算对应层级命中率。统一公式为 `cachedInputTokens / inputTokens`；API 不增加可失真的持久化百分比字段。
+页面从 request-derived `summary.totalUsage` 计算完整会话输入、输出和缓存命中率，从 `agents[].ownUsage` 与 `tasks[].deltaUsage` 计算对应层级命中率。统一公式为 `cachedInputTokens / inputTokens`；费用估算也消费同一套 request-derived 六字段 token。`requestCount` / `modelRequestCount` 和 `tokensPerModelRequest` 只由 verified model usage units 派生。
 
 这是有状态选择操作，但不写 `.codex`；它只更新监控器自身的解析范围和派生 SQLite。
 

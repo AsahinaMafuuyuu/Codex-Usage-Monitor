@@ -63,4 +63,4 @@
 - [x] Add privacy-safe Request Ledger persistence beside the existing Task Boundary Ledger
 - [x] Preserve usage continuity across rollout files and cumulative generations
 - [x] Run full-history dual-ledger reconciliation and record mismatch/coverage evidence
-- [ ] Promote Request Ledger to the primary aggregation source only after reconciliation gates pass
+- [x] Promote Request Ledger to the primary aggregation source only after reconciliation gates pass

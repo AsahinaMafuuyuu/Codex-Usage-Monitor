@@ -5,7 +5,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | ADR | 状态 | 决策 |
 |---|---|---|
 | [0001](0001-read-only-rollout-observer.md) | Accepted | 使用本地只读 rollout observer |
-| [0002](0002-cumulative-boundary-delta.md) | Accepted | 用累计快照边界差分做任务归因 |
+| [0002](0002-cumulative-boundary-delta.md) | Accepted | 用累计快照边界差分做迁移期审计与质量校验；主聚合职责由 ADR-0015 接替 |
 | [0003](0003-metadata-only-persistence.md) | Accepted | SQLite 仅持久化派生元数据 |
 | [0004](0004-loopback-session-security.md) | Accepted | 采用 loopback 和启动会话安全边界 |
 | [0005](0005-file-observer-and-sse.md) | Accepted | 使用文件观察、轮询与 SSE 实时更新 |
@@ -18,6 +18,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0012](0012-calendar-usage-ledger.md) | Accepted | 用本地日期聚合全部 rollout，并以月→日→session 展开 |
 | [0013](0013-incremental-calendar-index.md) | Accepted | 用 SQLite session-day 物化索引和 cursor 增量同步替代 Timeline 全历史回放 |
 | [0014](0014-portable-source-locators.md) | Accepted | 用 `.codex` 相对 source key 解耦 Windows 用户名、盘符和持久化 cursor 身份 |
+| [0015](0015-request-ledger-primary-aggregation.md) | Accepted | 以累计快照验证后的 Request Ledger 作为 Task / Agent / Session / Timeline 主聚合事实源 |
 
 ## 新增 ADR
 

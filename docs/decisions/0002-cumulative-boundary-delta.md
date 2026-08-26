@@ -2,6 +2,7 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-24
+- **Aggregation role superseded by:** [ADR-0015](0015-request-ledger-primary-aggregation.md)。边界审计器与 `last_token_usage` 禁止裸累加规则仍有效。
 
 ## Context
 

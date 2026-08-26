@@ -50,7 +50,7 @@ codex-usage-monitor\
    └─ archived_sessions\...
 ```
 
-从 schema v8 起，数据库不再用 `C:\Users\...\.codex\...` 绝对路径作为 cursor/任务来源身份，而持久化 `sessions/.../rollout-*.jsonl` 形式的 `.codex` 相对 source key。schema v9 在此基础上新增内部 `model_usage_events` Request Ledger，用 `(source_key, line_number)` 幂等保存经累计快照分类的模型 usage 事件；它不保存 prompt/response/tool 内容，也尚未替代现有 Task Boundary Ledger 作为页面聚合事实源。新电脑用户名、工程盘符或 `.codex` 根目录改变后，启动时会把 source key 绑定到当前 Codex home；文件本身未变化时可以继续原 byte cursor，而不是仅因为路径变化重扫历史。首次创建全新数据库仍需要一次性建立历史索引。
+从 schema v8 起，数据库不再用 `C:\Users\...\.codex\...` 绝对路径作为 cursor/任务来源身份，而持久化 `sessions/.../rollout-*.jsonl` 形式的 `.codex` 相对 source key。schema v9 在此基础上新增 `model_usage_events` Request Ledger，用 `(source_key, line_number)` 幂等保存经累计快照分类的模型 usage 事件；schema v10 在 reconciliation 门槛通过后把 verified Request Ledger 提升为页面与 Timeline 的主聚合事实源，同时继续保留 Task Boundary Ledger 作为独立审计器。新电脑用户名、工程盘符或 `.codex` 根目录改变后，启动时会把 source key 绑定到当前 Codex home；文件本身未变化时可以继续原 byte cursor，而不是仅因为路径变化重扫历史。首次创建全新数据库仍需要一次性建立历史索引。
 
 根 session 的 `projectPath` 仍会保留旧会话当时的工程 `cwd`，用于历史分组和审计；它不是 rollout locator，不影响迁移恢复。非标准 `.codex` 位置请设置 `CODEX_MONITOR_HOME`，程序不会扫描所有盘符猜测数据目录。完整步骤见 [运行与故障处理](docs/OPERATIONS.md) 和 [ADR-0014](docs/decisions/0014-portable-source-locators.md)。
 
@@ -62,7 +62,7 @@ codex-usage-monitor\
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
 - 逐任务展示 rollout 记录的模型、effort 和当前标准 API 短上下文 USD 等值估算；会话概览汇总主智能体及全部后代。未知模型或明细不足时明确显示不可估算。
-- 区分 `complete`、`provisional`、`estimated`、`partial`、`discontinuity` 和 `unknown` 数据质量。
+- 主 Request Ledger 区分 `complete`、`provisional`、`partial` 和 `unknown`；旧 Boundary Ledger 的 `estimated` / `discontinuity` 仍通过审计字段保留。
 - 通过文件观察与 1 秒轮询实时增量更新，并用 SSE 刷新页面。
 - 任务表不显示指令正文；受认证的旧 preview API 暂时保留，供后续完整对话功能重新设计。
 - 任务表固定 14 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏审计字段。
@@ -72,13 +72,14 @@ codex-usage-monitor\
 
 - `history.jsonl` 不用于 token 统计，因为它没有 token 字段。
 - 用量来源是 `.codex/sessions/**/rollout-*.jsonl` 和 `.codex/archived_sessions`。
-- 任务 token 来自 `total_token_usage` 的任务边界差分；绝不累加可能重复或重置的 `last_token_usage`。
+- schema v10 起，任务 token 来自经相邻 `total_token_usage` 逐字段验证的 Request Ledger；`last_token_usage` 只作为候选新增量被验证，绝不裸累加。原任务边界差分继续持久化为独立审计证据。
+- `modelRequestCount` 表示已验证且归属任务的模型用量单元，`tokensPerModelRequest` 只由这些单元计算；它们不保证与 HTTP 请求或 Codex 服务端计费请求一一对应。
 - 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
 - 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度。
 - 美元值使用版本化官方标准 API 价目计算，不是 Codex 订阅实际扣费；不包含无法从任务汇总证明的长上下文、服务层级、区域或工具费用。部分任务不可估算时，任务数量和 coverage 文案仍被保留，显示金额只是已知部分。
-- `complete` 仅表示可见边界完整且累计值单调，不等同服务端账单的逐请求 usage。
+- Request Ledger task 的 `complete` 表示其已归属事件均可验证且六类字段完整；若同 task 仍有 unverified/anomaly，只累计已验证下限并降为 `partial`，不 fallback 到 Boundary Ledger。
 - 时间以 UTC ISO-8601 存储，页面按浏览器本地时区显示。
-- 按日总量来自所有已发现 rollout 的任务边界差分，包含未被用户打开过的 session；有 `partial`、`estimated`、`discontinuity` 或 `unknown` 的日期会保留质量标记。
+- 按日总量来自所有已发现 rollout 的 request-derived task usage，包含未被用户打开过的 session；日期仍按 task `startedAt` 的本地日期归属，并保留质量覆盖。
 - 按日总量是本机 rollout 审计汇总，不等同 Codex 个人资料中的订阅额度或账单 token；两者可能因日期边界和服务端口径不同而不相等。
 
 实现依据和证据链接记录在 [架构说明](docs/ARCHITECTURE.md) 与 [ADR 索引](docs/decisions/README.md)。

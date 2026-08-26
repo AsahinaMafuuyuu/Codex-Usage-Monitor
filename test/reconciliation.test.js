@@ -2,6 +2,7 @@ import assert from "node:assert/strict";
 import test from "node:test";
 import {
   aggregateVerifiedUsageByLocalDay,
+  materializeRequestLedgerTasks,
   reconcileRequestLedger,
 } from "../src/reconciliation.js";
 
@@ -52,6 +53,37 @@ test("verified local-day aggregation excludes duplicate and unverified events", 
   const days = aggregateVerifiedUsageByLocalDay(events);
   assert.equal(days["2026-08-22"].usage.totalTokens, 50);
   assert.equal(days["2026-08-22"].requestCount, 2);
+});
+
+test("primary task usage comes only from fully verified request events while retaining boundary evidence", () => {
+  const original = task("discontinuity", null);
+  const [promoted] = materializeRequestLedgerTasks(
+    [original],
+    [event("generation_start", usage(30))],
+  );
+  assert.equal(promoted.usageSource, "request_ledger");
+  assert.equal(promoted.deltaUsage.totalTokens, 30);
+  assert.equal(promoted.quality, "complete");
+  assert.equal(promoted.boundaryQuality, "discontinuity");
+  assert.equal(promoted.boundaryDeltaUsage, null);
+  assert.equal(promoted.requestCount, 1);
+  assert.equal(promoted.tokensPerModelRequest, 30);
+});
+
+test("an attributed unverified event keeps only verified request usage as partial without boundary fallback", () => {
+  const original = task("complete", usage(100));
+  const [promoted] = materializeRequestLedgerTasks(
+    [original],
+    [
+      event("verified_increment", usage(80)),
+      event("unverified", null),
+    ],
+  );
+  assert.equal(promoted.deltaUsage.totalTokens, 80);
+  assert.equal(promoted.quality, "partial");
+  assert.equal(promoted.boundaryDeltaUsage.totalTokens, 100);
+  assert.equal(promoted.requestLedgerCoverage.unverified, 1);
+  assert.equal(promoted.tokensPerModelRequest, 80);
 });
 
 function task(quality, deltaUsage) {

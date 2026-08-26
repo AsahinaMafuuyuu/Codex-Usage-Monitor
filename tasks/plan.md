@@ -749,11 +749,11 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] Session dashboard and Timeline preserve existing API semantics unless an ADR explicitly versions the contract.
-- [ ] Task totals, cost estimates and cache-hit calculations consume the same normalized request-derived token fields without double-counting reasoning or cached input.
-- [ ] Model request count and tokens/request may be exposed only from verified usage events; documentation states that these are model-usage units and not guaranteed one-to-one HTTP requests.
-- [ ] Incremental tail, restart restore, full replay and calendar materialization return identical totals for the same rollout state.
-- [ ] A new ADR supersedes the relevant part of ADR-0002 while preserving the prohibition on naked `last_token_usage` summation and the separation from Codex Profile/billing semantics.
+- [x] Session dashboard and Timeline preserve existing API semantics unless an ADR explicitly versions the contract.
+- [x] Task totals, cost estimates and cache-hit calculations consume the same normalized request-derived token fields without double-counting reasoning or cached input.
+- [x] Model request count and tokens/request may be exposed only from verified usage events; documentation states that these are model-usage units and not guaranteed one-to-one HTTP requests.
+- [x] Incremental tail, restart restore, full replay and calendar materialization return identical totals for the same rollout state.
+- [x] A new ADR supersedes the relevant part of ADR-0002 while preserving the prohibition on naked `last_token_usage` summation and the separation from Codex Profile/billing semantics.
 
 **Verification:** `npm test`, `npm run check`, `git diff --check`, real-history reconciliation, restart/tail/browser regression if UI metrics change.
 
@@ -763,13 +763,15 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Estimated scope:** Large.
 
+**Delivered evidence (2026-08-26):** schema v10 materializes Task / Agent / Session / Timeline usage from verified Request Ledger events while retaining `tasks.delta_usage/quality` as untouched Boundary Ledger evidence. Targeted tests prove request-derived cost/usage, verified-unit counts, partial lower-bound behavior, restart/tail identity and v9→v10 aggregate promotion without rollout replay. Full-history schema v10 reconciliation remains `1,335 exact / 0 mismatch / 4 recovered`, and the primary Timeline reproduces 2026-08-22 / 08-23 / 08-24 as `60,289,305 / 64,066,930 / 175,486,562` with `636 / 550 / 1,439` verified model usage units respectively. ADR-0015 records the promotion and preserves the prohibition on naked `last_token_usage` summation and Profile calibration.
+
 ### Checkpoint: Request Ledger migration
 
-- [ ] Classifier has no unexplained mismatch on the audited historical dataset; any new anomaly is retained and documented, not force-classified.
-- [ ] Complete-task dual-ledger reconciliation is exact per field.
-- [ ] Known reset/missing-baseline recoveries are reproduced without session/turn-specific hacks.
-- [ ] SQLite migration, incremental tail and restart recovery are idempotent and bounded.
-- [ ] Request Ledger becomes the primary aggregation source only after the above gates pass and the ADR is accepted.
+- [x] Classifier has no unexplained mismatch on the audited historical dataset; any new anomaly is retained and documented, not force-classified.
+- [x] Complete-task dual-ledger reconciliation is exact per field.
+- [x] Known reset/missing-baseline recoveries are reproduced without session/turn-specific hacks.
+- [x] SQLite migration, incremental tail and restart recovery are idempotent and bounded.
+- [x] Request Ledger becomes the primary aggregation source only after the above gates pass and the ADR is accepted.
 
 ## Risks and Mitigations
 

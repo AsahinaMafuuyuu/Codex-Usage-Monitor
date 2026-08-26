@@ -79,9 +79,9 @@ npm test
 
 下一位智能体开始修改 `public/**` 前，应先阅读 [Frontend Handoff](FRONTEND-HANDOFF.md)。该文档记录精确 Git 基线、已冻结视觉/字体契约、Phase 9 后续顺序、浏览器验收协议和禁止越界修改的后端/安全边界。
 
-## 下一阶段交接：Request Ledger 双账本验证
+## Phase 13 交付：Request Ledger 主聚合迁移
 
-当前任务 token 仍以 `total_token_usage` 的任务边界差分为正式事实源。2026-08-26 对本机历史 rollout 做了一次只读 Request Ledger 可行性实验，结果显示：把 `last_token_usage` 视为“最近一次新增模型 usage”，再用累计 `total_token_usage` 做逐字段一致性校验和去重，可以恢复当前任务边界算法因累计 generation 重置而丢失的可审计用量；但在完成双账本回归前，不得直接用裸 `SUM(last_token_usage)` 替换现有实现。
+schema v10 起，任务、Agent、Session、Timeline、缓存命中率和 USD 等值估算的主 token 事实源已经切换为 **verified Request Ledger**。`last_token_usage` 仍绝不裸累加：每个候选新增 usage 必须由相邻 `total_token_usage` 逐字段证明。旧任务边界差分继续原样保存在 `tasks.delta_usage/quality`，作为至少一个迁移发布周期内的独立 Boundary Ledger 审计器。
 
 实验基线：
 
@@ -91,7 +91,7 @@ npm test
 - 另有 `45` 条文件首记录无法仅凭单文件证明，其中多数表现为 `total_tokens = 0` 且 `last_token_usage > 0`；必须保留为 `unverified` 或通过同一 thread 的跨文件前序状态继续验证，禁止猜测计入。
 - Request Ledger 对 2026-08-22 / 08-23 / 08-24 的可审计总量分别为 `60,289,305` / `64,066,930` / `175,486,562`。前两日与用户提供的 Profile `61,819,000` / `65,058,000` 仍分别相差约 `2.47%` / `1.52%`；08-24 与此前约 `180,000,000` 的 Profile 值相差约 `2.51%`。这些差额不得用补偿系数抹平。
 
-2026-08-26 实施进度：Phase 13 Task 1–4 已完成。分类器、SQLite schema v9 `model_usage_events`、同一 thread 的跨 rollout cumulative continuity 和双账本 reconciliation 已落地；现有页面/Timeline 仍未切换到 Request Ledger。全历史临时回放覆盖 412 rollout / 267 session / 2,347 task：1,335 个 `complete` task 全部逐字段精确一致，`mismatch=0`；4 个旧 Boundary Ledger `discontinuity` task 可由 Request Ledger 独立恢复。08-22 / 08-23 / 08-24 Request Ledger 日总量继续精确为 `60,289,305` / `64,066,930` / `175,486,562`。同时保留 1,726 duplicate 为零增量、68 unverified 为 coverage-only、38 个 verified 但未归属 task 的 usage event；这些未归属事件不会被偷偷塞进 task 精确值。单文件只读 classifier audit 再次确认 412 个 rollout 前后 `hashChangedFiles=0`。
+2026-08-26 实施进度：Phase 13 Task 1–5 已完成。schema v10 将 verified Request Ledger 提升为主聚合事实源，并为 Task / Agent / Session / Timeline 增加 verified model usage unit count 与 tokens/unit；这里的“model request”不保证与 HTTP 请求或服务端计费请求一一对应。全历史临时回放覆盖 412 rollout / 267 session / 2,347 task：1,335 个旧 Boundary `complete` task 全部逐字段一致，`mismatch=0`；4 个 Boundary `discontinuity` task 可恢复。主 Timeline 对 08-22 / 08-23 / 08-24 分别为 `60,289,305 / 64,066,930 / 175,486,562`，对应 `636 / 550 / 1,439` 个 verified model usage units。duplicate、unverified、anomaly 和未归属事件继续单独保留 coverage，不通过 Boundary fallback 或补偿系数伪造完整值。
 
 下一阶段实施顺序固定如下：
 
@@ -99,8 +99,8 @@ npm test
 2. **建立双账本。** 新增内部 `model_usage_events` / Request Ledger，但保留现有 Task Boundary Ledger。Request Ledger 的单元语义是“经累计快照证明的新增模型 usage”，不是底层 HTTP 请求；产品层可显示“模型请求”，内部不得假定与网络请求一一对应。
 3. **跨文件保持 thread usage continuity。** 同一 `thread_id` 的累计状态不能被 rollout 文件边界截断；文件首记录只有在能由前序 generation 或 `total == last` 的新 generation 规则证明时才可计入。
 4. **生成 reconciliation report。** 对每个 complete task 验证 `Σ verified request usage == boundary deltaUsage`；reset / missing-baseline 任务单独列出 Request Ledger 可恢复值；重复广播必须为零增量；无法证明的记录必须保持质量标签而不是补值。
-5. **通过门槛后再切换事实源。** 只有完整测试、真实历史回放、增量 tail、SQLite 重启恢复、跨文件 continuity 和日期聚合均通过，才允许用 Request Ledger 聚合 Task / Agent / Session / Day；旧边界算法至少保留一个迁移期作为一致性审计器。
-6. **记录架构决策和迁移证据。** 新 ADR 应 supersede ADR-0002 中“任务边界累计差分是唯一主计量方式”的部分，但继续保留“不裸累加 `last_token_usage`”“不把 Profile 当本地 ground truth”“未知数据不伪造精确值”等不变量。
+5. **通过门槛后再切换事实源。** 已完成；Request Ledger 现聚合 Task / Agent / Session / Day，旧 Boundary Ledger 至少保留一个迁移期作为一致性审计器。
+6. **记录架构决策和迁移证据。** 已由 [ADR-0015](decisions/0015-request-ledger-primary-aggregation.md) 接替 ADR-0002 的主聚合职责，并继续保留“不裸累加 `last_token_usage`”“不把 Profile 当本地 ground truth”“未知数据不伪造精确值”等不变量。
 
 详细任务拆分和验收条件见 [`tasks/plan.md`](../tasks/plan.md) 的 **Phase 13: Verified Request Ledger and dual-ledger reconciliation**。
 
@@ -112,4 +112,4 @@ npm test
 - [x] 项目级 `AGENTS.md` 定义多智能体角色、所有权、并行边界和交接格式。
 - [x] 数据口径、隐私边界和真实样本证据已明确区分。
 - [x] 前端视觉迭代已提供独立接手文档与逐决策版本控制规则。
-- [x] Request Ledger 可行性实验、风险边界和下一阶段双账本迁移计划已写入交付文档；尚未声明 Request Ledger 已成为正式统计事实源。
+- [x] Request Ledger 已在 reconciliation、增量 tail、重启、schema v9→v10 迁移和真实历史回放门槛通过后成为正式主统计事实源；Boundary Ledger 仍保留为迁移期审计器。

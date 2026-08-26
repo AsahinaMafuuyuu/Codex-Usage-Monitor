@@ -89,6 +89,7 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   const first = await bootMonitor(codexHome, databasePath);
   const firstTimeline = await first.monitor.timeline();
   assert.equal(firstTimeline.usage.totalTokens, 100);
+  assert.equal(firstTimeline.modelRequestCount, 1);
   assert.equal(first.monitor.health().timeline.replayedFiles, 1);
   assert.equal(first.database.getModelUsageEvents(ROOT).length, 1);
   first.monitor.close();
@@ -98,6 +99,7 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   assert.equal(second.monitor.health().timeline.dirtySessions, 0);
   const secondTimeline = await second.monitor.timeline();
   assert.equal(secondTimeline.usage.totalTokens, 100);
+  assert.equal(secondTimeline.modelRequestCount, 1);
   assert.equal(second.monitor.health().timeline.sessionsSynced, 0);
   assert.equal(second.monitor.health().timeline.replayedFiles, 0);
   assert.equal(second.monitor.health().timeline.tailedFiles, 0);
@@ -232,6 +234,7 @@ test("incremental timeline tails only the changed session after rollout append",
   await monitor.initialize();
   const initial = await monitor.timeline();
   assert.equal(initial.usage.totalTokens, 340);
+  assert.equal(initial.modelRequestCount, 2);
 
   await appendFile(
     firstPath,
@@ -243,6 +246,8 @@ test("incremental timeline tails only the changed session after rollout append",
 
   const updated = await monitor.timeline();
   assert.equal(updated.usage.totalTokens, 400);
+  assert.equal(updated.modelRequestCount, 3);
+  assert.equal(updated.tokensPerModelRequest, 400 / 3);
   assert.equal(monitor.health().timeline.sessionsSynced, 1);
   assert.equal(monitor.health().timeline.replayedFiles, 0);
   assert.equal(monitor.health().timeline.tailedFiles, 1);
@@ -295,13 +300,62 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]]));
   assert.equal(calendar.months[0].days[0].sessions[0].usage.totalTokens, 42);
+  assert.equal(calendar.months[0].days[0].sessions[0].modelRequestCount, 1);
+  assert.equal(calendar.months[0].days[0].sessions[0].tokensPerModelRequest, 42);
   assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
   assert.equal(reopened.getHealthStats().calendarRows, 1);
-  assert.equal(reopened.getHealthStats().schemaVersion, 9);
+  assert.equal(reopened.getHealthStats().schemaVersion, 10);
   assert.equal(reopened.getHealthStats().modelUsageEventRows, 1);
   assert.equal(reopened.getHealthStats().cacheSize, -2000);
   assert.equal(reopened.getHealthStats().mmapSize, 0);
   assert.equal(reopened.getHealthStats().walAutoCheckpoint, 256);
+});
+
+test("request ledger drives snapshot, agent, cost, and calendar usage while boundary evidence remains stored", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-primary-ledger-"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  const data = snapshot();
+  data.tasks[0].quality = "discontinuity";
+  data.tasks[0].deltaUsage = null;
+  data.agents[0].ownUsage = zeroUsage();
+  data.agents[0].subtreeUsage = zeroUsage();
+  database.replaceSession(data);
+  const repository = { getSession: () => null, summary: () => ({}) };
+  const monitor = new UsageMonitor({ repository, database });
+  t.after(async () => {
+    monitor.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const rawTask = database.getTask(CHILD, TURN);
+  assert.equal(rawTask.quality, "discontinuity");
+  assert.equal(rawTask.deltaUsage, null);
+  const storedAgent = database.getSession(ROOT).agents[0];
+  assert.equal(storedAgent.ownUsage.totalTokens, 42);
+  const selected = monitor.snapshot(ROOT);
+  assert.equal(selected.agents[0].tasks[0].deltaUsage.totalTokens, 42);
+  assert.equal(selected.agents[0].tasks[0].quality, "complete");
+  assert.equal(selected.agents[0].tasks[0].boundaryQuality, "discontinuity");
+  assert.equal(selected.agents[0].tasks[0].boundaryDeltaUsage, null);
+  assert.equal(selected.agents[0].tasks[0].usageSource, "request_ledger");
+  assert.equal(selected.agents[0].tasks[0].requestCount, 1);
+  assert.equal(selected.agents[0].tasks[0].tokensPerModelRequest, 42);
+  assert.equal(selected.agents[0].tasks[0].costEstimate.status, "estimated");
+  assert.ok(selected.agents[0].tasks[0].costEstimate.amountUsd > 0);
+  assert.equal(selected.agents[0].ownModelRequestCount, 1);
+  assert.equal(selected.agents[0].subtreeModelRequestCount, 1);
+  assert.equal(selected.agents[0].ownTokensPerModelRequest, 42);
+  assert.equal(selected.agents[0].subtreeTokensPerModelRequest, 42);
+  assert.equal(selected.summary.totalUsage.totalTokens, 42);
+  assert.equal(selected.summary.modelRequestCount, 1);
+  assert.equal(selected.summary.tokensPerModelRequest, 42);
+  assert.equal(selected.summary.subagentModelRequestCount, 1);
+  assert.equal(selected.summary.subagentTokensPerModelRequest, 42);
+  const calendar = database.getTimeline();
+  assert.equal(calendar.usage.totalTokens, 42);
+  assert.equal(calendar.modelRequestCount, 1);
+  assert.equal(calendar.tokensPerModelRequest, 42);
 });
 
 test("calendar-only persistence does not archive historical quota snapshots", async (t) => {
@@ -338,7 +392,7 @@ test("calendar-only persistence does not archive historical quota snapshots", as
   assert.equal(database.db.prepare("SELECT COUNT(*) AS count FROM quota_snapshots").get().count, 2);
 });
 
-test("schema v1 ingest cursors migrate to portable resumable schema v9", async (t) => {
+test("schema v1 ingest cursors migrate to portable resumable schema v10", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -376,7 +430,7 @@ test("schema v1 ingest cursors migrate to portable resumable schema v9", async (
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
   assert.equal(columns.some((column) => column.name === "source_key"), true);
   assert.equal(columns.some((column) => column.name === "path"), false);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 9);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 10);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].sourceKey, "sessions/2026/08/24/rollout-fixture.jsonl");
@@ -425,7 +479,7 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 9);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 10);
 });
 
 test("schema v8 sessions replay once to backfill the request ledger", async (t) => {
@@ -467,6 +521,54 @@ test("schema v8 sessions replay once to backfill the request ledger", async (t) 
   assert.equal(database.getModelUsageEvents(ROOT).length, 1);
   assert.equal(database.getModelUsageEvents(ROOT)[0].classification, "generation_start");
   assert.equal(database.getModelUsageEvents(ROOT)[0].usage.totalTokens, 100);
+});
+
+test("schema v9 promotes request-ledger aggregates to v10 without replaying rollout", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v9-primary-ledger-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `rollout-v9-${ROOT}.jsonl`),
+    makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"),
+  );
+  let monitor = null;
+  let database = null;
+  t.after(async () => {
+    monitor?.close();
+    database?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  ({ monitor, database } = await bootMonitor(codexHome, databasePath));
+  await monitor.timeline();
+  monitor.close();
+  database.close();
+  monitor = null;
+  database = null;
+
+  const legacy = new DatabaseSync(databasePath);
+  const empty = JSON.stringify(zeroUsage());
+  legacy.prepare("UPDATE agents SET own_usage=?, subtree_usage=? WHERE root_session_id=?")
+    .run(empty, empty, ROOT);
+  legacy.exec(`
+    UPDATE session_day_usage SET total_tokens=0, input_tokens=0, output_tokens=0,
+      model_request_count=0 WHERE root_session_id='${ROOT}';
+    UPDATE sessions SET parser_version=9 WHERE id='${ROOT}';
+    PRAGMA user_version=9;
+  `);
+  legacy.close();
+
+  ({ monitor, database } = await bootMonitor(codexHome, databasePath));
+  assert.equal(database.getSessionIndexState(ROOT).requestLedgerReady, true);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 10);
+  const timeline = await monitor.timeline();
+  assert.equal(monitor.health().timeline.replayedFiles, 0);
+  assert.equal(timeline.usage.totalTokens, 100);
+  assert.equal(timeline.modelRequestCount, 1);
+  const stored = database.getSession(ROOT);
+  assert.equal(stored.agents.find((agent) => agent.threadId === ROOT).ownUsage.totalTokens, 100);
 });
 
 test("schema v7 absolute rollout locators migrate to portable keys without losing derived data", async (t) => {

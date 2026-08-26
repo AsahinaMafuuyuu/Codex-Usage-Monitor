@@ -13,6 +13,7 @@ import {
   scanLatestQuota,
   SessionRolloutParser,
 } from "./rollout-parser.js";
+import { materializeRequestLedgerTasks } from "./reconciliation.js";
 import { addUsage, zeroUsage } from "./usage.js";
 
 export class UsageMonitor extends EventEmitter {
@@ -263,7 +264,7 @@ export class UsageMonitor extends EventEmitter {
       agentCount: stored.session.agentCount,
       taskCount: stored.session.taskCount,
     };
-    const tasks = stored.tasks.map((task) => ({
+    const tasks = materializeRequestLedgerTasks(stored.tasks, stored.modelUsageEvents).map((task) => ({
       ...task,
       costEstimate: estimateTaskCost(task.model, task.deltaUsage),
     }));
@@ -273,6 +274,16 @@ export class UsageMonitor extends EventEmitter {
     for (const agent of agents) {
       agent.ownCostEstimate = summarizeTaskCosts(agent.tasks);
       agent.subtreeCostEstimate = { ...agent.ownCostEstimate };
+      agent.ownModelRequestCount = agent.tasks.reduce(
+        (sum, task) => sum + (task.requestCount ?? 0),
+        0,
+      );
+      agent.subtreeModelRequestCount = agent.ownModelRequestCount;
+      agent.ownTokensPerModelRequest =
+        agent.ownModelRequestCount > 0
+          ? agent.ownUsage.totalTokens / agent.ownModelRequestCount
+          : null;
+      agent.subtreeTokensPerModelRequest = agent.ownTokensPerModelRequest;
     }
     for (const agent of [...agents].sort((left, right) => right.depth - left.depth)) {
       const parent = agentsById.get(agent.parentThreadId);
@@ -281,7 +292,14 @@ export class UsageMonitor extends EventEmitter {
           parent.subtreeCostEstimate,
           agent.subtreeCostEstimate,
         ]);
+        parent.subtreeModelRequestCount += agent.subtreeModelRequestCount;
       }
+    }
+    for (const agent of agents) {
+      agent.subtreeTokensPerModelRequest =
+        agent.subtreeModelRequestCount > 0
+          ? agent.subtreeUsage.totalTokens / agent.subtreeModelRequestCount
+          : null;
     }
     const rootAgent = agents.find((agent) => agent.isRoot);
     let subagentUsage = zeroUsage();
@@ -290,6 +308,12 @@ export class UsageMonitor extends EventEmitter {
     }
     const qualityCounts = {};
     for (const task of tasks) qualityCounts[task.quality] = (qualityCounts[task.quality] ?? 0) + 1;
+    const totalUsage = rootAgent?.subtreeUsage ?? subagentUsage;
+    const modelRequestCount = tasks.reduce((sum, task) => sum + (task.requestCount ?? 0), 0);
+    const subagentModelRequestCount = tasks.reduce((sum, task) => {
+      const agent = agentsById.get(task.threadId);
+      return sum + (agent && !agent.isRoot ? (task.requestCount ?? 0) : 0);
+    }, 0);
     return {
       session: stored.session,
       agents,
@@ -297,8 +321,16 @@ export class UsageMonitor extends EventEmitter {
         agentCount: agents.filter((agent) => !agent.isRoot).length,
         taskCount: tasks.length,
         activeTasks: tasks.filter((task) => task.status === "in_progress").length,
-        totalUsage: rootAgent?.subtreeUsage ?? subagentUsage,
+        totalUsage,
         subagentUsage,
+        modelRequestCount,
+        tokensPerModelRequest:
+          modelRequestCount > 0 ? totalUsage.totalTokens / modelRequestCount : null,
+        subagentModelRequestCount,
+        subagentTokensPerModelRequest:
+          subagentModelRequestCount > 0
+            ? subagentUsage.totalTokens / subagentModelRequestCount
+            : null,
         qualityCounts,
         totalCostEstimate: summarizeTaskCosts(tasks),
         subagentCostEstimate: summarizeTaskCosts(tasks.filter((task) => {

@@ -20,7 +20,7 @@ try {
   const repository = new CodexRepository(codexHome, database);
   monitor = new UsageMonitor({ repository, database });
   await monitor.initialize();
-  await monitor.timeline();
+  const primaryTimeline = await monitor.timeline();
 
   const sessionIds = database.db.prepare("SELECT id FROM sessions ORDER BY id").all().map((row) => row.id);
   const allEvents = [];
@@ -41,6 +41,8 @@ try {
   };
   const mismatches = [];
   const recoveries = [];
+  const notComparableByQuality = {};
+  let notComparableWithRequestUsage = 0;
 
   for (const sessionId of sessionIds) {
     const stored = database.getSession(sessionId);
@@ -60,6 +62,12 @@ try {
     }
     mismatches.push(...report.tasks.filter((item) => item.status === "mismatch"));
     recoveries.push(...report.tasks.filter((item) => item.status === "recovered"));
+    for (const item of report.tasks.filter((entry) => entry.status === "not_comparable")) {
+      notComparableByQuality[item.taskQuality] = (notComparableByQuality[item.taskQuality] ?? 0) + 1;
+      if (item.requestUsage?.totalTokens != null && item.requestUsage.totalTokens > 0) {
+        notComparableWithRequestUsage += 1;
+      }
+    }
   }
 
   const days = aggregateVerifiedUsageByLocalDay(allEvents);
@@ -74,6 +82,16 @@ try {
     requestCountsByDay: Object.fromEntries(
       Object.entries(days).map(([day, value]) => [day, value.requestCount]),
     ),
+    primaryTimelineDayTotals: Object.fromEntries(
+      primaryTimeline.months.flatMap((month) => month.days)
+        .map((day) => [day.key, day.usage.totalTokens]),
+    ),
+    primaryTimelineRequestCounts: Object.fromEntries(
+      primaryTimeline.months.flatMap((month) => month.days)
+        .map((day) => [day.key, day.modelRequestCount]),
+    ),
+    notComparableByQuality,
+    notComparableWithRequestUsage,
     mismatchSample: mismatches.slice(0, 20).map(compactTaskResult),
     recoverySample: recoveries.slice(0, 20).map(compactTaskResult),
   }, null, 2));

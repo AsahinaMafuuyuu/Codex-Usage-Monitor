@@ -208,6 +208,19 @@ npm test
 - 独立 `npm run audit:request-ledger` 仍按单文件 baseline 得到 40,388 verified / 69 unverified，并确认 412 个真实 rollout 的 `hashChangedFiles=0`；跨文件 parser 比单文件审计多证明 1 条事件，差异与 Task 3 fixture 一致。
 - reconciliation 单元测试覆盖 exact match、duplicate=0、历史缺字段的 schema-limited 状态、discontinuity recovery 和按本地日聚合。
 
+### Phase 13 Task 5：Request Ledger primary aggregation / schema v10
+
+日期：2026-08-26。通过 Task 4 双账本门槛后，schema v10 将 verified Request Ledger 提升为 Task / Agent / Session / Timeline、缓存命中率和 USD 等值估算的主用量来源；Boundary Ledger 字段仍原样持久化供独立审计。
+
+- 定向回归覆盖：request-derived task/agent/session/calendar usage 与费用、verified model usage unit count、tokens/unit、同 task 存在 unverified 时只保留 verified 下限并降为 `partial`、增量 tail、进程重启、v8→v9 Request Ledger backfill，以及 v9→v10 只重建 aggregate 而 `replayedFiles=0`。定向组合为 9 tests / 9 passed / 0 failed。
+- 全量自动化验证：`npm test` 为 50 tests、49 passed、0 failed、1 skipped；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的既有真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+- schema v10 全历史 reconciliation：412 rollout、267 session、2,347 task；1,335 exact match、0 mismatch、4 recovered；Request Ledger coverage 仍为 40,389 verified / 1,726 duplicate / 68 unverified / 0 anomaly，另有 38 个 verified 但未归属 task 的 event。
+- primary Timeline 保持既有“按 task `startedAt` 本地日期”API 语义；2026-08-22 / 08-23 / 08-24 主总量分别为 `60,289,305 / 64,066,930 / 175,486,562`，verified model usage units 为 `636 / 550 / 1,439`。没有为了与 Profile 对齐而应用补偿系数。
+- 独立只读 classifier audit 再次扫描 412 个 rollout / 42,183 条 `token_count`，结果为 40,388 verified / 1,726 duplicate / 69 unverified / 0 anomaly，且 `hashChangedFiles=0`；它仍以单文件 baseline 审计，因此比跨文件连续 parser 少验证 1 条，差异与 Task 3 的 continuity fixture 一致。
+- schema v10 临时全量 backfill benchmark：42,183 event rows、2,347 task rows，22,673.34 ms；关闭后 SQLite 31,399,936 bytes。`page_size=4096`、`cache_size=-2000`、`mmap_size=0`、`wal_autocheckpoint=256` 均未回归。
+- `tasks.delta_usage/quality` 仍保存 Boundary Ledger；API 运行时另外返回 request-derived `deltaUsage/quality`、`boundaryDeltaUsage/boundaryQuality`、`requestLedgerCoverage` 与 request-count 指标，因此迁移证据没有被覆盖。
+- 本轮没有修改 `public/**`；现有页面继续消费同名 `deltaUsage` / Agent aggregate / Session summary 字段，静态 UI 契约测试保持通过。新增 request-count 字段属于向后兼容 API 扩展，不要求页面立即展示。
+
 ### 2026-08-25：Overview / task ledger / scrollbar / motion polish
 
 本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。

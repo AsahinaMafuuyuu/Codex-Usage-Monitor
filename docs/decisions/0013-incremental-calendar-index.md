@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-08-25
 
+> 2026-08-26 更新：本 ADR 的 SQLite 物化索引与 dirty-session/cursor 增量策略继续有效；`session_day_usage` 的 token 来源已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger，并在 schema v10 增加 verified model usage unit count。
+
 ## Context
 
 ADR-0012 建立了正确的日期口径：所有已发现 root session 都必须按任务 `startedAt` 的监控器本地日期进入 `month -> day -> session`，用量仍只来自可审计的任务边界 `deltaUsage`。但其首版实现把日期账页作为纯内存缓存；缓存失效后会为所有 root session 新建 parser 并从头回放所有 rollout。
