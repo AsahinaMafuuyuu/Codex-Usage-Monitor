@@ -73,6 +73,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.session-identity\s*\{[^}]*min-width:\s*0/isu);
   assert.match(styles, /\.session-identity h2\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/isu);
   assert.doesNotMatch(styles, /\.session-identity h2\s*\{[^}]*text-wrap:\s*balance/isu);
+  assert.match(styles, /\.session-item strong\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/isu);
+  assert.doesNotMatch(styles, /\.session-item strong\s*\{[^}]*-webkit-line-clamp/isu);
   assert.match(styles, /\.role-reviewer/u);
   assert.match(styles, /\.role-test-worker/u);
   assert.match(styles, /--lineage-rail-offset:\s*18px/iu);

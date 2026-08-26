@@ -163,7 +163,7 @@ function renderSessions() {
       <div class="project-sessions">${group.sessions.map((session) => `
           <button class="session-item ${session.id === state.selectedId ? "active" : ""}"
             type="button" data-session-id="${escapeHtml(session.id)}">
-            <strong>${escapeHtml(session.title || "未命名会话")}</strong>
+            <strong title="${escapeHtml(session.title || "未命名会话")}">${escapeHtml(session.title || "未命名会话")}</strong>
             <span><time title="${escapeHtml(session.updatedAt || "")}">${formatRelative(session.updatedAt)}</time><b>${session.agentCount || "—"} 智能体</b></span>
           </button>
         `).join("")}</div>
@@ -211,7 +211,7 @@ function renderTimeSession(session) {
   const quality = summarizeQuality(session.qualityCounts);
   return `<button class="session-item time-session-item ${session.id === state.selectedId ? "active" : ""}"
     type="button" data-session-id="${escapeHtml(session.id)}">
-    <strong>${escapeHtml(session.title || "未命名会话")}</strong>
+    <strong title="${escapeHtml(session.title || "未命名会话")}">${escapeHtml(session.title || "未命名会话")}</strong>
     <span><time title="${escapeHtml(session.updatedAt || "")}">${formatTokens(session.usage.totalTokens)}</time><b>${escapeHtml(projectName(normalizeProjectPath(session.projectPath)))} · ${escapeHtml(quality)}</b></span>
   </button>`;
 }

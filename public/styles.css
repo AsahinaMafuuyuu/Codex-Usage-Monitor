@@ -386,13 +386,13 @@ summary:focus-visible,
 }
 
 .session-item strong {
-  display: -webkit-box;
+  display: block;
   overflow: hidden;
   font-size: 13px;
   font-weight: 620;
   line-height: 1.45;
-  -webkit-box-orient: vertical;
-  -webkit-line-clamp: 2;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-item > span {
