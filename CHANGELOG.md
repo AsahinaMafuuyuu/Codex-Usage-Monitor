@@ -32,6 +32,7 @@
 - 任务审计表将 Task / Status 固定为横向滚动上下文；主账页移除独立 reasoning 展示列后为 13 列 / 1314px，表头和值统一居中。底层 reasoning 字段及费用计算契约继续保留。
 - 会话总计 USD 不再用 `≥` 前缀改写金额本身，直接显示汇总对象中的已知金额；覆盖文案和悬停说明仍披露不可估算任务与“已知下限”语义。
 - 页面、会话导航和任务表滚动条统一为更轻的 8px 暖 taupe / muted-clay 主题；展开/折叠使用原生 `details` 过渡，会话与导航状态切换在支持时使用 View Transitions API，并继续服从 reduced-motion。
+- 实时 session snapshot 从整棵 Agent/Task DOM 重建改为按 `threadId` / `turnId` keyed reconcile；保留任务表横向滚动、焦点和 Agent 展开状态，并在结构新增时用可见 Agent/Task 锚点补偿页面位置。selected-session 更新同时不再重建左侧导航。
 - 日期账页 API 覆盖未被选中的 session；当前由 verified Request Ledger 统一聚合，日期按本地时区归类，质量不完整时只报告已验证下限。
 - SQLite 升级到 schema v7：任务增加六个正规化 delta 字段，并新增轻量 `session_day_usage` 物化索引；Timeline 从“任意更新后全历史回放”改为 dirty-session + cursor 增量同步，无变化请求只读取 SQL 聚合。
 - Timeline 后台补齐不再归档各历史 rollout 中的全部 quota 快照；SQLite page cache 固定约 2 MiB，禁用 mmap 扩张，并使用 256 页 WAL auto-checkpoint 与正常关闭 truncate checkpoint 控制常态内存和 WAL 大小。

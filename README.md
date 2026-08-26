@@ -30,6 +30,7 @@ npm run start:no-open
 | `npm run start:no-open` | 启动但不自动打开浏览器 |
 | `npm test` | 运行 parser、SQLite、HTTP 和文档契约测试 |
 | `npm run check` | 检查关键 JavaScript 文件语法 |
+| `npm run verify:live-ui -- "<authenticated URL>"` | 对已启动页面执行 Chrome/CDP 实时交互回归 |
 
 前端保持无框架实现。额度刷新按钮使用本地安装的 `lucide@1.34.0` 图标库，并由本地 HTTP 服务从 `/vendor/lucide.min.js` 提供，不依赖 CDN，也不需要放宽现有 `script-src 'self'` CSP。
 
@@ -69,8 +70,9 @@ codex-usage-monitor\
 - 逐任务展示 rollout 记录的模型、effort 和当前标准 API 短上下文 USD 等值估算；会话概览汇总主智能体及全部后代。未知模型或明细不足时明确显示不可估算。
 - Request Ledger 任务质量只区分 `complete`、`provisional`、`partial` 和 `unknown`。
 - 通过文件观察与 1 秒轮询实时增量更新，并用 SSE 刷新页面。
+- 实时 snapshot 使用 session/Agent/Task 稳定 key 原位 reconcile：常规 token/费用/状态更新不会替换任务表滚动容器或 Agent `<details>`；横向滚动、键盘焦点和用户展开状态保持，结构新增时以当前可见 Agent/Task 做视觉锚点补偿。
 - 任务表不显示指令正文；受认证的旧 preview API 暂时保留，供后续完整对话功能重新设计。
-- 任务表固定 14 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏审计字段。
+- 任务表固定 13 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏当前审计字段。
 - 展示独立的账号级 `rate_limits` 快照；同一 reset 窗口内若并发 rollout 返回互相回退的 `used_percent`，运行时按该窗口观测到的最大已用比例保守收敛，避免把 100% 错降成 97%。页面统一显示 `100 - used_percent` 的剩余额度；额度卡右上角使用本地安装的 Lucide `refresh-cw` 图标，点击后立即重新扫描本机最新 rollout，刷新期间图标旋转。
 
 ### 额度刷新语义

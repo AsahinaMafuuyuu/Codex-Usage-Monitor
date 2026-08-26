@@ -62,8 +62,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(html, /id="session-project"/u);
   assert.match(html, /data-session-view="project"/u);
   assert.match(html, /data-session-view="time"/u);
-  assert.match(script, /class="agent-branch/u);
-  assert.match(script, /class="agent-children/u);
+  assert.match(script, /branch\.className = `agent-branch depth-\$\{Math\.min\(depth, 6\)\}`/u);
+  assert.match(script, /childContainer\.className = "agent-children"/u);
   assert.match(script, /role-badge/u);
   assert.match(script, /<colgroup>/u);
   assert.match(script, /role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 13 列"/u);
@@ -115,3 +115,36 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /view-transition-name:\s*workspace-content/u);
   assert.match(styles, /::view-transition-new\(workspace-content\)/u);
 });
+
+test("live updates preserve keyed interaction containers instead of rebuilding them", async () => {
+  const script = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const renderDashboard = extractFunction(script, "renderDashboard", "renderQuota");
+  const updateAgentBranch = extractFunction(script, "updateAgentBranch", "agentNodeClass");
+  const patchAgentTasks = extractFunction(script, "patchAgentTasks", "patchTaskRows");
+
+  assert.match(script, /function patchAgentBranches\(/u);
+  assert.match(script, /branch\.dataset\.agentId = agent\.threadId/u);
+  assert.match(script, /summary\.dataset\.agentAnchorId = agent\.threadId/u);
+  assert.match(script, /row\.dataset\.taskId = task\.turnId/u);
+  assert.match(script, /function captureVisualAnchor\(/u);
+  assert.match(script, /function restoreVisualAnchor\(/u);
+  assert.match(script, /window\.scrollBy\(0, delta\)/u);
+  assert.match(script, /function patchSessionNavigation\(/u);
+  assert.match(script, /function syncSessionSelection\(/u);
+  assert.match(script, /data-session-group-key/u);
+  assert.match(script, /data-time-month/u);
+  assert.match(script, /data-time-day/u);
+
+  assert.doesNotMatch(script, /elements\["agent-tree"\]\.innerHTML\s*=\s*renderBranch/u);
+  assert.doesNotMatch(renderDashboard, /renderSessions\(/u);
+  assert.match(renderDashboard, /patchSessionNavigation\(previousSession, nextSession\)/u);
+  assert.doesNotMatch(updateAgentBranch, /\.open\s*=|setAttribute\([^\n]*["']open["']/u);
+  assert.match(patchAgentTasks, /if \(!tableWrap\)/u);
+  assert.doesNotMatch(patchAgentTasks, /tableWrap\.innerHTML\s*=/u);
+});
+
+function extractFunction(source, name, nextName) {
+  const match = source.match(new RegExp(`function ${name}\\([^)]*\\) \\{([\\s\\S]*?)\\n\\}\\n\\nfunction ${nextName}\\(`, "u"));
+  assert.ok(match, `expected to find ${name} before ${nextName}`);
+  return match[1];
+}

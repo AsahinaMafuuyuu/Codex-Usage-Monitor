@@ -245,6 +245,17 @@ npm test
 - Headless Chrome 认证页面截图已成功生成：1440×900 desktop 与 390×844 narrow。该步骤证明当前静态资源、认证入口和页面脚本可在真实 Chrome 中加载；本轮未执行新的 CDP console/error 采样或精确 overflow 几何断言，因此不新增“0 warning / 0 overflow”类未验证结论。
 - `.impeccable/` 中的浏览器 QA 工件保持忽略状态，不进入 Git；本轮没有修改 `.codex` 源文件，也没有把截图或运行时数据库纳入提交。
 
+### Phase 15：实时交互稳定性增量复核
+
+日期：2026-08-26。将 selected-session SSE snapshot 从 destructive render 改为 session / Agent / Task stable-key reconciliation，并对结构变化增加视觉锚点补偿。
+
+- 全量 `npm test`：52 tests，51 passed，0 failed，1 skipped；唯一 skipped 为本轮未配置 `CODEX_MONITOR_REAL_FIXTURE` 的开发机真实五任务 fixture。
+- `npm run check` 与 `git diff --check`：通过；静态 UI 回归新增 `live updates preserve keyed interaction containers instead of rebuilding them`，约束 `threadId` / `turnId` key、Agent summary/task row visual anchor、selected-session 导航原位更新以及禁止恢复旧的整树 `innerHTML` 路径。
+- 真实 Chrome/CDP 回归通过。测试在页面加载前包装浏览器 `EventSource`，捕获应用实际注册的 `snapshot` listener 与最新 snapshot，再仅在浏览器内重复回放，不写入 rollout。普通 snapshot 前后 `.task-table-wrap` 与 `.agent-card` 均保持同一 DOM 实例；任务表 `scrollLeft` 保持 `354`，键盘 focus 保持在 `DIV.task-table-wrap`，Agent `details.open=true` 保持不变。
+- 手工折叠同一 Agent 后再次回放 snapshot：仍为同一 `<details>`，`open=false` 保持，任务表横向位置仍为 `354`。
+- 结构回归在浏览器内复制一条 Task 并临时插入当前可见 Task 之前；原 Task row DOM 继续存活。插入造成布局增加 66px，visual-anchor 逻辑同步将页面滚动补偿 66px，因此该 surviving Task 的 `getBoundingClientRect().top` 从 `0.40625px` 到 `0.40625px`，top delta 为 `0px`。随后回放原 snapshot 清除临时结构。
+- 本轮浏览器结构数据和额外 spacer 都只存在于 QA 页面内存/DOM；未向 `.codex` 写入测试记录，也未把 Chrome profile、运行时 SQLite 或其他 QA 工件纳入仓库。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。

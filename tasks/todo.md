@@ -68,3 +68,8 @@
 - [x] Retire Boundary parser/storage/API/reconciliation paths with schema v11 and ADR-0016
 - [x] Run final schema v11 Request Ledger audit/benchmark and record the evidence
 - [x] Commit the Request-only architecture and create annotated tag `usage-request-ledger-v1`
+- [x] Reconcile live Agent/Task DOM by stable `threadId` / `turnId` keys
+- [x] Preserve task-table horizontal scroll and Agent expansion state across SSE snapshots
+- [x] Preserve the visible vertical anchor across structural live updates
+- [x] Stop selected-session snapshots from destructively rebuilding the session navigator
+- [x] Record ADR-0017 live-interaction rendering contract and verification evidence

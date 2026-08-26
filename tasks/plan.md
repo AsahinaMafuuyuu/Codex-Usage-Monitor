@@ -807,6 +807,96 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Verification:** `npm test`, `npm run check`, `npm run audit:request-ledger`, `npm run benchmark:request-ledger`, `git diff --check`, schema v10→v11 no-replay regression, final tag/status inspection.
 
+## Phase 15: Preserve interaction state during live updates
+
+### Goals
+
+- [x] Real-time SSE snapshots must not recreate an existing task table or agent `<details>` node when only values change.
+- [x] Horizontal task-table scroll, agent expansion state, focusable container identity, and the user's visible vertical anchor remain stable while token/cost/status values update.
+- [x] The left session navigator must not be destructively re-rendered for routine selected-session snapshots.
+- [x] Structural additions/removals use stable session/agent/task IDs and preserve the user's current visual reading position.
+
+### Task 1: Incrementally reconcile the agent/task ledger
+
+**Description:** Replace `agent-tree.innerHTML = ...` snapshot rendering with keyed reconciliation using `threadId` for agents and `turnId` for tasks. Existing agent branches, `<details>` elements and `.task-table-wrap` containers remain mounted; value cells and structural children are patched in place.
+
+**Acceptance criteria:**
+
+- [x] Existing `.task-table-wrap` elements survive ordinary token/status/cost updates, preserving `scrollLeft` and keyboard focus.
+- [x] Existing agent `<details>` open/closed state is not overwritten by subsequent snapshots.
+- [x] New/removed/reordered agents or tasks are inserted, removed or moved by stable key rather than rebuilding the whole lineage tree.
+
+**Verification:** `npm test -- --test-name-pattern "static UI|live update"`, `npm run check`, `git diff --check`, browser scroll/expand regression.
+
+**Dependencies:** ADR-0005, ADR-0006, ADR-0011.
+
+**Files likely touched:** `public/app.js`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Preserve the visible anchor for structural live changes
+
+**Description:** Capture the first visible stable agent/task key before structural reconciliation and restore its viewport offset after insertion/removal, so content added above the reader does not move the current reading target.
+
+**Acceptance criteria:**
+
+- [x] Value-only updates do not perform page-scroll correction.
+- [x] Structural changes restore the same surviving visible agent/task to its pre-update viewport offset.
+- [x] If the anchor itself disappears, reconciliation completes safely without forced scrolling.
+
+**Verification:** `npm test -- --test-name-pattern "static UI|live update"`, `npm run check`, browser structural-update regression.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `public/app.js`, `test/ui-security.test.js`.
+
+**Estimated scope:** Small.
+
+### Task 3: Stop selected-session snapshots from rebuilding navigation
+
+**Description:** Decouple selected-session summary refreshes from `renderSessions()`. Patch the currently rendered project-session item in place when its title/update time/agent count changes; only deliberate navigation-mode/search rebuilds or a grouping-key change may rebuild the list.
+
+**Acceptance criteria:**
+
+- [x] Routine SSE snapshots do not replace `#session-list` descendants.
+- [x] Project-view session metadata visible in the sidebar still refreshes in place.
+- [x] Session selection toggles active state without resetting project/month/day `<details>` state or navigator scroll position.
+
+**Verification:** `npm test -- --test-name-pattern "static UI|live update"`, `npm run check`, browser sidebar-state regression.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `public/app.js`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Record the live-interaction rendering contract
+
+**Description:** Add ADR-0017 defining stable DOM identity as the live-rendering invariant, documenting why refresh throttling or scroll-position restoration alone are insufficient, and update the decision index/task checklist with delivered verification evidence.
+
+**Acceptance criteria:**
+
+- [x] ADR-0017 records value updates versus structural updates, stable keys, visual anchoring, and rejected alternatives.
+- [x] `docs/decisions/README.md`, `tasks/plan.md`, and `tasks/todo.md` match the implementation state.
+- [x] Each independently verifiable frontend interaction slice is committed according to the repository Git rules.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`, `git status --short`.
+
+**Dependencies:** Tasks 1-3.
+
+**Files likely touched:** `docs/decisions/0017-live-interaction-stable-rendering.md`, `docs/decisions/README.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Small.
+
+### Checkpoint: Live interaction stability
+
+- [x] Full tests, syntax checks, and diff checks pass.
+- [x] Horizontal task-table scroll remains unchanged through repeated selected-session snapshots.
+- [x] Manually collapsed/expanded agent and sidebar groups stay unchanged through live updates.
+- [x] Structural additions above the viewport do not displace the surviving visible anchor.
+
+**Delivered evidence (2026-08-26):** `npm test` reports 52 tests / 51 passed / 0 failed / 1 skipped; the skipped test is the optional real five-task fixture because `CODEX_MONITOR_REAL_FIXTURE` was not configured. `npm run check` and `git diff --check` pass. The Chrome/CDP `verify:live-ui` harness replays the page's real snapshot callback without writing rollout data: an existing task table remains the same DOM with `scrollLeft=354`, focus remains on `.task-table-wrap`, manually collapsed Agent state remains collapsed, and a synthetic task insertion above the visible row causes a 66px scroll compensation while the surviving row's viewport top delta remains exactly 0px.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |

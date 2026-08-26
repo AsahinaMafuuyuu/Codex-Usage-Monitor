@@ -31,7 +31,7 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 | `src/database.js` | 管理 schema v11、WAL、幂等 upsert、工程元数据、portable source key、Request Ledger、任务定位元数据、可恢复 ingest cursor 和 request-derived session-day 物化索引 |
 | `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation、Timeline dirty-session 同步和事件发布 |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
-| `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、对齐任务明细、额度与健康状态 |
+| `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、按 session/agent/task 稳定 key 增量 reconcile 的任务明细、额度与健康状态 |
 
 ## 会话发现
 
@@ -101,6 +101,8 @@ SQLite schema v11 包含 `sessions`、`agents`、`tasks`、`model_usage_events`�
 
 `fs.watch` 提供快速通知，1 秒 stat 轮询补偿 Windows 丢失通知，10 秒 reconciliation 发现新增或移动到归档目录的文件。tail cursor 停在最后一个完整换行处并持久化；重启时只有通过大小/mtime 校验的 append-only 文件才从该 offset 继续，不可验证文件会安全全量回放。未完成尾行保留到下一次读取。选择会话的变化通过 `snapshot` SSE 推送，账号额度和健康状态使用独立事件。账号 current quota 在内存中按 primary/secondary 各自的 `windowMinutes + resetsAt` 做窗口级 reconciliation：同一窗口使用观测到的最大 `usedPercent` 抵抗并发旧响应回退，不同 reset 则优先更新后的窗口；SQLite `quota_snapshots` 继续保存单条规范化观测，不把派生 current state 伪装成原始快照。手动额度刷新会重新发现 rollout，并按实时文件 mtime 重排候选后读取最近来源；它仍严格位于只读 `.codex` 边界内，不向模型或远端额度服务发起请求。
 
+SSE 仍发送完整 session snapshot，但浏览器端按 [ADR-0017](decisions/0017-live-interaction-stable-rendering.md) 将“传输快照”与“DOM 重建”解耦。Agent 以 `threadId`、Task 以 `turnId` 做 keyed reconciliation；普通 token/费用/状态变化只 patch 已有节点，`.task-table-wrap` 与 Agent `<details>` 保持同一 DOM 身份。只有结构变化才插入、移动或删除 key 对应节点，并用首个可见 Agent `<summary>` 或 Task row 作为视觉锚点，在上方内容发生变化时补偿 viewport offset。selected-session 的常规 snapshot 同样只原位更新左侧 session metadata，不重建导航树。
+
 Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 record/event 和缺少必需任务 ID 的记录分别计入 `unknownRecords`、`skippedRecords` 并触发 warning。这样既容忍新字段，又不会把格式变化静默伪装为健康。
 
 ## 界面信息架构
@@ -111,6 +113,8 @@ Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 r
 
 任务表在每个智能体下复用相同 `colgroup` 和固定布局，确保跨表列宽一致。小屏只让 `.task-table-wrap` 水平滚动，页面本身不产生横向溢出。设计色板、字体、响应式和替代方案见 [ADR-0009](decisions/0009-editorial-lineage-interface.md)。
 
+交互状态由浏览器/UI 拥有：Agent 节点首次创建后，后续 snapshot 不再根据 active 状态覆盖用户手工选择的 `details.open`；导航在主动搜索或视图切换导致重建时保存并恢复已有分组展开状态与滚动。结构性 live update 则优先保持用户正在阅读的 surviving Agent/Task，而不是保持一个缺乏实体语义的绝对页面像素位置。
+
 ## 信任边界
 
 - 进程只监听 `127.0.0.1`。
@@ -119,7 +123,7 @@ Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 r
 - CSP 禁止第三方脚本、frame 和跨源连接。
 - URL 参数只能提供受正则约束的 session/thread/turn ID，不能提供任意文件路径。
 
-安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)，工程分类与缓存比率见 [ADR-0008](decisions/0008-project-directory-session-grouping.md)，界面结构见 [ADR-0009](decisions/0009-editorial-lineage-interface.md)，日期账页口径见 [ADR-0012](decisions/0012-calendar-usage-ledger.md)，增量日历索引见 [ADR-0013](decisions/0013-incremental-calendar-index.md)，Windows source rebinding 见 [ADR-0014](decisions/0014-portable-source-locators.md)。
+安全与内容最小化决策详见 [ADR-0003](decisions/0003-metadata-only-persistence.md) 和 [ADR-0004](decisions/0004-loopback-session-security.md)；美元估算口径见 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)，工程分类与缓存比率见 [ADR-0008](decisions/0008-project-directory-session-grouping.md)，界面结构见 [ADR-0009](decisions/0009-editorial-lineage-interface.md)，日期账页口径见 [ADR-0012](decisions/0012-calendar-usage-ledger.md)，增量日历索引见 [ADR-0013](decisions/0013-incremental-calendar-index.md)，Windows source rebinding 见 [ADR-0014](decisions/0014-portable-source-locators.md)，实时交互稳定性见 [ADR-0017](decisions/0017-live-interaction-stable-rendering.md)。
 
 ## 官方证据边界
 
