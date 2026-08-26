@@ -20,9 +20,9 @@ npm run start:no-open
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
-| `CODEX_MONITOR_HOME` | `%USERPROFILE%\.codex` | 只读 Codex 数据源 |
+| `CODEX_MONITOR_HOME` | 当前 Windows 用户的 `.codex` | 只读 Codex 数据源；旧值不存在时自动回退当前用户目录并告警 |
 | `CODEX_MONITOR_PORT` | `47832` | 首选 loopback 端口 |
-| `CODEX_MONITOR_DB` | `<project>\data\usage.sqlite` | 派生 SQLite 路径 |
+| `CODEX_MONITOR_DB` | `<project>\data\usage.sqlite` | 派生 SQLite 路径；相对值始终从工程根解析 |
 
 示例：
 
@@ -83,6 +83,31 @@ data\usage.sqlite-shm
 
 此操作不应触碰 `%USERPROFILE%\.codex`。记录默认无限期保留；当前没有自动清理策略。
 
+## Windows 跨用户 / 跨盘迁移
+
+schema v8 的 durable locator 不再包含旧机器用户名或盘符。迁移推荐流程：
+
+1. 旧电脑停止监控器，确保 SQLite 正常关闭并完成 WAL checkpoint。
+2. 复制整个 `codex-usage-monitor` 工程目录，至少保留 `data\usage.sqlite`；若停止后仍存在 `usage.sqlite-wal` / `usage.sqlite-shm`，一起复制。
+3. 把原 `.codex` 历史复制到新 Windows 用户标准位置 `%USERPROFILE%\.codex`，或者放到任意位置后设置 `CODEX_MONITOR_HOME`。
+4. 在新位置执行 `npm install`（如依赖目录未复制）和 `npm start`。
+5. 查看 `/api/health`：无变化的 rollout 应直接匹配原 `source_key`；只有新增、收缩或完整性校验失败的文件才需要 tail/replay。
+
+例如以下迁移不会改变 rollout identity：
+
+```text
+旧：C:\Users\OldUser\.codex\sessions\2026\08\25\rollout-abc.jsonl
+新：D:\Profiles\NewUser\.codex\sessions\2026\08\25\rollout-abc.jsonl
+
+DB source_key：sessions/2026/08/25/rollout-abc.jsonl
+```
+
+数据库默认随工程移动，所以 `C:\tools\codex-usage-monitor` 搬到 `D:\apps\codex-usage-monitor` 后仍使用新工程目录内的 `data\usage.sqlite`。`CODEX_MONITOR_DB` 可以选择工程内的其他相对位置；若用户环境变量仍指向旧工程或其他工程外绝对路径，CLI 会回退当前工程的 `data\usage.sqlite` 并输出 warning，避免迁移后重新绑定旧盘符。
+
+程序不会遍历所有盘符寻找 `.codex`。标准当前用户路径自动发现；自定义位置用 `CODEX_MONITOR_HOME` 明确指定。若旧环境变量已经失效，启动会回退当前用户 `.codex` 并在终端报告 warning。运行期间改变 Codex home 后应重启监控器，让 watcher 和 source-key resolver 一次性切换到新根目录。
+
+`projectPath` 是历史 session 的原始 `cwd`，因此迁移后仍可能显示旧盘符。这是有意保留的审计元数据，不参与 rollout 定位，也不需要为迁移批量重写。
+
 ## 常见问题
 
 ### 页面显示 401
@@ -103,7 +128,7 @@ data\usage.sqlite-shm
 
 ### 指令预览不可用
 
-用量可以来自 SQLite 历史，但预览必须实时读取原 rollout。日志已删除、移动且索引未刷新，或无法从 `agent_path` 与协作信封证明父→子路由时，会明确不可用；子智能体回复不会作为 fallback。这是内容最小化设计，不是数据丢失。
+用量可以来自 SQLite 历史，但预览必须实时读取原 rollout。schema v8 会先用任务 `sourceKey` 绑定当前 Codex home，因此单纯换用户名/盘符不会使 preview 继续指向旧绝对路径。日志已删除、source key 无法绑定，或无法从 `agent_path` 与协作信封证明父→子路由时，会明确不可用；子智能体回复不会作为 fallback。这是内容最小化设计，不是数据丢失。
 
 ### USD 显示“不可估算”或与实际账单不同
 

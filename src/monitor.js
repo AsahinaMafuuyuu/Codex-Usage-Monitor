@@ -126,9 +126,11 @@ export class UsageMonitor extends EventEmitter {
     if (!files.length) return true;
     const indexState = this.database.getSessionIndexState(sessionId);
     if (!indexState || indexState.parseStatus === "not_imported") return false;
-    const cursors = new Map(this.database.getCursors(sessionId).map((cursor) => [cursor.path, cursor]));
+    const cursors = new Map(
+      this.database.getCursors(sessionId).map((cursor) => [cursor.sourceKey, cursor]),
+    );
     return files.every((entry) => {
-      const cursor = cursors.get(entry.path);
+      const cursor = cursors.get(entry.sourceKey);
       if (!cursor || cursor.fileSize !== entry.fileSize) return false;
       if (cursor.modifiedAtMs == null || entry.modifiedAtMs == null) return true;
       return Math.abs(cursor.modifiedAtMs - entry.modifiedAtMs) < 1;
@@ -317,7 +319,11 @@ export class UsageMonitor extends EventEmitter {
   async taskPreview(threadId, turnId) {
     const task = this.database.getTask(threadId, turnId);
     if (!task) return null;
-    return readTaskPreview(task);
+    const sourcePath = this.repository.resolveSourceKey(task.sourceKey);
+    if (!sourcePath) {
+      return { available: false, text: null, reason: "原始任务位置无法绑定到当前 Codex 目录" };
+    }
+    return readTaskPreview({ ...task, sourcePath });
   }
 
   health() {
@@ -382,7 +388,7 @@ export class UsageMonitor extends EventEmitter {
           requiresRebuild ||= result.rebuilt;
           if (!this.selectedEntries.some((item) => item.path === entry.path)) this.selectedEntries.push(entry);
         } else {
-          await this.refreshQuotaFromFile(entry.path);
+          await this.refreshQuotaFromFile(entry);
         }
       } catch (error) {
         this.recordError(`处理文件更新失败：${path}`, error);
@@ -454,7 +460,7 @@ export class UsageMonitor extends EventEmitter {
     let latest = this.database.getLatestQuota();
     for (const entry of recent) {
       try {
-        const quota = await scanLatestQuota(entry.path);
+        const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
         if (quota && (!latest || quota.observedAt > latest.observedAt)) latest = quota;
       } catch (error) {
         if (error?.code !== "ENOENT") this.recordError(`额度扫描失败：${entry.path}`, error);
@@ -464,9 +470,9 @@ export class UsageMonitor extends EventEmitter {
     return latest;
   }
 
-  async refreshQuotaFromFile(path) {
+  async refreshQuotaFromFile(entry) {
     try {
-      const quota = await scanLatestQuota(path);
+      const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
       if (!quota) return;
       const current = this.database.getLatestQuota();
       if (!current || quota.observedAt >= current.observedAt) {

@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
+import { recoverLegacySourceKey } from "./source-locator.js";
 import {
   addUsage,
   isMonotonic,
@@ -84,20 +85,21 @@ export class SessionRolloutParser {
     this.sessionMetadata = { ...(storedSnapshot.session ?? {}), ...this.sessionMetadata };
 
     const sortedEntries = [...entries].sort(compareEntries);
-    const cursorsByPath = new Map(cursors.map((cursor) => [cursor.path, cursor]));
-    const validationByPath = new Map();
+    const cursorsBySource = new Map(cursors.map((cursor) => [cursorIdentity(cursor), cursor]));
+    const validationBySource = new Map();
     const replayThreadIds = new Set();
     for (const entry of sortedEntries) {
-      const cursor = cursorsByPath.get(entry.path);
-      const usable = await isCursorUsable(cursor, entry.path);
-      validationByPath.set(entry.path, usable);
+      const sourceIdentity = entryIdentity(entry);
+      const cursor = cursorsBySource.get(sourceIdentity);
+      const usable = await isCursorUsable(cursor, entry);
+      validationBySource.set(sourceIdentity, usable);
       if (!usable) replayThreadIds.add(entryThreadId(entry));
     }
 
     const replayPaths = [];
     const restoredPaths = [];
     for (const entry of sortedEntries) {
-      if (!validationByPath.get(entry.path) || replayThreadIds.has(entryThreadId(entry))) {
+      if (!validationBySource.get(entryIdentity(entry)) || replayThreadIds.has(entryThreadId(entry))) {
         replayPaths.push(entry.path);
       } else {
         restoredPaths.push(entry.path);
@@ -107,7 +109,7 @@ export class SessionRolloutParser {
     const entriesByThread = new Map(
       sortedEntries.map((entry) => [entryThreadId(entry), entry]),
     );
-    const currentPaths = new Set(sortedEntries.map((entry) => entry.path));
+    const currentSources = new Set(sortedEntries.map((entry) => entryIdentity(entry)));
     const tasksByThread = new Map();
     for (const storedTask of storedSnapshot.tasks ?? []) {
       const list = tasksByThread.get(storedTask.threadId) ?? [];
@@ -127,7 +129,7 @@ export class SessionRolloutParser {
       let currentTaskId = null;
       let lastUsage = null;
       for (const storedTask of storedTasks) {
-        const task = restoreTask(storedTask);
+        const task = restoreTask(storedTask, entry);
         taskMap.set(task.turnId, task);
         sequence = Math.max(sequence, task.sequence);
         if (task.status === "in_progress") currentTaskId = task.turnId;
@@ -144,7 +146,11 @@ export class SessionRolloutParser {
         nickname: storedAgent.nickname ?? null,
         role: storedAgent.role ?? null,
         agentPath: storedAgent.agentPath ?? null,
-        rolloutPath: storedAgent.rolloutPath ?? entry?.path ?? null,
+        rolloutKey:
+          storedAgent.rolloutKey ??
+          entry?.sourceKey ??
+          recoverLegacySourceKey(storedAgent.rolloutPath),
+        rolloutPath: entry?.path ?? null,
         isRoot,
         cliVersion: storedAgent.cliVersion ?? null,
         firstSeenAt: normalizeTimestamp(storedAgent.firstSeenAt),
@@ -164,9 +170,10 @@ export class SessionRolloutParser {
 
     for (const entry of sortedEntries) {
       if (!restoredPaths.includes(entry.path)) continue;
-      const cursor = cursorsByPath.get(entry.path);
+      const cursor = cursorsBySource.get(entryIdentity(entry));
       const context = {
         path: entry.path,
+        sourceKey: entry.sourceKey ?? cursorIdentity(cursor),
         threadId: cursor.threadId ?? entryThreadId(entry),
         historyStartOrdinal: numberOrNull(entry.meta?.subagent_history_start_ordinal),
         byteOffset: cursor.byteOffset,
@@ -192,7 +199,7 @@ export class SessionRolloutParser {
       if (thread && context.lastUsage) thread.lastUsage = structuredClone(context.lastUsage);
     }
     for (const cursor of cursors) {
-      if (currentPaths.has(cursor.path) || replayThreadIds.has(cursor.threadId)) continue;
+      if (currentSources.has(cursorIdentity(cursor)) || replayThreadIds.has(cursor.threadId)) continue;
       this.health.unknownRecords += numberOrNull(cursor.unknownRecords) ?? 0;
       this.health.skippedRecords += numberOrNull(cursor.skippedRecords) ?? 0;
       this.health.discontinuities += numberOrNull(cursor.discontinuities) ?? 0;
@@ -221,6 +228,7 @@ export class SessionRolloutParser {
     if (!context || reset) {
       context = {
         path: entry.path,
+        sourceKey: entry.sourceKey ?? entry.path,
         threadId: entry.threadId ?? entry.meta?.id ?? null,
         historyStartOrdinal: numberOrNull(entry.meta?.subagent_history_start_ordinal),
         byteOffset: 0,
@@ -308,7 +316,16 @@ export class SessionRolloutParser {
       return;
     }
     if (START_EVENTS.has(eventType)) {
-      this.startTask(thread, payload, record, position, entry.path, ordinal, context);
+      this.startTask(
+        thread,
+        payload,
+        record,
+        position,
+        entry.path,
+        entry.sourceKey ?? entry.path,
+        ordinal,
+        context,
+      );
       return;
     }
     if (COMPLETE_EVENTS.has(eventType)) {
@@ -320,7 +337,16 @@ export class SessionRolloutParser {
       return;
     }
     if (eventType === "token_count") {
-      this.applyTokenCount(thread, payload, record, position, ordinal, entry.path, context);
+      this.applyTokenCount(
+        thread,
+        payload,
+        record,
+        position,
+        ordinal,
+        entry.path,
+        entry.sourceKey ?? entry.path,
+        context,
+      );
       return;
     }
     if (!IGNORED_EVENT_TYPES.has(eventType)) this.countUnknown(context);
@@ -363,6 +389,7 @@ export class SessionRolloutParser {
       nickname: meta.agent_nickname ?? subagent?.agent_nickname ?? entry.nickname ?? null,
       role: meta.agent_role ?? subagent?.agent_role ?? entry.role ?? null,
       agentPath: meta.agent_path ?? subagent?.agent_path ?? entry.agentPath ?? null,
+      rolloutKey: entry.sourceKey ?? recoverLegacySourceKey(entry.path),
       rolloutPath: entry.path,
       isRoot,
       cliVersion,
@@ -378,7 +405,7 @@ export class SessionRolloutParser {
     return thread;
   }
 
-  startTask(thread, payload, record, position, sourcePath, ordinal, context) {
+  startTask(thread, payload, record, position, sourcePath, sourceKey, ordinal, context) {
     const turnId = payload.turn_id ?? payload.turnId ?? payload.id;
     if (!turnId) {
       this.countSkipped(context);
@@ -416,6 +443,7 @@ export class SessionRolloutParser {
         endUsage: null,
         deltaUsage: null,
         quality: baseline ? "unknown" : "partial",
+        sourceKey,
         sourcePath,
         startOrdinal: ordinal,
         endOrdinal: null,
@@ -442,9 +470,13 @@ export class SessionRolloutParser {
     return true;
   }
 
-  applyTokenCount(thread, payload, record, position, ordinal, sourcePath, context) {
+  applyTokenCount(thread, payload, record, position, ordinal, sourcePath, sourceKey, context) {
     const quota = normalizeRateLimits(payload.rate_limits, record.timestamp, sourcePath);
-    if (quota) this.recordQuota(quota);
+    if (quota) {
+      quota.sourceKey = sourceKey;
+      delete quota.sourcePath;
+      this.recordQuota(quota);
+    }
 
     const usage = normalizeUsage(payload.info?.total_token_usage);
     if (!usage) return;
@@ -500,6 +532,7 @@ export class SessionRolloutParser {
         endUsage: null,
         deltaUsage: null,
         quality: "partial",
+        sourceKey: thread.rolloutKey,
         sourcePath: thread.rolloutPath,
         startOrdinal: null,
         endOrdinal: ordinal,
@@ -552,6 +585,7 @@ export class SessionRolloutParser {
         nickname: thread.nickname,
         role: thread.role,
         agentPath: thread.agentPath,
+        rolloutKey: thread.rolloutKey,
         rolloutPath: thread.rolloutPath,
         isRoot: thread.isRoot,
         cliVersion: thread.cliVersion,
@@ -565,7 +599,7 @@ export class SessionRolloutParser {
 
     computeSubtreeUsage(agents);
     const cursors = [...this.fileContexts.values()].map((context) => ({
-      path: context.path,
+      sourceKey: context.sourceKey,
       threadId: context.threadId,
       byteOffset: context.byteOffset,
       fileSize: context.fileSize,
@@ -630,7 +664,7 @@ export async function scanRolloutMetadata(filePath) {
   };
 }
 
-export async function scanLatestQuota(filePath, maxBytes = 2 * 1024 * 1024) {
+export async function scanLatestQuota(filePath, maxBytes = 2 * 1024 * 1024, sourceKey = null) {
   const fileStat = await stat(filePath);
   const start = Math.max(0, fileStat.size - maxBytes);
   const handle = await open(filePath, "r");
@@ -646,7 +680,13 @@ export async function scanLatestQuota(filePath, maxBytes = 2 * 1024 * 1024) {
         const payload = record.payload ?? {};
         if (record.type === "event_msg" && payload.type === "token_count") {
           const quota = normalizeRateLimits(payload.rate_limits, record.timestamp, filePath);
-          if (quota) return quota;
+          if (quota) {
+            if (sourceKey) {
+              quota.sourceKey = sourceKey;
+              delete quota.sourcePath;
+            }
+            return quota;
+          }
         }
       } catch {
         // The first line can be partial because the tail starts mid-record.
@@ -812,6 +852,7 @@ function materializeTask(task) {
     baselineUsage: task.baselineUsage,
     endUsage: task.sawUsage ? task.endUsage : null,
     deltaUsage: result.delta,
+    sourceKey: task.sourceKey,
     sourcePath: task.sourcePath,
     startOrdinal: task.startOrdinal,
     endOrdinal: task.endOrdinal,
@@ -822,7 +863,7 @@ function materializeTask(task) {
   };
 }
 
-function restoreTask(storedTask) {
+function restoreTask(storedTask, entry = null) {
   return {
     rootSessionId: storedTask.rootSessionId,
     threadId: storedTask.threadId,
@@ -840,7 +881,11 @@ function restoreTask(storedTask) {
     endUsage: storedTask.endUsage ? structuredClone(storedTask.endUsage) : null,
     deltaUsage: storedTask.deltaUsage ? structuredClone(storedTask.deltaUsage) : null,
     quality: storedTask.quality ?? "unknown",
-    sourcePath: storedTask.sourcePath ?? null,
+    sourceKey:
+      storedTask.sourceKey ??
+      entry?.sourceKey ??
+      recoverLegacySourceKey(storedTask.sourcePath),
+    sourcePath: entry?.path ?? null,
     startOrdinal: numberOrNull(storedTask.startOrdinal),
     endOrdinal: numberOrNull(storedTask.endOrdinal),
     startLine: numberOrNull(storedTask.startLine),
@@ -948,8 +993,9 @@ function parseMaybeJson(value) {
   }
 }
 
-async function isCursorUsable(cursor, filePath) {
-  if (!cursor || cursor.path !== filePath) return false;
+async function isCursorUsable(cursor, entry) {
+  const filePath = entry.path;
+  if (!cursor || cursorIdentity(cursor) !== entryIdentity(entry)) return false;
   if (
     !isNonNegativeNumber(cursor.byteOffset) ||
     !isNonNegativeNumber(cursor.fileSize) ||
@@ -970,6 +1016,14 @@ async function isCursorUsable(cursor, filePath) {
   } catch {
     return false;
   }
+}
+
+function entryIdentity(entry) {
+  return entry?.sourceKey ?? entry?.path ?? null;
+}
+
+function cursorIdentity(cursor) {
+  return cursor?.sourceKey ?? cursor?.path ?? null;
 }
 
 function entryThreadId(entry) {

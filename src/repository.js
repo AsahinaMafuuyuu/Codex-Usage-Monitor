@@ -3,11 +3,13 @@ import { readdir, stat } from "node:fs/promises";
 import { basename, join, normalize, resolve } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { scanRolloutMetadata } from "./rollout-parser.js";
+import { CodexSourceLocator, recoverLegacySourceKey } from "./source-locator.js";
 import { normalizeTimestamp } from "./usage.js";
 
 export class CodexRepository {
   constructor(codexHome, database) {
     this.codexHome = resolve(codexHome);
+    this.sourceLocator = new CodexSourceLocator(this.codexHome);
     this.database = database;
     this.entriesByPath = new Map();
     this.entriesByRoot = new Map();
@@ -86,6 +88,7 @@ export class CodexRepository {
       meta.session_id ?? this.findRootThread(meta.id) ?? meta.id;
     return {
       path: normalizePath(path),
+      sourceKey: this.sourceLocator.keyForPath(path),
       threadId: meta.id,
       rootSessionId,
       parentThreadId,
@@ -165,6 +168,11 @@ export class CodexRepository {
       normalizeTimestamp(rootThread?.created_at),
       fallbackEntry?.createdAt,
     ].filter(Boolean);
+    const rolloutKey =
+      rootEntry?.sourceKey ??
+      recoverLegacySourceKey(rootThread?.rollout_path) ??
+      fallbackEntry?.sourceKey ??
+      null;
     return {
       id: rootId,
       title,
@@ -174,7 +182,8 @@ export class CodexRepository {
       updatedAt: updatedCandidates.sort().at(-1) ?? null,
       archived: Boolean(rootThread?.archived) || entries.some((entry) => entry.archived),
       cliVersion: rootThread?.cli_version ?? fallbackEntry?.cliVersion ?? null,
-      rolloutPath: rootThread?.rollout_path ?? fallbackEntry?.path ?? null,
+      rolloutKey,
+      rolloutPath: rootEntry?.path ?? fallbackEntry?.path ?? this.sourceLocator.pathForKey(rolloutKey),
     };
   }
 
@@ -198,6 +207,10 @@ export class CodexRepository {
 
   getSession(rootId) {
     return this.sessions.get(rootId) ?? null;
+  }
+
+  resolveSourceKey(sourceKey) {
+    return this.sourceLocator.pathForKey(sourceKey);
   }
 
   allFiles() {

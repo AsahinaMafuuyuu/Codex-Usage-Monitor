@@ -1,5 +1,5 @@
 import assert from "node:assert/strict";
-import { appendFile, mkdtemp, mkdir, rm, unlink, writeFile } from "node:fs/promises";
+import { appendFile, mkdtemp, mkdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
 import { join } from "node:path";
@@ -8,7 +8,8 @@ import test from "node:test";
 import { MonitorDatabase } from "../src/database.js";
 import { UsageMonitor } from "../src/monitor.js";
 import { CodexRepository } from "../src/repository.js";
-import { startApplication } from "../src/server.js";
+import { resolveCodexHome, resolveDatabasePath, startApplication } from "../src/server.js";
+import { CodexSourceLocator, recoverLegacySourceKey } from "../src/source-locator.js";
 import { zeroUsage } from "../src/usage.js";
 
 const ROOT = "aaaaaaaa-aaaa-4aaa-8aaa-aaaaaaaaaaaa";
@@ -101,6 +102,108 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   assert.equal(second.monitor.health().timeline.tailedFiles, 0);
 });
 
+test("portable source keys survive Codex home relocation without path-only replay", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-portable-"));
+  const oldCodexHome = join(directory, "old-profile", ".codex");
+  const newCodexHome = join(directory, "new-drive", ".codex");
+  const sessions = join(oldCodexHome, "sessions", "2026", "08", "24");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(sessions, { recursive: true });
+  const rolloutPath = join(sessions, `rollout-portable-${CHILD}.jsonl`);
+  await writeFile(rolloutPath, makePortablePreviewRollout());
+  let second = null;
+  t.after(async () => {
+    second?.monitor.close();
+    second?.database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const first = await bootMonitor(oldCodexHome, databasePath);
+  const initial = await first.monitor.selectSession(ROOT);
+  assert.equal(initial.summary.taskCount, 1);
+  assert.equal(first.database.getCursors(ROOT)[0].sourceKey,
+    `sessions/2026/08/24/rollout-portable-${CHILD}.jsonl`);
+  first.monitor.close();
+  first.database.close();
+
+  await mkdir(join(directory, "new-drive"), { recursive: true });
+  await rename(oldCodexHome, newCodexHome);
+  second = await bootMonitor(newCodexHome, databasePath);
+  assert.equal(second.monitor.health().timeline.dirtySessions, 0);
+
+  const selected = await second.monitor.selectSession(ROOT);
+  assert.equal(selected.health.parser.restoredFiles, 1);
+  assert.equal(selected.health.parser.replayedFiles, 0);
+  const preview = await second.monitor.taskPreview(CHILD, TURN);
+  assert.equal(preview.available, true);
+  assert.equal(preview.text, "Portable preview survives source rebinding.");
+
+  const task = second.database.getTask(CHILD, TURN);
+  assert.equal(task.sourceKey, `sessions/2026/08/24/rollout-portable-${CHILD}.jsonl`);
+  const raw = second.database.db.prepare(`
+    SELECT source_key, source_path FROM tasks WHERE thread_id=? AND turn_id=?
+  `).get(CHILD, TURN);
+  assert.equal(raw.source_key, task.sourceKey);
+  assert.equal(raw.source_path, null);
+});
+
+test("source locator canonicalizes runtime paths and recovers legacy Windows roots", () => {
+  const locator = new CodexSourceLocator("C:\\Users\\NewUser\\.codex");
+  const sourceKey = "sessions/2026/08/24/rollout-portable.jsonl";
+  assert.equal(
+    locator.keyForPath("C:\\Users\\NewUser\\.codex\\sessions\\2026\\08\\24\\rollout-portable.jsonl"),
+    sourceKey,
+  );
+  assert.equal(
+    recoverLegacySourceKey("D:\\Profiles\\OldUser\\.codex\\sessions\\2026\\08\\24\\rollout-portable.jsonl"),
+    sourceKey,
+  );
+  assert.equal(recoverLegacySourceKey("D:\\unrelated\\rollout-portable.jsonl"), null);
+  assert.equal(locator.pathForKey("sessions/../../outside/rollout-portable.jsonl"), null);
+});
+
+test("startup falls back from a stale Codex home and anchors relative database paths to the project", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-home-resolution-"));
+  const userHome = join(directory, "NewUser");
+  const currentCodexHome = join(userHome, ".codex");
+  const customCodexHome = join(directory, "portable-codex-home");
+  await mkdir(currentCodexHome, { recursive: true });
+  await mkdir(customCodexHome, { recursive: true });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const fallback = resolveCodexHome(null, {
+    environment: {
+      CODEX_MONITOR_HOME: join(directory, "missing-old-home"),
+      USERPROFILE: userHome,
+    },
+    userHome,
+  });
+  assert.equal(fallback.path, currentCodexHome);
+  assert.equal(fallback.source, "current-user");
+  assert.match(fallback.warning, /CODEX_MONITOR_HOME/u);
+
+  const configured = resolveCodexHome(null, {
+    environment: { CODEX_MONITOR_HOME: customCodexHome },
+    userHome,
+  });
+  assert.equal(configured.path, customCodexHome);
+  assert.equal(configured.source, "environment");
+  assert.equal(configured.warning, null);
+
+  assert.throws(
+    () => resolveCodexHome(join(directory, "missing-explicit-home"), { environment: {}, userHome }),
+    /Codex 数据目录不存在/u,
+  );
+
+  const projectDatabase = resolveDatabasePath("portable-data\\usage.sqlite", {});
+  assert.match(projectDatabase, /codex-usage-monitor[\\/]portable-data[\\/]usage\.sqlite$/u);
+  assert.match(resolveDatabasePath(null, {}), /codex-usage-monitor[\\/]data[\\/]usage\.sqlite$/u);
+  assert.match(
+    resolveDatabasePath(null, { CODEX_MONITOR_DB: join(directory, "external.sqlite") }),
+    /codex-usage-monitor[\\/]data[\\/]usage\.sqlite$/u,
+  );
+});
+
 test("incremental timeline tails only the changed session after rollout append", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-calendar-tail-"));
   const codexHome = join(directory, ".codex");
@@ -175,7 +278,7 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(calendar.months[0].days[0].sessions[0].usage.totalTokens, 42);
   assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
   assert.equal(reopened.getHealthStats().calendarRows, 1);
-  assert.equal(reopened.getHealthStats().schemaVersion, 7);
+  assert.equal(reopened.getHealthStats().schemaVersion, 8);
   assert.equal(reopened.getHealthStats().cacheSize, -2000);
   assert.equal(reopened.getHealthStats().mmapSize, 0);
   assert.equal(reopened.getHealthStats().walAutoCheckpoint, 256);
@@ -215,7 +318,7 @@ test("calendar-only persistence does not archive historical quota snapshots", as
   assert.equal(database.db.prepare("SELECT COUNT(*) AS count FROM quota_snapshots").get().count, 2);
 });
 
-test("schema v1 ingest cursors migrate to resumable schema v7", async (t) => {
+test("schema v1 ingest cursors migrate to portable resumable schema v8", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -239,7 +342,7 @@ test("schema v1 ingest cursors migrate to resumable schema v7", async (t) => {
     );
     INSERT INTO ingest_cursors (
       path, root_session_id, thread_id, byte_offset, file_size, parsed_at
-    ) VALUES ('C:\\fixture.jsonl', '${ROOT}', '${CHILD}', 120, 120, '2026-08-24T00:00:00.000Z');
+    ) VALUES ('C:\\Users\\OldUser\\.codex\\sessions\\2026\\08\\24\\rollout-fixture.jsonl', '${ROOT}', '${CHILD}', 120, 120, '2026-08-24T00:00:00.000Z');
     PRAGMA user_version=1;
   `);
   legacy.close();
@@ -251,9 +354,12 @@ test("schema v1 ingest cursors migrate to resumable schema v7", async (t) => {
   assert.equal(columns.some((column) => column.name === "skipped_records"), true);
   assert.equal(columns.some((column) => column.name === "last_usage"), true);
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 7);
+  assert.equal(columns.some((column) => column.name === "source_key"), true);
+  assert.equal(columns.some((column) => column.name === "path"), false);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 8);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
+  assert.equal(cursors[0].sourceKey, "sessions/2026/08/24/rollout-fixture.jsonl");
   assert.equal(cursors[0].byteOffset, 120);
   assert.equal(cursors[0].lineNumber, 0);
 });
@@ -299,7 +405,77 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 7);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 8);
+});
+
+test("schema v7 absolute rollout locators migrate to portable keys without losing derived data", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v7-portable-migration-"));
+  const path = join(directory, "usage.sqlite");
+  let migrated = null;
+  t.after(async () => {
+    migrated?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const seed = new MonitorDatabase(path);
+  seed.replaceSession(snapshot());
+  seed.close();
+
+  const legacy = new DatabaseSync(path);
+  const rootLegacyPath = "C:\\Users\\OldUser\\.codex\\sessions\\2026\\08\\24\\rollout-root.jsonl";
+  const childLegacyPath = "D:\\Profiles\\OldUser\\.codex\\sessions\\2026\\08\\24\\rollout-child.jsonl";
+  legacy.prepare("UPDATE sessions SET rollout_key=NULL, rollout_path=? WHERE id=?").run(rootLegacyPath, ROOT);
+  legacy.prepare("UPDATE agents SET rollout_key=NULL, rollout_path=? WHERE root_session_id=? AND thread_id=?")
+    .run(childLegacyPath, ROOT, CHILD);
+  legacy.prepare("UPDATE tasks SET source_key=NULL, source_path=? WHERE thread_id=? AND turn_id=?")
+    .run(childLegacyPath, CHILD, TURN);
+  legacy.prepare(`
+    INSERT INTO quota_snapshots (observed_at, limit_id, plan_type, source_key, source_path, payload)
+    VALUES (?, ?, ?, NULL, ?, ?)
+  `).run(
+    "2026-08-24T00:02:00.000Z",
+    "codex",
+    "plus",
+    childLegacyPath,
+    JSON.stringify({
+      observedAt: "2026-08-24T00:02:00.000Z",
+      limitId: "codex",
+      planType: "plus",
+      sourcePath: childLegacyPath,
+      primary: { usedPercent: 12, windowMinutes: 10_080, resetsAt: null },
+    }),
+  );
+  legacy.exec("PRAGMA user_version=7;");
+  legacy.close();
+
+  migrated = new MonitorDatabase(path);
+  const stored = migrated.getSession(ROOT);
+  assert.equal(stored.session.rolloutKey, "sessions/2026/08/24/rollout-root.jsonl");
+  assert.equal(stored.agents[0].rolloutKey, "sessions/2026/08/24/rollout-child.jsonl");
+  assert.equal(stored.tasks[0].sourceKey, "sessions/2026/08/24/rollout-child.jsonl");
+  assert.equal(stored.tasks[0].deltaUsage.totalTokens, 42);
+  assert.equal(stored.session.projectPath, "C:\\workspace\\codex-usage-monitor");
+  assert.equal(migrated.getTimeline().usage.totalTokens, 42);
+
+  const rawSession = migrated.db.prepare("SELECT rollout_path FROM sessions WHERE id=?").get(ROOT);
+  const rawAgent = migrated.db.prepare(`
+    SELECT rollout_path FROM agents WHERE root_session_id=? AND thread_id=?
+  `).get(ROOT, CHILD);
+  const rawTask = migrated.db.prepare("SELECT source_path FROM tasks WHERE thread_id=? AND turn_id=?")
+    .get(CHILD, TURN);
+  assert.equal(rawSession.rollout_path, null);
+  assert.equal(rawAgent.rollout_path, null);
+  assert.equal(rawTask.source_path, null);
+
+  const quotaRow = migrated.db.prepare(`
+    SELECT source_key, source_path, payload FROM quota_snapshots
+    WHERE observed_at='2026-08-24T00:02:00.000Z' AND limit_id='codex'
+  `).get();
+  const quotaPayload = JSON.parse(quotaRow.payload);
+  assert.equal(quotaRow.source_key, "sessions/2026/08/24/rollout-child.jsonl");
+  assert.equal(quotaRow.source_path, null);
+  assert.equal(quotaPayload.sourceKey, "sessions/2026/08/24/rollout-child.jsonl");
+  assert.equal("sourcePath" in quotaPayload, false);
 });
 
 test("pre-v5 cursors replay once to rebuild diagnostics and cumulative usage state", async (t) => {
@@ -327,7 +503,7 @@ test("pre-v5 cursors replay once to rebuild diagnostics and cumulative usage sta
     );
     INSERT INTO ingest_cursors (
       path, root_session_id, thread_id, byte_offset, line_number, file_size, parsed_at
-    ) VALUES ('C:\\fixture.jsonl', '${ROOT}', '${CHILD}', 120, 12, 120, '2026-08-24T00:00:00.000Z');
+    ) VALUES ('D:\\Profiles\\OldUser\\.codex\\sessions\\2026\\08\\24\\rollout-fixture.jsonl', '${ROOT}', '${CHILD}', 120, 12, 120, '2026-08-24T00:00:00.000Z');
     PRAGMA user_version=2;
   `);
   legacy.close();
@@ -576,6 +752,68 @@ function makeSubagentRollout(threadId, turnId, totalTokens, options = {}) {
   ].map(JSON.stringify).join("\n") + "\n";
 }
 
+function makePortablePreviewRollout() {
+  const timestamp = "2026-08-24T00:00:00.000Z";
+  const parentPath = "/root";
+  const childPath = "/root/portable-worker";
+  return [
+    {
+      timestamp,
+      ordinal: 0,
+      type: "session_meta",
+      payload: {
+        id: CHILD,
+        session_id: ROOT,
+        parent_thread_id: ROOT,
+        timestamp,
+        source: {
+          subagent: {
+            thread_spawn: {
+              parent_thread_id: ROOT,
+              depth: 1,
+              agent_path: childPath,
+            },
+          },
+        },
+      },
+    },
+    { timestamp, ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: TURN } },
+    {
+      timestamp,
+      ordinal: 2,
+      type: "response_item",
+      payload: {
+        type: "agent_message",
+        author: parentPath,
+        recipient: childPath,
+        content: [{
+          type: "input_text",
+          text: `Message Type: NEW_TASK\nTask name: ${childPath}\nSender: ${parentPath}\nPayload:\nPortable preview survives source rebinding.`,
+        }],
+      },
+    },
+    {
+      timestamp,
+      ordinal: 3,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        info: {
+          total_token_usage: {
+            input_tokens: 90,
+            cached_input_tokens: 0,
+            cache_write_input_tokens: 0,
+            output_tokens: 10,
+            reasoning_output_tokens: 0,
+            total_tokens: 100,
+          },
+        },
+      },
+    },
+    { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: TURN } },
+  ].map(JSON.stringify).join("\n") + "\n";
+}
+
 function makeCalendarRootRollout(rootId, turnId, totalTokens, timestamp) {
   const usage = {
     input_tokens: totalTokens - 10,
@@ -664,6 +902,7 @@ function assertSecurityHeaders(headers) {
 
 function snapshot() {
   const usage = { ...zeroUsage(), inputTokens: 40, outputTokens: 2, totalTokens: 42 };
+  const sourceKey = "sessions/2026/08/24/rollout-test.jsonl";
   return {
     session: {
       id: ROOT,
@@ -680,7 +919,7 @@ function snapshot() {
       nickname: "Worker",
       role: "explorer",
       agentPath: "/root/worker",
-      rolloutPath: "C:\\missing.jsonl",
+      rolloutKey: sourceKey,
       isRoot: false,
       ownUsage: usage,
       subtreeUsage: usage,
@@ -701,7 +940,7 @@ function snapshot() {
       baselineUsage: zeroUsage(),
       endUsage: usage,
       deltaUsage: usage,
-      sourcePath: "C:\\missing.jsonl",
+      sourceKey,
       startByte: 0,
       endByte: 100,
     }],

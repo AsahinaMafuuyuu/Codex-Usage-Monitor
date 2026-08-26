@@ -559,6 +559,94 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 - [x] Real-history hot Timeline latency and additional RSS are materially below the Phase 10 full-replay baseline (~16–24 s and ~156 MiB additional RSS).
 - [x] SQLite main/WAL sizes and page-cache settings are recorded after the migration.
 
+## Phase 12: Windows portable storage and source rebinding
+
+### Goals
+
+- [x] Make persisted rollout identity independent from Windows usernames, drive letters, and the current `.codex` absolute location.
+- [x] Keep the monitor SQLite database project-local by default while allowing the project directory itself to move across Windows drives.
+- [x] Rebind an existing database to the current user's `.codex` tree without replaying unchanged rollout history solely because the machine path changed.
+- [x] Fail safely when a stored locator cannot be rebound, and preserve the existing read-only `.codex` security boundary.
+
+### Task 1: Introduce a portable Codex source-locator seam
+
+**Description:** Add one source-locator module that converts runtime absolute rollout paths to canonical `.codex`-relative source keys and resolves those keys against the currently selected Codex home. Repository entries carry both forms, but only source keys are eligible for durable identity.
+
+**Acceptance criteria:**
+
+- [x] `sessions/...` and `archived_sessions/...` source keys use stable `/` separators and reject traversal/out-of-root paths.
+- [x] Legacy Windows absolute rollout paths can recover a source key even when their old username or drive no longer exists.
+- [x] Repository runtime reads continue to use canonical absolute paths under the current Codex home.
+
+**Verification:** `npm test -- --test-name-pattern "portable source|source key"`, `npm run check`.
+
+**Dependencies:** Phase 11.
+
+**Files likely touched:** `src/source-locator.js`, `src/repository.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Migrate schema v8 away from absolute rollout identities
+
+**Description:** Replace path-keyed ingest cursors with `source_key` identity and add portable source-key columns for sessions, agents, tasks, and quota snapshots. The migration derives keys from legacy `.codex` paths, clears machine-bound rollout locators, and drops only locator rows that cannot be converted safely.
+
+**Acceptance criteria:**
+
+- [x] `ingest_cursors` is keyed by `source_key`, not an absolute filesystem path.
+- [x] Existing v7 task/calendar/usage data survives migration; convertible legacy rollout/task/quota paths become source keys and absolute `.codex` locator columns are cleared.
+- [x] Quota payload JSON no longer persists an absolute rollout path.
+
+**Verification:** `npm test -- --test-name-pattern "schema v8|portable migration"`, `npm run check`.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/database.js`, `src/rollout-parser.js`, `test/database-server.test.js`, `test/parser.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 3: Rebind startup, cursor restore, and task preview to the current Codex home
+
+**Description:** Detect the current Windows Codex home from explicit configuration or the current user profile, tolerate a stale configured path by falling back to the standard current-user location, and make cursor restore plus on-demand task preview resolve source keys through the active repository.
+
+**Acceptance criteria:**
+
+- [x] Moving the same `.codex` tree and monitor database to a different absolute root resumes unchanged cursors without replay caused only by path inequality.
+- [x] A task preview still opens the current rollout after `.codex` rebinding and never trusts a stale persisted absolute path.
+- [x] The default database remains `<project>/data/usage.sqlite` regardless of process working directory or project drive.
+
+**Verification:** `npm test -- --test-name-pattern "rebind|relocat|preview"`, `npm run check`.
+
+**Dependencies:** Tasks 1–2.
+
+**Files likely touched:** `src/server.js`, `src/monitor.js`, `src/repository.js`, `src/rollout-parser.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Record portability contract and migration evidence
+
+**Description:** Add an accepted ADR and operational documentation describing project-local storage, source-key rebinding, Windows-only scope, safe fallback/replay behavior, and the distinction between historical project CWD metadata and active rollout locators.
+
+**Acceptance criteria:**
+
+- [x] README/architecture/operations document moving the project + SQLite + `.codex` between Windows users or drives.
+- [x] ADR records why relative source keys are durable identity while absolute paths remain runtime-only locators.
+- [x] Full verification and `git diff --check` pass before the portability feature commit.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`.
+
+**Dependencies:** Tasks 1–3.
+
+**Files likely touched:** `docs/decisions/0014-portable-source-locators.md`, `docs/decisions/README.md`, `README.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `CHANGELOG.md`, `docs/VERIFICATION.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Windows portability
+
+- [x] Full tests, syntax checks, and diff checks pass.
+- [x] A relocation regression proves source-key cursor reuse across different absolute `.codex` roots.
+- [x] A legacy v7 migration regression proves absolute rollout locators are removed without losing derived usage/calendar data.
+- [x] The final Git commit contains only the reviewed portability slice.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |

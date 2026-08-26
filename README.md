@@ -32,9 +32,27 @@ npm run start:no-open
 
 可选环境变量：
 
-- `CODEX_MONITOR_HOME`：Codex 数据目录，默认 `%USERPROFILE%\.codex`。
+- `CODEX_MONITOR_HOME`：Codex 数据目录。未设置时自动使用当前 Windows 用户的 `.codex`；若该环境变量仍指向已不存在的旧机器路径，也会回退到当前用户 `.codex` 并给出提示。
 - `CODEX_MONITOR_PORT`：首选端口，默认 `47832`；被占用时最多继续尝试 10 个端口。
-- `CODEX_MONITOR_DB`：监控数据库路径，默认 `data\usage.sqlite`。
+- `CODEX_MONITOR_DB`：监控数据库路径，默认固定在当前工程根目录的 `data\usage.sqlite`；相对路径也以工程根目录解析，不受启动时所在目录影响。为保证 CLI 的目录级可移植性，指向工程外部的绝对环境变量会被忽略并回退默认项目数据库，同时在终端提示。
+
+### Windows 迁移
+
+默认存储模型支持把工程跨用户名、跨盘移动。建议停止服务后一起迁移：
+
+```text
+codex-usage-monitor\
+└─ data\usage.sqlite   （以及停止前仍存在的 -wal / -shm）
+
+当前用户或自定义位置\
+└─ .codex\
+   ├─ sessions\...
+   └─ archived_sessions\...
+```
+
+schema v8 不再用 `C:\Users\...\.codex\...` 绝对路径作为 cursor/任务来源身份，而持久化 `sessions/.../rollout-*.jsonl` 形式的 `.codex` 相对 source key。新电脑用户名、工程盘符或 `.codex` 根目录改变后，启动时会把这些 key 绑定到当前 Codex home；文件本身未变化时可以继续原 byte cursor，而不是仅因为路径变化重扫历史。首次创建全新数据库仍需要一次性建立历史索引。
+
+根 session 的 `projectPath` 仍会保留旧会话当时的工程 `cwd`，用于历史分组和审计；它不是 rollout locator，不影响迁移恢复。非标准 `.codex` 位置请设置 `CODEX_MONITOR_HOME`，程序不会扫描所有盘符猜测数据目录。完整步骤见 [运行与故障处理](docs/OPERATIONS.md) 和 [ADR-0014](docs/decisions/0014-portable-source-locators.md)。
 
 ## 页面能力
 
@@ -69,7 +87,7 @@ npm run start:no-open
 
 - 不修改 `config.toml`，不启动 App Server，不启用 Hooks/OTel，不调用模型，不联网。
 - Codex 的 SQLite 和 rollout 文件始终只读。
-- 监控 SQLite 只保存工程目录等定位元数据、派生 task/cursor、token delta 和可重算的日期聚合；不保存 prompt、response、消息正文或会话标题。
+- 监控 SQLite 只保存工程目录等历史元数据、`.codex` 相对 source key、派生 task/cursor、token delta 和可重算的日期聚合；不保存 prompt、response、消息正文或会话标题。rollout 的绝对机器路径只在当前进程中作为运行 locator 使用。
 - 页面使用一次性随机令牌、严格 Cookie、Host/Origin 校验、CSP 和只读 HTTP 方法。
 - API 的 ID 受固定格式约束，不能传入任意文件路径。
 

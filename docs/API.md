@@ -31,11 +31,11 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 { "sessions": ["session summary objects"] }
 ```
 
-每个会话摘要包含 nullable `projectPath`，值来自根线程 `session_meta.cwd`。`q` 可选，按当前只读索引中的标题、session ID、source 和工程目录做本地包含搜索。数据库不持久化标题，但 schema v7 将 `projectPath` 作为定位元数据保留。
+每个会话摘要包含 nullable `projectPath`，值来自根线程 `session_meta.cwd`。`q` 可选，按当前只读索引中的标题、session ID、source 和工程目录做本地包含搜索。数据库不持久化标题；schema v8 继续把 `projectPath` 作为历史工程元数据保留，但 rollout/cursor 身份已经改为 `.codex` 相对 source key，`projectPath` 不参与文件定位。
 
 ### `GET /api/timeline`
 
-返回全部已发现根 session 的本地日期用量账页。schema v7 会先检查各 root session 的持久化 task/cursor 状态：从未导入的历史只在第一次建立派生 ledger 时完整解析；可信的 append-only cursor 只读取新增字节；无变化的 session 不读取 rollout 正文。同步完成后，接口从 SQLite `session_day_usage` 物化索引生成响应，不再依赖“任意文件变化即全量回放”的内存缓存。
+返回全部已发现根 session 的本地日期用量账页。schema v8 会先按 portable `source_key` 匹配各 root session 的持久化 task/cursor 状态：从未导入的历史只在第一次建立派生 ledger 时完整解析；可信的 append-only cursor 只读取新增字节；无变化的 session 不读取 rollout 正文。同步完成后，接口从 SQLite `session_day_usage` 物化索引生成响应，不再依赖“任意文件变化即全量回放”的内存缓存。换 Windows 用户目录或盘符后，同一 source key 会重新绑定当前 Codex home，不会仅因绝对路径不同而失效。
 
 该同步只写监控器自己的派生 SQLite（task、cursor、session-day aggregate），从不修改 `.codex`。Timeline 后台补齐不会把历史 rollout 中的全部 quota 快照批量归档；账号额度仍由现有 latest-quota/实时路径维护。cursor 不可信、文件收缩或持久化状态不足时，parser 会回退到原有安全 replay 规则。
 
@@ -162,11 +162,11 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 ### `GET /api/tasks/:threadId/:turnId/preview`
 
-按数据库中保存的来源位置读取原始 rollout，并返回最多 120 字的确定性指令预览。响应区分 `available`，源日志消失时不会回退到数据库内容，因为正文从未被持久化。
+按数据库中保存的 `sourceKey` 绑定当前 Codex home 后读取原始 rollout，并返回最多 120 字的确定性指令预览。响应区分 `available`，源日志消失或 key 无法绑定时不会回退到数据库内容，因为正文从未被持久化。
 
 当前页面不调用此接口。它暂时保留现有认证和内容最小化契约，等待后续“查看完整对话”功能另行设计。
 
-客户端不能传入文件路径；路径只能从已存在任务记录解析。
+客户端不能传入文件路径；运行时绝对路径只能由已存在任务的 source key 与当前 Codex home 解析。
 
 ### `GET /api/quota`
 

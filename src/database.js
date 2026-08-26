@@ -1,9 +1,10 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
+import { recoverLegacySourceKey } from "./source-locator.js";
 import { addUsage, sumTaskUsage, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 7;
+const SCHEMA_VERSION = 8;
 const QUALITY_KEYS = ["complete", "provisional", "estimated", "partial", "discontinuity", "unknown"];
 const TASK_USAGE_COLUMNS = [
   ["inputTokens", "delta_input_tokens"],
@@ -43,6 +44,7 @@ export class MonitorDatabase {
         updated_at TEXT,
         archived INTEGER NOT NULL DEFAULT 0,
         cli_version TEXT,
+        rollout_key TEXT,
         rollout_path TEXT,
         parse_status TEXT NOT NULL DEFAULT 'not_imported',
         imported_at TEXT,
@@ -59,6 +61,7 @@ export class MonitorDatabase {
         nickname TEXT,
         role TEXT,
         agent_path TEXT,
+        rollout_key TEXT,
         rollout_path TEXT,
         is_root INTEGER NOT NULL DEFAULT 0,
         cli_version TEXT,
@@ -92,6 +95,7 @@ export class MonitorDatabase {
         delta_output_tokens INTEGER,
         delta_reasoning_output_tokens INTEGER,
         delta_total_tokens INTEGER,
+        source_key TEXT,
         source_path TEXT,
         start_ordinal INTEGER,
         end_ordinal INTEGER,
@@ -108,13 +112,14 @@ export class MonitorDatabase {
         observed_at TEXT NOT NULL,
         limit_id TEXT NOT NULL,
         plan_type TEXT,
+        source_key TEXT,
         source_path TEXT,
         payload TEXT NOT NULL,
         PRIMARY KEY (observed_at, limit_id)
       );
 
       CREATE TABLE IF NOT EXISTS ingest_cursors (
-        path TEXT PRIMARY KEY,
+        source_key TEXT NOT NULL PRIMARY KEY,
         root_session_id TEXT,
         thread_id TEXT,
         byte_offset INTEGER NOT NULL DEFAULT 0,
@@ -213,6 +218,8 @@ export class MonitorDatabase {
       WHERE delta_usage IS NOT NULL AND json_valid(delta_usage) AND delta_total_tokens IS NULL;
     `);
 
+    if (previousVersion < 8) this.migratePortableSourceLocators();
+
     const timezone = localTimezone();
     const storedTimezone = this.db.prepare("SELECT value FROM derived_state WHERE key='calendar_timezone'").get()?.value;
     if (previousVersion < SCHEMA_VERSION || storedTimezone !== timezone) {
@@ -229,7 +236,7 @@ export class MonitorDatabase {
 
     this.statements = {
       upsertSession: this.db.prepare(`
-        INSERT INTO sessions (id, title, source, project_path, created_at, updated_at, archived, cli_version, rollout_path)
+        INSERT INTO sessions (id, title, source, project_path, created_at, updated_at, archived, cli_version, rollout_key)
         VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(id) DO UPDATE SET
           title=CASE WHEN excluded.title <> '' THEN excluded.title ELSE sessions.title END,
@@ -239,12 +246,12 @@ export class MonitorDatabase {
           updated_at=COALESCE(excluded.updated_at, sessions.updated_at),
           archived=excluded.archived,
           cli_version=COALESCE(excluded.cli_version, sessions.cli_version),
-          rollout_path=COALESCE(excluded.rollout_path, sessions.rollout_path)
+          rollout_key=COALESCE(excluded.rollout_key, sessions.rollout_key)
       `),
       insertAgent: this.db.prepare(`
         INSERT INTO agents (
           root_session_id, thread_id, parent_thread_id, depth, nickname, role,
-          agent_path, rollout_path, is_root, cli_version, first_seen_at, last_seen_at,
+          agent_path, rollout_key, is_root, cli_version, first_seen_at, last_seen_at,
           own_usage, subtree_usage, task_count
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(root_session_id, thread_id) DO UPDATE SET
@@ -253,7 +260,7 @@ export class MonitorDatabase {
           nickname=COALESCE(excluded.nickname, agents.nickname),
           role=COALESCE(excluded.role, agents.role),
           agent_path=COALESCE(excluded.agent_path, agents.agent_path),
-          rollout_path=COALESCE(excluded.rollout_path, agents.rollout_path),
+          rollout_key=COALESCE(excluded.rollout_key, agents.rollout_key),
           is_root=excluded.is_root,
           cli_version=COALESCE(excluded.cli_version, agents.cli_version),
           first_seen_at=COALESCE(agents.first_seen_at, excluded.first_seen_at),
@@ -268,7 +275,7 @@ export class MonitorDatabase {
           started_at, completed_at, duration_ms, model, effort,
           baseline_usage, end_usage, delta_usage,
           delta_input_tokens, delta_cached_input_tokens, delta_cache_write_input_tokens,
-          delta_output_tokens, delta_reasoning_output_tokens, delta_total_tokens, source_path,
+          delta_output_tokens, delta_reasoning_output_tokens, delta_total_tokens, source_key,
           start_ordinal, end_ordinal, start_line, end_line, start_byte, end_byte
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id, turn_id) DO UPDATE SET
@@ -297,7 +304,7 @@ export class MonitorDatabase {
           delta_output_tokens=COALESCE(excluded.delta_output_tokens, tasks.delta_output_tokens),
           delta_reasoning_output_tokens=COALESCE(excluded.delta_reasoning_output_tokens, tasks.delta_reasoning_output_tokens),
           delta_total_tokens=COALESCE(excluded.delta_total_tokens, tasks.delta_total_tokens),
-          source_path=COALESCE(excluded.source_path, tasks.source_path),
+          source_key=COALESCE(excluded.source_key, tasks.source_key),
           start_ordinal=COALESCE(excluded.start_ordinal, tasks.start_ordinal),
           end_ordinal=COALESCE(excluded.end_ordinal, tasks.end_ordinal),
           start_line=COALESCE(excluded.start_line, tasks.start_line),
@@ -307,11 +314,11 @@ export class MonitorDatabase {
       `),
       upsertCursor: this.db.prepare(`
         INSERT INTO ingest_cursors (
-          path, root_session_id, thread_id, byte_offset, line_number, file_size,
+          source_key, root_session_id, thread_id, byte_offset, line_number, file_size,
           modified_at_ms, last_ordinal, invalid_lines, partial_bytes, unknown_records,
           skipped_records, discontinuities, last_usage, parsed_at
         ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-        ON CONFLICT(path) DO UPDATE SET
+        ON CONFLICT(source_key) DO UPDATE SET
           root_session_id=excluded.root_session_id,
           thread_id=excluded.thread_id,
           byte_offset=excluded.byte_offset,
@@ -328,11 +335,131 @@ export class MonitorDatabase {
           parsed_at=excluded.parsed_at
       `),
       upsertQuota: this.db.prepare(`
-        INSERT INTO quota_snapshots (observed_at, limit_id, plan_type, source_path, payload)
+        INSERT INTO quota_snapshots (observed_at, limit_id, plan_type, source_key, payload)
         VALUES (?, ?, ?, ?, ?)
-        ON CONFLICT(observed_at, limit_id) DO UPDATE SET payload=excluded.payload
+        ON CONFLICT(observed_at, limit_id) DO UPDATE SET
+          plan_type=excluded.plan_type,
+          source_key=COALESCE(excluded.source_key, quota_snapshots.source_key),
+          payload=excluded.payload
       `),
     };
+  }
+
+  migratePortableSourceLocators() {
+    const locatorColumns = [
+      ["sessions", "rollout_key", "rollout_path"],
+      ["agents", "rollout_key", "rollout_path"],
+      ["tasks", "source_key", "source_path"],
+      ["quota_snapshots", "source_key", "source_path"],
+    ];
+    for (const [table, keyColumn] of locatorColumns) {
+      const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+      if (!columns.some((column) => column.name === keyColumn)) {
+        this.db.exec(`ALTER TABLE ${table} ADD COLUMN ${keyColumn} TEXT;`);
+      }
+    }
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      for (const [table, keyColumn, pathColumn] of locatorColumns) {
+        const columns = this.db.prepare(`PRAGMA table_info(${table})`).all();
+        if (!columns.some((column) => column.name === pathColumn)) continue;
+        const rows = this.db.prepare(`
+          SELECT rowid AS row_id, ${keyColumn} AS source_key, ${pathColumn} AS legacy_path
+          FROM ${table}
+          WHERE ${keyColumn} IS NOT NULL OR ${pathColumn} IS NOT NULL
+        `).all();
+        const update = this.db.prepare(`UPDATE ${table} SET ${keyColumn}=?, ${pathColumn}=NULL WHERE rowid=?`);
+        for (const row of rows) {
+          const sourceKey = recoverLegacySourceKey(row.source_key) ?? recoverLegacySourceKey(row.legacy_path);
+          update.run(sourceKey, row.row_id);
+        }
+      }
+
+      const quotaRows = this.db.prepare(`
+        SELECT rowid AS row_id, source_key, payload FROM quota_snapshots
+      `).all();
+      const updateQuota = this.db.prepare(`
+        UPDATE quota_snapshots SET source_key=?, source_path=NULL, payload=? WHERE rowid=?
+      `);
+      for (const row of quotaRows) {
+        const payload = parseJson(row.payload) ?? {};
+        const sourceKey =
+          recoverLegacySourceKey(row.source_key) ??
+          recoverLegacySourceKey(payload.sourceKey) ??
+          recoverLegacySourceKey(payload.sourcePath);
+        delete payload.sourcePath;
+        if (sourceKey) payload.sourceKey = sourceKey;
+        else delete payload.sourceKey;
+        updateQuota.run(sourceKey, json(payload), row.row_id);
+      }
+
+      const cursorColumns = this.db.prepare("PRAGMA table_info(ingest_cursors)").all();
+      if (cursorColumns.some((column) => column.name === "path")) {
+        const legacyRows = this.db.prepare("SELECT * FROM ingest_cursors ORDER BY parsed_at, path").all();
+        this.db.exec(`
+          DROP TABLE IF EXISTS ingest_cursors_v8;
+          CREATE TABLE ingest_cursors_v8 (
+            source_key TEXT NOT NULL PRIMARY KEY,
+            root_session_id TEXT,
+            thread_id TEXT,
+            byte_offset INTEGER NOT NULL DEFAULT 0,
+            line_number INTEGER NOT NULL DEFAULT 0,
+            file_size INTEGER NOT NULL DEFAULT 0,
+            modified_at_ms REAL,
+            last_ordinal INTEGER,
+            invalid_lines INTEGER NOT NULL DEFAULT 0,
+            partial_bytes INTEGER NOT NULL DEFAULT 0,
+            unknown_records INTEGER NOT NULL DEFAULT 0,
+            skipped_records INTEGER NOT NULL DEFAULT 0,
+            discontinuities INTEGER NOT NULL DEFAULT 0,
+            last_usage TEXT,
+            parsed_at TEXT NOT NULL
+          );
+        `);
+        const insertCursor = this.db.prepare(`
+          INSERT OR REPLACE INTO ingest_cursors_v8 (
+            source_key, root_session_id, thread_id, byte_offset, line_number, file_size,
+            modified_at_ms, last_ordinal, invalid_lines, partial_bytes, unknown_records,
+            skipped_records, discontinuities, last_usage, parsed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        `);
+        for (const row of legacyRows) {
+          const sourceKey = recoverLegacySourceKey(row.source_key) ?? recoverLegacySourceKey(row.path);
+          if (!sourceKey) continue;
+          insertCursor.run(
+            sourceKey,
+            row.root_session_id ?? null,
+            row.thread_id ?? null,
+            Number(row.byte_offset ?? 0),
+            Number(row.line_number ?? 0),
+            Number(row.file_size ?? 0),
+            row.modified_at_ms ?? null,
+            row.last_ordinal ?? null,
+            Number(row.invalid_lines ?? 0),
+            Number(row.partial_bytes ?? 0),
+            Number(row.unknown_records ?? 0),
+            Number(row.skipped_records ?? 0),
+            Number(row.discontinuities ?? 0),
+            row.last_usage ?? null,
+            row.parsed_at ?? new Date(0).toISOString(),
+          );
+        }
+        this.db.exec(`
+          DROP TABLE ingest_cursors;
+          ALTER TABLE ingest_cursors_v8 RENAME TO ingest_cursors;
+        `);
+      }
+
+      this.db.prepare(`
+        INSERT INTO derived_state (key, value) VALUES ('source_locator_layout', 'codex-relative-v1')
+        ON CONFLICT(key) DO UPDATE SET value=excluded.value
+      `).run();
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
   }
 
   upsertSessions(sessions) {
@@ -347,7 +474,7 @@ export class MonitorDatabase {
           session.updatedAt ?? null,
           session.archived ? 1 : 0,
           session.cliVersion ?? null,
-          session.rolloutPath ?? null,
+          session.rolloutKey ?? recoverLegacySourceKey(session.rolloutPath) ?? null,
         );
       }
     });
@@ -365,7 +492,7 @@ export class MonitorDatabase {
         snapshot.session.updatedAt ?? null,
         snapshot.session.archived ? 1 : 0,
         snapshot.session.cliVersion ?? null,
-        snapshot.session.rolloutPath ?? null,
+        snapshot.session.rolloutKey ?? recoverLegacySourceKey(snapshot.session.rolloutPath) ?? null,
       );
 
       for (const agent of snapshot.agents) {
@@ -377,7 +504,7 @@ export class MonitorDatabase {
           agent.nickname ?? null,
           agent.role ?? null,
           agent.agentPath ?? null,
-          agent.rolloutPath ?? null,
+          agent.rolloutKey ?? recoverLegacySourceKey(agent.rolloutPath) ?? null,
           agent.isRoot ? 1 : 0,
           agent.cliVersion ?? null,
           agent.firstSeenAt ?? null,
@@ -411,7 +538,7 @@ export class MonitorDatabase {
           usage?.outputTokens ?? null,
           usage?.reasoningOutputTokens ?? null,
           usage?.totalTokens ?? null,
-          task.sourcePath ?? null,
+          task.sourceKey ?? recoverLegacySourceKey(task.sourcePath) ?? null,
           task.startOrdinal ?? null,
           task.endOrdinal ?? null,
           task.startLine ?? null,
@@ -422,8 +549,10 @@ export class MonitorDatabase {
       }
 
       for (const cursor of snapshot.cursors) {
+        const sourceKey = cursor.sourceKey ?? recoverLegacySourceKey(cursor.path);
+        if (!sourceKey) continue;
         this.statements.upsertCursor.run(
-          cursor.path,
+          sourceKey,
           rootId,
           cursor.threadId ?? null,
           cursor.byteOffset,
@@ -465,19 +594,20 @@ export class MonitorDatabase {
 
   saveQuota(quota) {
     if (!quota) return;
+    const portableQuota = toPortableQuota(quota);
     this.statements.upsertQuota.run(
-      quota.observedAt,
-      quota.limitId,
-      quota.planType ?? null,
-      quota.sourcePath ?? null,
-      json(quota),
+      portableQuota.observedAt,
+      portableQuota.limitId,
+      portableQuota.planType ?? null,
+      portableQuota.sourceKey ?? null,
+      json(portableQuota),
     );
   }
 
   listSessions() {
     return this.db.prepare(`
       SELECT id, title, source, created_at, updated_at, archived, cli_version,
-             project_path, rollout_path, parse_status, imported_at, agent_count, task_count
+             project_path, rollout_key, parse_status, imported_at, agent_count, task_count
       FROM sessions ORDER BY COALESCE(updated_at, created_at) DESC
     `).all().map(mapSession);
   }
@@ -501,12 +631,12 @@ export class MonitorDatabase {
 
   getCursors(rootSessionId) {
     return this.db.prepare(`
-      SELECT path, root_session_id, thread_id, byte_offset, line_number, file_size,
+      SELECT source_key, root_session_id, thread_id, byte_offset, line_number, file_size,
              modified_at_ms, last_ordinal, invalid_lines, partial_bytes, unknown_records,
              skipped_records, discontinuities, last_usage, parsed_at
-      FROM ingest_cursors WHERE root_session_id=? ORDER BY path
+      FROM ingest_cursors WHERE root_session_id=? ORDER BY source_key
     `).all(rootSessionId).map((row) => ({
-      path: row.path,
+      sourceKey: row.source_key,
       rootSessionId: row.root_session_id ?? null,
       threadId: row.thread_id ?? null,
       byteOffset: Number(row.byte_offset ?? 0),
@@ -802,7 +932,7 @@ function mapSession(row) {
     updatedAt: row.updated_at ?? null,
     archived: Boolean(row.archived),
     cliVersion: row.cli_version ?? null,
-    rolloutPath: row.rollout_path ?? null,
+    rolloutKey: row.rollout_key ?? null,
     parseStatus: row.parse_status ?? "not_imported",
     importedAt: row.imported_at ?? null,
     agentCount: Number(row.agent_count ?? 0),
@@ -819,7 +949,7 @@ function mapAgent(row) {
     nickname: row.nickname ?? null,
     role: row.role ?? null,
     agentPath: row.agent_path ?? null,
-    rolloutPath: row.rollout_path ?? null,
+    rolloutKey: row.rollout_key ?? null,
     isRoot: Boolean(row.is_root),
     cliVersion: row.cli_version ?? null,
     firstSeenAt: row.first_seen_at ?? null,
@@ -846,7 +976,7 @@ function mapTask(row) {
     baselineUsage: parseJson(row.baseline_usage),
     endUsage: parseJson(row.end_usage),
     deltaUsage: parseJson(row.delta_usage),
-    sourcePath: row.source_path ?? null,
+    sourceKey: row.source_key ?? null,
     startOrdinal: row.start_ordinal == null ? null : Number(row.start_ordinal),
     endOrdinal: row.end_ordinal == null ? null : Number(row.end_ordinal),
     startLine: row.start_line == null ? null : Number(row.start_line),
@@ -862,6 +992,15 @@ function json(value) {
 
 function jsonOrNull(value) {
   return value == null ? null : JSON.stringify(value);
+}
+
+function toPortableQuota(quota) {
+  const portable = { ...quota };
+  const sourceKey = recoverLegacySourceKey(portable.sourceKey) ?? recoverLegacySourceKey(portable.sourcePath);
+  delete portable.sourcePath;
+  if (sourceKey) portable.sourceKey = sourceKey;
+  else delete portable.sourceKey;
+  return portable;
 }
 
 function parseJson(value) {

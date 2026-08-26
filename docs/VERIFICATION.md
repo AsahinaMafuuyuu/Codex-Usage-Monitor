@@ -154,6 +154,17 @@ npm test
 - 增量行为回归覆盖：无变化的第二次 Timeline 不 replay/tail；进程重启后未变化历史不 replay；向两个 session 中的一个 rollout 追加任务后，只同步该 root session，并命中 1 个 cursor tail / 0 replay。
 - 最终自动化验证：`npm test` 为 30 tests、29 passed、0 failed、1 skipped；唯一 skipped 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的既有真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
 
+### Windows portable source locators / schema v8
+
+日期：2026-08-25。Phase 12 将 rollout 的 durable identity 从机器绝对路径改为 `.codex` 相对 source key；真实 `.codex` 和当前 `data/usage.sqlite` 的兼容性检查均以只读方式执行，未在验证阶段迁移真实数据库。
+
+- relocation fixture：同一 rollout + SQLite 先位于一个临时 `old-profile\.codex`，建立 cursor 后整体移动到另一个绝对 `new-drive\.codex`。第二次启动命中 `1 restored / 0 replayed`，Timeline 无 dirty session，证明仅绝对根路径变化不会使 cursor 失效。
+- 同一 relocation fixture 的任务 preview 在移动后仍能读取父代理指令，证明 preview 通过 `sourceKey -> 当前 Codex home` 重绑定，而不是继续信任数据库中的旧 `source_path`。
+- schema v7 迁移 fixture 保留原 task delta、`projectPath` 和 `session_day_usage`，同时把 session/agent/task/quota 的旧 `.codex` 绝对 locator 转为 portable key，并把旧 `rollout_path` / `source_path` 置空；quota payload 的 `sourcePath` 被删除并替换为 `sourceKey`。
+- startup resolver fixture 验证：失效的 `CODEX_MONITOR_HOME` 会回退当前 Windows 用户 `.codex` 并返回 warning；有效自定义 home 继续优先使用；显式不存在的 API option 仍报错而不静默猜测。相对 `CODEX_MONITOR_DB` 和默认数据库均从工程根解析，工程外绝对环境变量会回退项目默认数据库。
+- 当前真实 `data/usage.sqlite` 只读兼容性审计：`PRAGMA user_version=7`；267/267 session rollout paths、412/412 agent rollout paths、2,365/2,365 task source paths、6,569/6,569 quota source paths、418/418 cursor paths 均可确定转换为 source key，五类 locator 的不可转换数量均为 0。该命令只以 `DatabaseSync(..., { readOnly: true })` 查询，没有触发 schema v8 迁移。
+- 最终自动化验证：`npm test` 为 34 tests、33 passed、0 failed、1 skipped；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的既有真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+
 ### 2026-08-25：Overview / task ledger / scrollbar / motion polish
 
 本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。

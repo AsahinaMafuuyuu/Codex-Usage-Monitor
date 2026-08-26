@@ -55,3 +55,7 @@
 - [x] Replace all-history Timeline replay with cursor-aware incremental synchronization
 - [x] Bound SQLite page-cache/WAL behavior and benchmark the SQL hot path
 - [x] Record ADR-0013 and update calendar architecture/verification documentation
+- [x] Add canonical `.codex`-relative source keys and current-home resolution
+- [x] Migrate SQLite schema v8 from absolute rollout locators to source keys
+- [x] Rebind cursors and task previews across Windows users/drives without path-only replay
+- [x] Document Windows portable-storage migration and verify relocation regressions
