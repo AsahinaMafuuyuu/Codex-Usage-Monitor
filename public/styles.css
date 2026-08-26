@@ -539,19 +539,70 @@ summary:focus-visible,
   border-left: 1px solid var(--line);
 }
 
-.metric-card,
+.metric-group,
 .quota-card {
   min-width: 0;
-  min-height: 126px;
-  padding: 21px 22px;
   background: transparent;
   border: 0;
   border-right: 1px solid var(--line);
   border-bottom: 1px solid var(--line);
 }
 
-.metric-card { grid-column: span 3; }
-.metric-card:nth-child(n + 5) { grid-column: span 4; }
+.metric-group { position: relative; }
+.activity-group { grid-column: span 3; }
+.token-group { grid-column: span 6; }
+.cost-group {
+  grid-column: span 3;
+  background: color-mix(in srgb, var(--paper-deep) 30%, transparent);
+}
+.cost-group::before {
+  content: "";
+  position: absolute;
+  inset: 0 auto auto 0;
+  width: 48px;
+  height: 2px;
+  background: var(--clay);
+}
+
+.metric-group-heading {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 43px;
+  padding: 14px 18px 10px;
+  border-bottom: 1px solid color-mix(in srgb, var(--line) 74%, transparent);
+}
+.metric-group-heading > span {
+  color: var(--clay-dark);
+  font-size: var(--text-utility);
+  font-weight: 750;
+  letter-spacing: .09em;
+}
+.metric-group-heading small {
+  overflow: hidden;
+  color: var(--quiet);
+  font-size: var(--text-utility);
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+.metric-group-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  height: calc(100% - 43px);
+}
+.cost-group .metric-group-grid { grid-template-columns: 1fr; }
+
+.metric-card {
+  min-width: 0;
+  min-height: 126px;
+  padding: 20px 18px 18px;
+  background: transparent;
+}
+.activity-group .metric-card + .metric-card,
+.token-group .metric-card:nth-child(even) { border-left: 1px solid color-mix(in srgb, var(--line) 74%, transparent); }
+.token-group .metric-card:nth-child(n + 3) { border-top: 1px solid color-mix(in srgb, var(--line) 74%, transparent); }
 
 .metric-card > span,
 .quota-heading span {
@@ -560,7 +611,7 @@ summary:focus-visible,
 }
 .metric-card strong {
   display: block;
-  margin: 14px 0 7px;
+  margin: 12px 0 6px;
   font-family: var(--mono);
   font-size: clamp(22px, 2.1vw, 29px);
   font-weight: 550;
@@ -570,9 +621,18 @@ summary:focus-visible,
 .metric-card small,
 .quota-card small { color: var(--quiet); font-size: var(--text-utility); }
 
+.cost-metric {
+  display: flex;
+  flex-direction: column;
+  justify-content: center;
+  min-height: 252px;
+}
+.cost-metric strong { font-size: clamp(27px, 2.6vw, 36px); }
+
 .quota-card {
   grid-column: 1 / -1;
   min-height: 116px;
+  padding: 21px 22px;
   background: var(--paper-deep);
 }
 .quota-heading {
@@ -1030,10 +1090,11 @@ summary:focus-visible,
 
 @media (max-width: 1260px) {
   .app-shell { grid-template-columns: 300px minmax(0, 1fr); }
-  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
-  .metric-card,
-  .metric-card:nth-child(n + 5) { grid-column: auto; }
-  .cost-metric { grid-column: 1 / -1; }
+  .activity-group { grid-column: span 4; }
+  .token-group { grid-column: span 8; }
+  .cost-group { grid-column: 1 / -1; }
+  .cost-group .metric-group-grid { grid-template-columns: 1fr; }
+  .cost-metric { min-height: 126px; }
   .agent-card summary { grid-template-columns: minmax(210px, .9fr) minmax(350px, 1.4fr) 16px; gap: 18px; }
   .agent-stats { grid-template-columns: repeat(3, minmax(72px, 1fr)); gap: 10px 16px; }
 }
@@ -1071,12 +1132,13 @@ summary:focus-visible,
   .session-hero { grid-template-columns: 1fr; gap: 30px; padding-bottom: 34px; }
   .session-identity h2 { margin: 10px 0 22px; font-size: clamp(34px, 10vw, 48px); }
   .hero-signal { width: max-content; min-width: 210px; }
-  .overview-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); margin-bottom: 58px; }
-  .metric-card,
-  .metric-card:nth-child(n + 5) { grid-column: auto; }
+  .overview-grid { margin-bottom: 58px; }
+  .activity-group,
+  .token-group,
+  .cost-group { grid-column: 1 / -1; }
   .metric-card { min-height: 112px; padding: 18px 16px; }
   .metric-card strong { font-size: 23px; }
-  .cost-metric { grid-column: 1 / -1; }
+  .cost-metric { min-height: 112px; }
   .quota-card { padding: 19px 16px; }
   .quota-windows { grid-template-columns: 1fr; gap: 13px; }
   .section-heading { align-items: flex-start; flex-direction: column; }

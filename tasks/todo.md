@@ -45,7 +45,7 @@
 - [x] Publish a frontend handoff with exact Git baseline, frozen contracts, Phase 9 order, and browser acceptance protocol
 - [x] Reduce deep-lineage horizontal width loss as a separate visual commit
 - [x] Improve task-ledger scrolling/sticky context as a separate visual commit
-- [ ] Rebalance overview metric hierarchy as a separate visual commit
+- [x] Rebalance overview metric hierarchy as a separate visual commit
 - [ ] Define and implement a scalable agent expansion policy as a separate visual commit
 - [x] Build all-session local calendar usage aggregate with quality coverage
 - [x] Expose authenticated month/day/session timeline API

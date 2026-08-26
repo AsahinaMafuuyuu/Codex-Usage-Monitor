@@ -14,7 +14,8 @@
 - 采用暖纸色编辑式工作区：parchment `#F4F1EA`、paper `#FBFAF7`、ink `#2D2A26`、graphite `#706A62`、Claude clay `#C15F3C`、sage `#667A68` 和 hairline `#D8D1C7`。clay 只用于选择、主谱系节点和关键焦点，不大面积装饰。
 - 字体分工明确：Charter/Iowan/中文衬线回退用于会话与章节标题，系统无衬线用于导航和说明，Cascadia/system monospace 与 tabular numerals 用于路径、ID、token、比例和表格。
 - 左栏成为可折叠工程索引：默认只展开当前工程，搜索时展开所有命中工程；选中会话用 clay 左侧定位线而不是完整卡片边框。
-- 会话首屏采用编辑式标题与工程/会话元数据，移除环形发光装饰。七项汇总以 12 栏 `4 + 3` 的分栏账页呈现，额度作为同一账页的横向注记，不再使用独立圆角卡片。
+- 会话首屏采用编辑式标题与工程/会话元数据，移除环形发光装饰。汇总区按 Activity / Token Flow / Cost 三个语义组组织在同一 12 栏账页中；Cost 仅使用短 clay 顶线和轻纸色区分，不恢复圆角卡片。额度仍作为同一账页的横向注记。
+- 会话总计 USD 直接显示当前汇总对象的 `amountUsd` 格式化结果，不再在数值前附加 `≥`；当覆盖不完整时，旁侧覆盖文案与 title 仍必须明确“已估算 / 不可估算”和已知下限语义，避免把部分金额包装成完整账单。
 - 智能体 DOM 使用递归的 `agent-branch > agent-node + agent-children` 结构。children 自身持有连续竖轨和父子横向连接，层级由结构表达而不是预计算整卡 margin。
 - 每个智能体名称前显示独立 role badge。root、reviewer、test-worker、frontend-designer、backend/debugger、explorer 和通用 worker 使用受限语义色；未知角色采用中性 fallback，不从角色推断模型或用量。
 - 所有任务表使用同一 14 列 `colgroup`、`table-layout: fixed` 和 1390px 审计宽度；文本首列左对齐，其余数值采用 tabular numerals 右对齐。窄屏保留表格自身横向滚动，不压缩或隐藏审计字段。

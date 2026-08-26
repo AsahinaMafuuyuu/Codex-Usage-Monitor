@@ -87,41 +87,68 @@
           </section>
 
           <section class="overview-grid" aria-label="会话汇总">
-            <article class="metric-card">
-              <span>子智能体</span>
-              <strong id="agent-count">—</strong>
-              <small>递归统计</small>
-            </article>
-            <article class="metric-card">
-              <span>任务记录</span>
-              <strong id="task-count">—</strong>
-              <small id="active-task-count">无活动任务</small>
-            </article>
-            <article class="metric-card">
-              <span>会话输入</span>
-              <strong id="input-total">—</strong>
-              <small>根智能体与全部后代</small>
-            </article>
-            <article class="metric-card metric-wide">
-              <span>缓存输入</span>
-              <strong id="cached-total">—</strong>
-              <small>属于 input tokens 的缓存部分</small>
-            </article>
-            <article class="metric-card">
-              <span>总缓存命中率</span>
-              <strong id="cache-hit-rate">—</strong>
-              <small>缓存输入 / 会话输入</small>
-            </article>
-            <article class="metric-card">
-              <span>会话输出</span>
-              <strong id="output-total">—</strong>
-              <small>包含 reasoning 明细</small>
-            </article>
-            <article class="metric-card cost-metric">
-              <span>会话总计 USD</span>
-              <strong id="session-cost">—</strong>
-              <small id="session-cost-coverage">标准 API 短上下文等值</small>
-            </article>
+            <section class="metric-group activity-group" aria-labelledby="activity-group-title">
+              <header class="metric-group-heading">
+                <span id="activity-group-title">ACTIVITY</span>
+                <small>活动概况</small>
+              </header>
+              <div class="metric-group-grid">
+                <article class="metric-card">
+                  <span>子智能体</span>
+                  <strong id="agent-count">—</strong>
+                  <small>递归统计</small>
+                </article>
+                <article class="metric-card">
+                  <span>任务记录</span>
+                  <strong id="task-count">—</strong>
+                  <small id="active-task-count">无活动任务</small>
+                </article>
+              </div>
+            </section>
+
+            <section class="metric-group token-group" aria-labelledby="token-group-title">
+              <header class="metric-group-heading">
+                <span id="token-group-title">TOKEN FLOW</span>
+                <small>输入、缓存与输出</small>
+              </header>
+              <div class="metric-group-grid">
+                <article class="metric-card">
+                  <span>会话输入</span>
+                  <strong id="input-total">—</strong>
+                  <small>根智能体与全部后代</small>
+                </article>
+                <article class="metric-card">
+                  <span>缓存输入</span>
+                  <strong id="cached-total">—</strong>
+                  <small>属于 input tokens 的缓存部分</small>
+                </article>
+                <article class="metric-card">
+                  <span>总缓存命中率</span>
+                  <strong id="cache-hit-rate">—</strong>
+                  <small>缓存输入 / 会话输入</small>
+                </article>
+                <article class="metric-card">
+                  <span>会话输出</span>
+                  <strong id="output-total">—</strong>
+                  <small>包含 reasoning 明细</small>
+                </article>
+              </div>
+            </section>
+
+            <section class="metric-group cost-group" aria-labelledby="cost-group-title">
+              <header class="metric-group-heading">
+                <span id="cost-group-title">COST</span>
+                <small>API 等值</small>
+              </header>
+              <div class="metric-group-grid">
+                <article class="metric-card cost-metric">
+                  <span>会话总计 USD</span>
+                  <strong id="session-cost">—</strong>
+                  <small id="session-cost-coverage">标准 API 短上下文等值</small>
+                </article>
+              </div>
+            </section>
+
             <article id="quota-card" class="quota-card">
               <div class="quota-heading">
                 <div>

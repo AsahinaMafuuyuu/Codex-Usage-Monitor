@@ -287,7 +287,7 @@ function renderDashboard() {
   elements["cached-total"].textContent = formatTokens(sessionUsage?.cachedInputTokens);
   elements["cache-hit-rate"].textContent = formatCacheHitRate(sessionUsage);
   elements["output-total"].textContent = formatTokens(sessionUsage?.outputTokens);
-  elements["session-cost"].textContent = formatUsdSummary(snapshot.summary.totalCostEstimate);
+  elements["session-cost"].textContent = formatUsdAmount(snapshot.summary.totalCostEstimate?.amountUsd);
   elements["session-cost"].title = costSummaryTitle(snapshot.summary.totalCostEstimate, "整个会话");
   elements["session-cost-coverage"].textContent = costSummaryCoverage(snapshot.summary.totalCostEstimate);
   elements["last-update"].textContent = snapshot.health.lastUpdateAt
