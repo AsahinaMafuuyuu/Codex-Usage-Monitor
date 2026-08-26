@@ -165,6 +165,16 @@ npm test
 - 当前真实 `data/usage.sqlite` 只读兼容性审计：`PRAGMA user_version=7`；267/267 session rollout paths、412/412 agent rollout paths、2,365/2,365 task source paths、6,569/6,569 quota source paths、418/418 cursor paths 均可确定转换为 source key，五类 locator 的不可转换数量均为 0。该命令只以 `DatabaseSync(..., { readOnly: true })` 查询，没有触发 schema v8 迁移。
 - 最终自动化验证：`npm test` 为 34 tests、33 passed、0 failed、1 skipped；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的既有真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
 
+### Phase 13 Task 1：verified model-usage event classifier
+
+日期：2026-08-26。新增独立 `classifyModelUsageEvent` 分类层，以累计 `total_token_usage` 验证 `last_token_usage`，但仍保留 Task Boundary Ledger 为正式聚合事实源；本任务没有切换 session/timeline 统计口径。
+
+- fixture 覆盖 `verified_increment`、`duplicate`、`generation_start`、`unverified`、`anomaly`；历史 schema 缺少 `cache_write_input_tokens` 时只把该字段保留为不可验证 `null`，不会误判整个事件。
+- `duplicate` 在检查 `last_token_usage` 前先按累计快照去重，因此重复广播不会重复计量上一请求；累计 rollback 只有在当前累计快照与 `last_token_usage` 逐字段一致时才视为可证明的新 generation，否则仍进入 anomaly/discontinuity 路径。
+- `npm run audit:request-ledger` 对当前真实 `.codex` 扫描 412 个 rollout、42,183 条 `token_count`：40,040 个 `verified_increment`、348 个 `generation_start`、1,726 个 `duplicate`、69 个 `unverified`、0 个 `anomaly`，即 verified usage event 合计仍为 40,388。
+- 与交付实验相比新增 24 条 `token_count` 全部属于 `missing_total_usage`；原有 `missing_baseline` 仍精确为 45，说明 `42,159 -> 42,183` 是新增未验证记录，而不是分类器改变历史结果。
+- 同一只读回放仍得到 2026-08-22 / 08-23 / 08-24 的 60,289,305 / 64,066,930 / 175,486,562 tokens；412 个 rollout 扫描前后 SHA-256 全部一致（`hashChangedFiles=0`）。
+
 ### 2026-08-25：Overview / task ledger / scrollbar / motion polish
 
 本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。

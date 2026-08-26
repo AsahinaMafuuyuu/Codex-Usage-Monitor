@@ -3,7 +3,7 @@ import { open, stat } from "node:fs/promises";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import {
   addUsage,
-  isMonotonic,
+  classifyModelUsageEvent,
   normalizeRateLimits,
   normalizeTimestamp,
   normalizeUsage,
@@ -480,9 +480,11 @@ export class SessionRolloutParser {
 
     const usage = normalizeUsage(payload.info?.total_token_usage);
     if (!usage) return;
+    const lastUsage = normalizeUsage(payload.info?.last_token_usage);
+    const usageEvent = classifyModelUsageEvent(thread.lastUsage, usage, lastUsage);
     context.lastUsage = structuredClone(usage);
     const task = thread.currentTaskId ? thread.tasks.get(thread.currentTaskId) : null;
-    if (usageEquals(thread.lastUsage, usage)) {
+    if (usageEvent.classification === "duplicate") {
       if (task) {
         task.sawUsage = true;
         task.endUsage = structuredClone(usage);
@@ -493,7 +495,10 @@ export class SessionRolloutParser {
       return;
     }
 
-    if (!isMonotonic(thread.lastUsage, usage)) {
+    if (
+      usageEvent.classification === "anomaly" &&
+      usageEvent.rollbackFields.length > 0
+    ) {
       this.health.discontinuities += 1;
       context.discontinuities = (context.discontinuities ?? 0) + 1;
       if (task) task.discontinuity = true;

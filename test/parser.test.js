@@ -10,6 +10,7 @@ import {
   scanRolloutMetadata,
   SessionRolloutParser,
 } from "../src/rollout-parser.js";
+import { classifyModelUsageEvent, normalizeUsage } from "../src/usage.js";
 
 const ROOT = "11111111-1111-4111-8111-111111111111";
 const CHILD = "22222222-2222-4222-8222-222222222222";
@@ -172,12 +173,68 @@ test("tailing completes an active task without rereading or double counting", as
   assert.equal(parser.snapshot().tasks[0].deltaUsage.totalTokens, 125);
 });
 
+test("verified model-usage event classifier distinguishes increments, duplicates, generations, and anomalies", () => {
+  const first = normalizeUsage(usage(100));
+  const next = normalizeUsage(usage(150));
+  const verified = classifyModelUsageEvent(first, next, normalizeUsage(usageIncrement(50)));
+  assert.equal(verified.classification, "verified_increment");
+  assert.equal(verified.usage.totalTokens, 50);
+  assert.deepEqual(verified.mismatchFields, []);
+
+  const duplicate = classifyModelUsageEvent(next, next, normalizeUsage(usageIncrement(7)));
+  assert.equal(duplicate.classification, "duplicate");
+  assert.equal(duplicate.usage.totalTokens, 0);
+
+  const generation = classifyModelUsageEvent(
+    normalizeUsage(usage(200)),
+    normalizeUsage(usage(30)),
+    normalizeUsage(usage(30)),
+  );
+  assert.equal(generation.classification, "generation_start");
+  assert.equal(generation.usage.totalTokens, 30);
+  assert.ok(generation.rollbackFields.includes("totalTokens"));
+
+  const fileStart = classifyModelUsageEvent(null, first, first);
+  assert.equal(fileStart.classification, "generation_start");
+  assert.equal(fileStart.reason, "zero_baseline_proven");
+
+  const unverified = classifyModelUsageEvent(
+    null,
+    normalizeUsage(zeroWireUsage()),
+    normalizeUsage(usageIncrement(10)),
+  );
+  assert.equal(unverified.classification, "unverified");
+  assert.equal(unverified.reason, "missing_baseline");
+
+  const anomaly = classifyModelUsageEvent(first, next, normalizeUsage(usageIncrement(49)));
+  assert.equal(anomaly.classification, "anomaly");
+  assert.ok(anomaly.mismatchFields.includes("totalTokens"));
+});
+
+test("verified model-usage classifier tolerates legacy missing cache-write fields without inventing them", () => {
+  const previous = legacyUsage(100);
+  const current = legacyUsage(150);
+  const last = normalizeUsage({
+    input_tokens: 50,
+    cached_input_tokens: 50,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+    total_tokens: 50,
+  });
+  const result = classifyModelUsageEvent(previous, current, last);
+  assert.equal(result.classification, "verified_increment");
+  assert.equal(result.usage.totalTokens, 50);
+  assert.equal(result.usage.cacheWriteInputTokens, null);
+  assert.ok(result.missingFields.includes("cacheWriteInputTokens"));
+  assert.deepEqual(result.mismatchFields, []);
+});
+
 test("counter rollback is reported as a discontinuity", async (t) => {
   const fixture = await createFixture([
     line(0, "session_meta", childMeta()),
     event(1, "task_started", { turn_id: TURN }),
     token(2, usage(200)),
-    token(3, usage(30)),
+    token(3, usage(30), null, usage(20)),
     event(4, "task_complete", { turn_id: TURN }),
   ]);
   t.after(() => rm(fixture.directory, { recursive: true, force: true }));
@@ -449,6 +506,34 @@ function usage(total) {
     reasoning_output_tokens: 5,
     total_tokens: total,
   };
+}
+
+function usageIncrement(total) {
+  return {
+    input_tokens: total,
+    cached_input_tokens: total,
+    cache_write_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+    total_tokens: total,
+  };
+}
+
+function zeroWireUsage() {
+  return {
+    input_tokens: 0,
+    cached_input_tokens: 0,
+    cache_write_input_tokens: 0,
+    output_tokens: 0,
+    reasoning_output_tokens: 0,
+    total_tokens: 0,
+  };
+}
+
+function legacyUsage(total) {
+  const raw = usage(total);
+  delete raw.cache_write_input_tokens;
+  return normalizeUsage(raw);
 }
 
 async function fileHash(path) {

@@ -667,11 +667,11 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] `current.total == previous.total` 分类为 `duplicate`，不产生新增 usage。
-- [ ] 所有可比较字段满足 `current.total - previous.total == current.last` 时分类为 `verified_increment`。
-- [ ] 累计值回退且新快照满足可证明的新 generation 条件时分类为 `generation_start`，而不是自动使整个 task `discontinuity`。
-- [ ] 无前序状态、`total=0 && last>0`、字段矛盾或无法解释的 rollback 保持 `unverified/anomaly`，不得猜测计量。
-- [ ] 全历史只读回归能复现 `412 / 42,159 / 1,726 / 40,388 / 45` 的实验分类基线，或在新增 rollout 后给出可解释的增量变化。
+- [x] `current.total == previous.total` 分类为 `duplicate`，不产生新增 usage。
+- [x] 所有可比较字段满足 `current.total - previous.total == current.last` 时分类为 `verified_increment`。
+- [x] 累计值回退且新快照满足可证明的新 generation 条件时分类为 `generation_start`，不再把已解释 rollback 计入 parser discontinuity counter；旧 Task Boundary Ledger 若跨 generation 仍会独立保持 `discontinuity`，直到 Task 4/5 完成双账本切换。
+- [x] 无法建立可证明 baseline、`total=0 && last>0`、字段矛盾或无法解释的 rollback 保持 `unverified/anomaly`，不得猜测计量；`total == last` 可证明零 baseline 时允许分类为 `generation_start`。
+- [x] 全历史只读回归复现原 `412 / 1,726 / 40,388 / 45` 核心分类基线；当前总 `token_count` 已增至 `42,183`，新增 24 条全部是缺少 `total_token_usage` 的 `unverified`，未改变 verified/duplicate/原 missing-baseline 计数，源 SHA-256 全部不变。
 
 **Verification:** parser fixture tests, read-only historical classifier harness, `npm run check`, source SHA-256 comparison.
 

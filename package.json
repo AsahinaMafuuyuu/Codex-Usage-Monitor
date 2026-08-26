@@ -8,7 +8,8 @@
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
     "start:no-open": "node --disable-warning=ExperimentalWarning src/server.js --no-open",
     "test": "node --disable-warning=ExperimentalWarning --test",
-    "check": "node --check src/source-locator.js && node --check src/database.js && node --check src/repository.js && node --check src/server.js && node --check src/monitor.js && node --check src/rollout-parser.js && node --check src/pricing.js && node --check public/app.js"
+    "check": "node --check src/source-locator.js && node --check src/database.js && node --check src/repository.js && node --check src/server.js && node --check src/monitor.js && node --check src/rollout-parser.js && node --check src/pricing.js && node --check scripts/audit-request-ledger.js && node --check public/app.js",
+    "audit:request-ledger": "node --disable-warning=ExperimentalWarning scripts/audit-request-ledger.js"
   },
   "engines": {
     "node": ">=24.0.0"

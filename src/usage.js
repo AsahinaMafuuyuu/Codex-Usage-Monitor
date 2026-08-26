@@ -7,6 +7,14 @@ export const USAGE_FIELDS = [
   "totalTokens",
 ];
 
+export const MODEL_USAGE_EVENT_CLASSIFICATIONS = [
+  "verified_increment",
+  "duplicate",
+  "generation_start",
+  "unverified",
+  "anomaly",
+];
+
 const WIRE_FIELDS = {
   inputTokens: "input_tokens",
   cachedInputTokens: "cached_input_tokens",
@@ -47,6 +55,62 @@ export function isMonotonic(previous, next) {
     if (previous[field] == null || next[field] == null) return true;
     return next[field] >= previous[field];
   });
+}
+
+export function classifyModelUsageEvent(previousTotal, currentTotal, lastUsage) {
+  if (!currentTotal) {
+    return usageEventResult("unverified", null, "missing_total_usage");
+  }
+
+  if (previousTotal && comparableUsageEquals(previousTotal, currentTotal)) {
+    return usageEventResult("duplicate", zeroVerifiedUsage(previousTotal, currentTotal), "unchanged_total");
+  }
+
+  if (!lastUsage || currentTotal.totalTokens == null || lastUsage.totalTokens == null) {
+    return usageEventResult("unverified", null, "missing_verifier_fields");
+  }
+
+  const generation = compareSnapshotToLast(currentTotal, lastUsage);
+  if (!previousTotal) {
+    if (generation.matches) {
+      return usageEventResult(
+        "generation_start",
+        generation.verifiedUsage,
+        "zero_baseline_proven",
+        generation,
+      );
+    }
+    return usageEventResult("unverified", null, "missing_baseline", generation);
+  }
+
+  const delta = compareDeltaToLast(previousTotal, currentTotal, lastUsage);
+  if (!delta.rollbackFields.length && delta.matches) {
+    return usageEventResult(
+      "verified_increment",
+      delta.verifiedUsage,
+      "cumulative_delta_matches_last",
+      delta,
+    );
+  }
+
+  if (delta.rollbackFields.length && generation.matches) {
+    return usageEventResult(
+      "generation_start",
+      generation.verifiedUsage,
+      "rollback_to_proven_generation_start",
+      {
+        ...generation,
+        rollbackFields: delta.rollbackFields,
+      },
+    );
+  }
+
+  return usageEventResult(
+    "anomaly",
+    null,
+    delta.rollbackFields.length ? "unexplained_rollback" : "delta_last_mismatch",
+    delta,
+  );
 }
 
 export function addUsage(left, right) {
@@ -153,4 +217,99 @@ export function normalizeRateLimits(raw, observedAt, sourcePath) {
 
 function numberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
+}
+
+function compareDeltaToLast(previous, current, last) {
+  const verifiedUsage = {};
+  const comparedFields = [];
+  const missingFields = [];
+  const mismatchFields = [];
+  const rollbackFields = [];
+
+  for (const field of USAGE_FIELDS) {
+    const previousValue = previous?.[field];
+    const currentValue = current?.[field];
+    const lastValue = last?.[field];
+    if (previousValue == null || currentValue == null || lastValue == null) {
+      verifiedUsage[field] = null;
+      missingFields.push(field);
+      continue;
+    }
+    comparedFields.push(field);
+    if (currentValue < previousValue) {
+      verifiedUsage[field] = null;
+      rollbackFields.push(field);
+      continue;
+    }
+    const value = currentValue - previousValue;
+    verifiedUsage[field] = value;
+    if (value !== lastValue) mismatchFields.push(field);
+  }
+
+  const totalCompared = comparedFields.includes("totalTokens");
+  return {
+    matches: totalCompared && mismatchFields.length === 0 && rollbackFields.length === 0,
+    verifiedUsage,
+    comparedFields,
+    missingFields,
+    mismatchFields,
+    rollbackFields,
+  };
+}
+
+function compareSnapshotToLast(current, last) {
+  const verifiedUsage = {};
+  const comparedFields = [];
+  const missingFields = [];
+  const mismatchFields = [];
+
+  for (const field of USAGE_FIELDS) {
+    const currentValue = current?.[field];
+    const lastValue = last?.[field];
+    if (currentValue == null || lastValue == null) {
+      verifiedUsage[field] = null;
+      missingFields.push(field);
+      continue;
+    }
+    comparedFields.push(field);
+    verifiedUsage[field] = currentValue;
+    if (currentValue !== lastValue) mismatchFields.push(field);
+  }
+
+  return {
+    matches: comparedFields.includes("totalTokens") && mismatchFields.length === 0,
+    verifiedUsage,
+    comparedFields,
+    missingFields,
+    mismatchFields,
+    rollbackFields: [],
+  };
+}
+
+function comparableUsageEquals(left, right) {
+  let compared = 0;
+  for (const field of USAGE_FIELDS) {
+    if (left?.[field] == null || right?.[field] == null) continue;
+    compared += 1;
+    if (left[field] !== right[field]) return false;
+  }
+  return compared > 0 && left?.totalTokens != null && right?.totalTokens != null;
+}
+
+function zeroVerifiedUsage(left, right) {
+  return Object.fromEntries(
+    USAGE_FIELDS.map((field) => [field, left?.[field] != null && right?.[field] != null ? 0 : null]),
+  );
+}
+
+function usageEventResult(classification, usage, reason, details = {}) {
+  return {
+    classification,
+    usage,
+    reason,
+    comparedFields: details.comparedFields ?? [],
+    missingFields: details.missingFields ?? [],
+    mismatchFields: details.mismatchFields ?? [],
+    rollbackFields: details.rollbackFields ?? [],
+  };
 }
