@@ -17,7 +17,7 @@ const elements = Object.fromEntries(
     "session-version", "hero-total", "agent-count", "task-count", "active-task-count",
     "input-total", "cached-total", "cache-hit-rate", "output-total", "session-cost",
     "session-cost-coverage", "quota-plan", "quota-freshness", "quota-windows",
-    "quota-observed", "agent-tree", "toast",
+    "agent-tree", "toast",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -312,24 +312,20 @@ function renderQuota() {
     elements["quota-freshness"].textContent = "不可用";
     elements["quota-freshness"].className = "freshness-chip stale";
     elements["quota-windows"].innerHTML = '<span class="empty-agent">等待下一条 rate_limits 记录</span>';
-    elements["quota-observed"].textContent = "额度是账号级快照，不归属于单个任务";
     return;
   }
   elements["quota-plan"].textContent = `${quota.planType || "Codex"} · ${quota.limitName || quota.limitId}`;
   elements["quota-freshness"].textContent = quota.stale ? "可能过期" : "最新";
   elements["quota-freshness"].className = `freshness-chip ${quota.stale ? "stale" : "fresh"}`;
-  const windows = [
-    ["主窗口", quota.primary],
-    ["次窗口", quota.secondary],
-  ].filter(([, value]) => value);
-  elements["quota-windows"].innerHTML = windows.map(([label, window]) => {
+  const windows = [quota.primary, quota.secondary].filter(Boolean);
+  elements["quota-windows"].innerHTML = windows.map((window) => {
     const percent = clamp(window.usedPercent ?? 0, 0, 100);
+    const windowLabel = formatWindow(window.windowMinutes);
     return `<div class="quota-window">
-      <div class="quota-window-label"><span>${label} · ${formatWindow(window.windowMinutes)}</span><strong>${percent}%</strong></div>
-      <progress class="quota-progress ${percent >= 80 ? "high" : ""}" max="100" value="${percent}" aria-label="${label}已使用 ${percent}%">${percent}%</progress>
+      <div class="quota-window-label"><span>${windowLabel} · ${formatReset(window.resetsAt)}</span><strong>${percent}%</strong></div>
+      <progress class="quota-progress ${percent >= 80 ? "high" : ""}" max="100" value="${percent}" aria-label="${windowLabel}窗口已使用 ${percent}%">${percent}%</progress>
     </div>`;
   }).join("");
-  elements["quota-observed"].textContent = `观测 ${formatDate(quota.observedAt)} · 重置 ${formatReset(quota.primary?.resetsAt)}`;
 }
 
 function renderAgents() {
@@ -629,14 +625,14 @@ function costEstimateTitle(estimate) {
 
 function formatWindow(minutes) {
   if (minutes == null) return "未知窗口";
-  if (minutes % 10_080 === 0) return `${minutes / 10_080} 周`;
-  if (minutes % 1_440 === 0) return `${minutes / 1_440} 天`;
-  if (minutes % 60 === 0) return `${minutes / 60} 小时`;
-  return `${minutes} 分钟`;
+  if (minutes % 10_080 === 0) return `${minutes / 10_080}周`;
+  if (minutes % 1_440 === 0) return `${minutes / 1_440}天`;
+  if (minutes % 60 === 0) return `${minutes / 60}小时`;
+  return `${minutes}分钟`;
 }
 
 function formatReset(value) {
-  return value ? formatDate(value) : "—";
+  return value ? `${formatDate(value)}重置` : "重置时间未知";
 }
 
 function statusLabel(status) {
