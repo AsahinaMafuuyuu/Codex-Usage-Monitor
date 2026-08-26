@@ -419,6 +419,38 @@ test("global quota does not regress within the same reset window when concurrent
   assert.equal(quota.reconciled, true);
 });
 
+test("manual quota refresh re-stats existing rollout files and reads the newest local snapshot", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-quota-refresh-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "26");
+  await mkdir(sessions, { recursive: true });
+  const rollout = join(sessions, `rollout-quota-refresh-${ROOT}.jsonl`);
+  await writeFile(
+    rollout,
+    makeQuotaRollout(ROOT, "2026-08-26T08:00:00.000Z", 60, 20, 1_787_748_993, 1_788_317_703),
+  );
+
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  const repository = new CodexRepository(codexHome, database);
+  const monitor = new UsageMonitor({ repository, database });
+  t.after(() => {
+    monitor.close();
+    database.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+
+  await monitor.initialize();
+  assert.equal(monitor.quota().primary.usedPercent, 60);
+
+  await appendFile(
+    rollout,
+    makeQuotaEvent("2026-08-26T08:05:00.000Z", 100, 31, 1_787_748_993, 1_788_317_703),
+  );
+  const refreshed = await monitor.refreshQuotaNow();
+  assert.equal(refreshed.primary.usedPercent, 100);
+  assert.equal(refreshed.secondary.usedPercent, 31);
+});
+
 test("schema v1 ingest cursors migrate to portable resumable schema v11", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
@@ -1121,6 +1153,31 @@ function makeQuotaRollout(rootId, timestamp, primaryUsed, secondaryUsed, primary
       },
     },
   ].map(JSON.stringify).join("\n") + "\n";
+}
+
+function makeQuotaEvent(timestamp, primaryUsed, secondaryUsed, primaryReset, secondaryReset) {
+  return JSON.stringify({
+    timestamp,
+    ordinal: 2,
+    type: "event_msg",
+    payload: {
+      type: "token_count",
+      rate_limits: {
+        limit_id: "codex",
+        plan_type: "plus",
+        primary: {
+          used_percent: primaryUsed,
+          window_minutes: 300,
+          resets_at: primaryReset,
+        },
+        secondary: {
+          used_percent: secondaryUsed,
+          window_minutes: 10_080,
+          resets_at: secondaryReset,
+        },
+      },
+    },
+  }) + "\n";
 }
 
 function localDayKey(value) {

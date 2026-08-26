@@ -509,6 +509,38 @@ export class UsageMonitor extends EventEmitter {
     return latest;
   }
 
+  async refreshQuotaNow() {
+    const additions = await this.repository.discoverNewFiles();
+    for (const entry of additions) this.markTimelineDirty(entry.rootSessionId);
+
+    const candidates = [];
+    for (const entry of this.repository.allFiles()) {
+      try {
+        const fileStat = await stat(entry.path);
+        candidates.push({ entry, modifiedAtMs: fileStat.mtimeMs });
+      } catch (error) {
+        if (error?.code !== "ENOENT") this.recordError(`额度刷新 stat 失败：${entry.path}`, error);
+      }
+    }
+    candidates.sort((left, right) => right.modifiedAtMs - left.modifiedAtMs);
+
+    let latest = this.currentQuota ?? this.database.getLatestQuota();
+    for (const { entry } of candidates.slice(0, 24)) {
+      try {
+        const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
+        if (!quota) continue;
+        this.database.saveQuota(quota);
+        latest = reconcileRateLimitSnapshots(latest, quota);
+      } catch (error) {
+        if (error?.code !== "ENOENT") this.recordError(`手动额度刷新失败：${entry.path}`, error);
+      }
+    }
+    this.currentQuota = latest;
+    const quota = this.quota();
+    if (quota) this.emit("quota", quota);
+    return quota;
+  }
+
   async refreshQuotaFromFile(entry) {
     try {
       const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);

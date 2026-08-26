@@ -184,7 +184,12 @@ async function handleApi({ request, response, url, monitor }) {
   if (url.pathname === "/api/timeline") {
     return sendJson(response, 200, await monitor.timeline());
   }
-  if (url.pathname === "/api/quota") return sendJson(response, 200, { quota: monitor.quota() });
+  if (url.pathname === "/api/quota") {
+    const quota = url.searchParams.get("refresh") === "1"
+      ? await monitor.refreshQuotaNow()
+      : monitor.quota();
+    return sendJson(response, 200, { quota });
+  }
   if (url.pathname === "/api/health") return sendJson(response, 200, { health: monitor.health() });
 
   const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/u);
