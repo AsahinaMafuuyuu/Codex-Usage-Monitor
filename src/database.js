@@ -1,21 +1,13 @@
 import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
-import { materializeRequestLedgerTasks } from "./reconciliation.js";
+import { materializeRequestLedgerTasks } from "./request-ledger.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
-import { addUsage, sumTaskUsage, zeroUsage } from "./usage.js";
+import { addUsage, sumTaskUsage, USAGE_FIELDS, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 10;
+const SCHEMA_VERSION = 11;
 const REQUEST_LEDGER_SCHEMA_VERSION = 9;
-const QUALITY_KEYS = ["complete", "provisional", "estimated", "partial", "discontinuity", "unknown"];
-const TASK_USAGE_COLUMNS = [
-  ["inputTokens", "delta_input_tokens"],
-  ["cachedInputTokens", "delta_cached_input_tokens"],
-  ["cacheWriteInputTokens", "delta_cache_write_input_tokens"],
-  ["outputTokens", "delta_output_tokens"],
-  ["reasoningOutputTokens", "delta_reasoning_output_tokens"],
-  ["totalTokens", "delta_total_tokens"],
-];
+const QUALITY_KEYS = ["complete", "provisional", "partial", "unknown"];
 
 export class MonitorDatabase {
   constructor(databasePath) {
@@ -82,21 +74,11 @@ export class MonitorDatabase {
         turn_id TEXT NOT NULL,
         sequence INTEGER NOT NULL,
         status TEXT NOT NULL,
-        quality TEXT NOT NULL,
         started_at TEXT,
         completed_at TEXT,
         duration_ms INTEGER,
         model TEXT,
         effort TEXT,
-        baseline_usage TEXT,
-        end_usage TEXT,
-        delta_usage TEXT,
-        delta_input_tokens INTEGER,
-        delta_cached_input_tokens INTEGER,
-        delta_cache_write_input_tokens INTEGER,
-        delta_output_tokens INTEGER,
-        delta_reasoning_output_tokens INTEGER,
-        delta_total_tokens INTEGER,
         source_key TEXT,
         source_path TEXT,
         start_ordinal INTEGER,
@@ -152,9 +134,7 @@ export class MonitorDatabase {
         active_task_count INTEGER NOT NULL DEFAULT 0,
         complete_count INTEGER NOT NULL DEFAULT 0,
         provisional_count INTEGER NOT NULL DEFAULT 0,
-        estimated_count INTEGER NOT NULL DEFAULT 0,
         partial_count INTEGER NOT NULL DEFAULT 0,
-        discontinuity_count INTEGER NOT NULL DEFAULT 0,
         unknown_count INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (day, root_session_id),
         FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
@@ -190,7 +170,7 @@ export class MonitorDatabase {
       CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_root ON agents(root_session_id, depth, thread_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_root ON tasks(root_session_id, thread_id, sequence);
-      CREATE INDEX IF NOT EXISTS idx_tasks_unattributed ON tasks(root_session_id, quality)
+      CREATE INDEX IF NOT EXISTS idx_tasks_unattributed ON tasks(root_session_id)
         WHERE started_at IS NULL;
       CREATE INDEX IF NOT EXISTS idx_session_day_usage_day
         ON session_day_usage(day DESC, total_tokens DESC, root_session_id);
@@ -230,35 +210,20 @@ export class MonitorDatabase {
       this.db.exec("UPDATE ingest_cursors SET line_number=0 WHERE byte_offset>0;");
     }
 
-    const taskColumns = this.db.prepare("PRAGMA table_info(tasks)").all();
-    for (const [, column] of TASK_USAGE_COLUMNS) {
-      if (!taskColumns.some((item) => item.name === column)) {
-        this.db.exec(`ALTER TABLE tasks ADD COLUMN ${column} INTEGER;`);
-      }
-    }
-    this.db.exec(`
-      UPDATE tasks SET
-        delta_input_tokens=CAST(json_extract(delta_usage, '$.inputTokens') AS INTEGER),
-        delta_cached_input_tokens=CAST(json_extract(delta_usage, '$.cachedInputTokens') AS INTEGER),
-        delta_cache_write_input_tokens=CAST(json_extract(delta_usage, '$.cacheWriteInputTokens') AS INTEGER),
-        delta_output_tokens=CAST(json_extract(delta_usage, '$.outputTokens') AS INTEGER),
-        delta_reasoning_output_tokens=CAST(json_extract(delta_usage, '$.reasoningOutputTokens') AS INTEGER),
-        delta_total_tokens=CAST(json_extract(delta_usage, '$.totalTokens') AS INTEGER)
-      WHERE delta_usage IS NOT NULL AND json_valid(delta_usage) AND delta_total_tokens IS NULL;
-    `);
     const calendarColumns = this.db.prepare("PRAGMA table_info(session_day_usage)").all();
     if (!calendarColumns.some((column) => column.name === "model_request_count")) {
       this.db.exec("ALTER TABLE session_day_usage ADD COLUMN model_request_count INTEGER NOT NULL DEFAULT 0;");
     }
 
     if (previousVersion < 8) this.migratePortableSourceLocators();
+    if (previousVersion < 11) this.retireBoundaryLedgerStorage();
 
     const timezone = localTimezone();
     const storedTimezone = this.db.prepare("SELECT value FROM derived_state WHERE key='calendar_timezone'").get()?.value;
     if (previousVersion < SCHEMA_VERSION || storedTimezone !== timezone) {
       this.rebuildAllCalendarIndex();
     }
-    if (previousVersion < 10) {
+    if (previousVersion < 11) {
       const roots = this.db.prepare("SELECT id FROM sessions").all();
       for (const row of roots) this.refreshAggregates(row.id);
     }
@@ -308,13 +273,10 @@ export class MonitorDatabase {
       `),
       insertTask: this.db.prepare(`
         INSERT INTO tasks (
-          root_session_id, thread_id, turn_id, sequence, status, quality,
-          started_at, completed_at, duration_ms, model, effort,
-          baseline_usage, end_usage, delta_usage,
-          delta_input_tokens, delta_cached_input_tokens, delta_cache_write_input_tokens,
-          delta_output_tokens, delta_reasoning_output_tokens, delta_total_tokens, source_key,
+          root_session_id, thread_id, turn_id, sequence, status,
+          started_at, completed_at, duration_ms, model, effort, source_key,
           start_ordinal, end_ordinal, start_line, end_line, start_byte, end_byte
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id, turn_id) DO UPDATE SET
           root_session_id=excluded.root_session_id,
           sequence=excluded.sequence,
@@ -323,24 +285,11 @@ export class MonitorDatabase {
               THEN tasks.status
             ELSE excluded.status
           END,
-          quality=CASE
-            WHEN excluded.delta_usage IS NULL AND tasks.delta_usage IS NOT NULL THEN tasks.quality
-            ELSE excluded.quality
-          END,
           started_at=COALESCE(excluded.started_at, tasks.started_at),
           completed_at=COALESCE(excluded.completed_at, tasks.completed_at),
           duration_ms=COALESCE(excluded.duration_ms, tasks.duration_ms),
           model=COALESCE(excluded.model, tasks.model),
           effort=COALESCE(excluded.effort, tasks.effort),
-          baseline_usage=COALESCE(excluded.baseline_usage, tasks.baseline_usage),
-          end_usage=COALESCE(excluded.end_usage, tasks.end_usage),
-          delta_usage=COALESCE(excluded.delta_usage, tasks.delta_usage),
-          delta_input_tokens=COALESCE(excluded.delta_input_tokens, tasks.delta_input_tokens),
-          delta_cached_input_tokens=COALESCE(excluded.delta_cached_input_tokens, tasks.delta_cached_input_tokens),
-          delta_cache_write_input_tokens=COALESCE(excluded.delta_cache_write_input_tokens, tasks.delta_cache_write_input_tokens),
-          delta_output_tokens=COALESCE(excluded.delta_output_tokens, tasks.delta_output_tokens),
-          delta_reasoning_output_tokens=COALESCE(excluded.delta_reasoning_output_tokens, tasks.delta_reasoning_output_tokens),
-          delta_total_tokens=COALESCE(excluded.delta_total_tokens, tasks.delta_total_tokens),
           source_key=COALESCE(excluded.source_key, tasks.source_key),
           start_ordinal=COALESCE(excluded.start_ordinal, tasks.start_ordinal),
           end_ordinal=COALESCE(excluded.end_ordinal, tasks.end_ordinal),
@@ -523,6 +472,124 @@ export class MonitorDatabase {
     }
   }
 
+  retireBoundaryLedgerStorage() {
+    const taskColumns = this.db.prepare("PRAGMA table_info(tasks)").all();
+    const hasBoundaryTaskColumns = taskColumns.some((column) => [
+      "quality",
+      "baseline_usage",
+      "end_usage",
+      "delta_usage",
+      "delta_input_tokens",
+      "delta_cached_input_tokens",
+      "delta_cache_write_input_tokens",
+      "delta_output_tokens",
+      "delta_reasoning_output_tokens",
+      "delta_total_tokens",
+    ].includes(column.name));
+    const calendarColumns = this.db.prepare("PRAGMA table_info(session_day_usage)").all();
+    const hasBoundaryCalendarColumns = calendarColumns.some((column) =>
+      column.name === "estimated_count" || column.name === "discontinuity_count"
+    );
+    if (!hasBoundaryTaskColumns && !hasBoundaryCalendarColumns) return;
+
+    this.db.exec("BEGIN IMMEDIATE");
+    try {
+      if (hasBoundaryTaskColumns) {
+        this.db.exec(`
+          DROP INDEX IF EXISTS idx_tasks_root;
+          DROP INDEX IF EXISTS idx_tasks_unattributed;
+          ALTER TABLE tasks RENAME TO tasks_boundary_v10;
+          CREATE TABLE tasks (
+            root_session_id TEXT NOT NULL,
+            thread_id TEXT NOT NULL,
+            turn_id TEXT NOT NULL,
+            sequence INTEGER NOT NULL,
+            status TEXT NOT NULL,
+            started_at TEXT,
+            completed_at TEXT,
+            duration_ms INTEGER,
+            model TEXT,
+            effort TEXT,
+            source_key TEXT,
+            source_path TEXT,
+            start_ordinal INTEGER,
+            end_ordinal INTEGER,
+            start_line INTEGER,
+            end_line INTEGER,
+            start_byte INTEGER,
+            end_byte INTEGER,
+            PRIMARY KEY (thread_id, turn_id),
+            FOREIGN KEY (root_session_id, thread_id)
+              REFERENCES agents(root_session_id, thread_id) ON DELETE CASCADE
+          );
+          INSERT INTO tasks (
+            root_session_id, thread_id, turn_id, sequence, status,
+            started_at, completed_at, duration_ms, model, effort,
+            source_key, source_path, start_ordinal, end_ordinal,
+            start_line, end_line, start_byte, end_byte
+          )
+          SELECT
+            root_session_id, thread_id, turn_id, sequence, status,
+            started_at, completed_at, duration_ms, model, effort,
+            source_key, source_path, start_ordinal, end_ordinal,
+            start_line, end_line, start_byte, end_byte
+          FROM tasks_boundary_v10;
+          DROP TABLE tasks_boundary_v10;
+          CREATE INDEX idx_tasks_root ON tasks(root_session_id, thread_id, sequence);
+          CREATE INDEX idx_tasks_unattributed ON tasks(root_session_id)
+            WHERE started_at IS NULL;
+        `);
+      }
+
+      if (hasBoundaryCalendarColumns) {
+        this.db.exec(`
+          DROP INDEX IF EXISTS idx_session_day_usage_day;
+          ALTER TABLE session_day_usage RENAME TO session_day_usage_v10;
+          CREATE TABLE session_day_usage (
+            day TEXT NOT NULL,
+            root_session_id TEXT NOT NULL,
+            input_tokens INTEGER NOT NULL DEFAULT 0,
+            cached_input_tokens INTEGER NOT NULL DEFAULT 0,
+            cache_write_input_tokens INTEGER NOT NULL DEFAULT 0,
+            output_tokens INTEGER NOT NULL DEFAULT 0,
+            reasoning_output_tokens INTEGER NOT NULL DEFAULT 0,
+            total_tokens INTEGER NOT NULL DEFAULT 0,
+            model_request_count INTEGER NOT NULL DEFAULT 0,
+            task_count INTEGER NOT NULL DEFAULT 0,
+            active_task_count INTEGER NOT NULL DEFAULT 0,
+            complete_count INTEGER NOT NULL DEFAULT 0,
+            provisional_count INTEGER NOT NULL DEFAULT 0,
+            partial_count INTEGER NOT NULL DEFAULT 0,
+            unknown_count INTEGER NOT NULL DEFAULT 0,
+            PRIMARY KEY (day, root_session_id),
+            FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+          );
+          INSERT INTO session_day_usage (
+            day, root_session_id,
+            input_tokens, cached_input_tokens, cache_write_input_tokens,
+            output_tokens, reasoning_output_tokens, total_tokens,
+            model_request_count, task_count, active_task_count,
+            complete_count, provisional_count, partial_count, unknown_count
+          )
+          SELECT
+            day, root_session_id,
+            input_tokens, cached_input_tokens, cache_write_input_tokens,
+            output_tokens, reasoning_output_tokens, total_tokens,
+            model_request_count, task_count, active_task_count,
+            complete_count, provisional_count, partial_count, unknown_count
+          FROM session_day_usage_v10;
+          DROP TABLE session_day_usage_v10;
+          CREATE INDEX idx_session_day_usage_day
+            ON session_day_usage(day DESC, total_tokens DESC, root_session_id);
+        `);
+      }
+      this.db.exec("COMMIT");
+    } catch (error) {
+      this.db.exec("ROLLBACK");
+      throw error;
+    }
+  }
+
   upsertSessions(sessions) {
     this.transaction(() => {
       for (const session of sessions) {
@@ -570,35 +637,24 @@ export class MonitorDatabase {
           agent.cliVersion ?? null,
           agent.firstSeenAt ?? null,
           agent.lastSeenAt ?? null,
-          json(agent.ownUsage),
-          json(agent.subtreeUsage),
+          json(zeroUsage()),
+          json(zeroUsage()),
           agent.taskCount ?? 0,
         );
       }
 
       for (const task of snapshot.tasks) {
-        const usage = task.deltaUsage ?? null;
         this.statements.insertTask.run(
           rootId,
           task.threadId,
           task.turnId,
           task.sequence,
           task.status,
-          task.quality,
           task.startedAt ?? null,
           task.completedAt ?? null,
           task.durationMs ?? null,
           task.model ?? null,
           task.effort ?? null,
-          jsonOrNull(task.baselineUsage),
-          jsonOrNull(task.endUsage),
-          jsonOrNull(task.deltaUsage),
-          usage?.inputTokens ?? null,
-          usage?.cachedInputTokens ?? null,
-          usage?.cacheWriteInputTokens ?? null,
-          usage?.outputTokens ?? null,
-          usage?.reasoningOutputTokens ?? null,
-          usage?.totalTokens ?? null,
           task.sourceKey ?? recoverLegacySourceKey(task.sourcePath) ?? null,
           task.startOrdinal ?? null,
           task.endOrdinal ?? null,
@@ -785,12 +841,11 @@ export class MonitorDatabase {
              output_tokens, reasoning_output_tokens, total_tokens,
              model_request_count,
              task_count, active_task_count,
-             complete_count, provisional_count, estimated_count,
-             partial_count, discontinuity_count, unknown_count
+             complete_count, provisional_count, partial_count, unknown_count
       FROM session_day_usage
       ORDER BY day DESC, total_tokens DESC, root_session_id
     `).all();
-    const unattributedBoundaryTasks = this.db.prepare(`
+    const unattributedTasks = this.db.prepare(`
       SELECT * FROM tasks WHERE started_at IS NULL ORDER BY thread_id, sequence
     `).all().map(mapTask);
     const unattributedEvents = this.db.prepare(`
@@ -804,7 +859,7 @@ export class MonitorDatabase {
       ORDER BY m.source_key, m.line_number
     `).all().map(mapModelUsageEvent);
     const unattributedRows = materializeRequestLedgerTasks(
-      unattributedBoundaryTasks,
+      unattributedTasks,
       unattributedEvents,
     );
 
@@ -937,11 +992,11 @@ export class MonitorDatabase {
 
   rebuildCalendarForSession(rootId) {
     this.db.prepare("DELETE FROM session_day_usage WHERE root_session_id=?").run(rootId);
-    const boundaryTasks = this.db.prepare(`
+    const storedTasks = this.db.prepare(`
       SELECT * FROM tasks WHERE root_session_id=? AND started_at IS NOT NULL
       ORDER BY thread_id, sequence
     `).all(rootId).map(mapTask);
-    const tasks = materializeRequestLedgerTasks(boundaryTasks, this.getModelUsageEvents(rootId));
+    const tasks = materializeRequestLedgerTasks(storedTasks, this.getModelUsageEvents(rootId));
     const days = new Map();
     for (const task of tasks) {
       const dayKey = localDayKey(task.startedAt);
@@ -963,9 +1018,8 @@ export class MonitorDatabase {
         output_tokens, reasoning_output_tokens, total_tokens,
         model_request_count,
         task_count, active_task_count,
-        complete_count, provisional_count, estimated_count,
-        partial_count, discontinuity_count, unknown_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        complete_count, provisional_count, partial_count, unknown_count
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const [day, aggregate] of days) {
       insert.run(
@@ -982,9 +1036,7 @@ export class MonitorDatabase {
         aggregate.activeTaskCount,
         aggregate.qualityCounts.complete,
         aggregate.qualityCounts.provisional,
-        aggregate.qualityCounts.estimated,
         aggregate.qualityCounts.partial,
-        aggregate.qualityCounts.discontinuity,
         aggregate.qualityCounts.unknown,
       );
     }
@@ -994,11 +1046,11 @@ export class MonitorDatabase {
     const agentRows = this.db.prepare(`
       SELECT thread_id, parent_thread_id, depth FROM agents WHERE root_session_id=?
     `).all(rootId);
-    const boundaryTaskRows = this.db.prepare(`
+    const storedTaskRows = this.db.prepare(`
       SELECT * FROM tasks WHERE root_session_id=? ORDER BY thread_id, sequence
     `).all(rootId).map(mapTask);
     const taskRows = materializeRequestLedgerTasks(
-      boundaryTaskRows,
+      storedTaskRows,
       this.getModelUsageEvents(rootId),
     );
     const tasksByThread = new Map();
@@ -1105,15 +1157,11 @@ function mapTask(row) {
     turnId: row.turn_id,
     sequence: Number(row.sequence),
     status: row.status,
-    quality: row.quality,
     startedAt: row.started_at ?? null,
     completedAt: row.completed_at ?? null,
     durationMs: row.duration_ms == null ? null : Number(row.duration_ms),
     model: row.model ?? null,
     effort: row.effort ?? null,
-    baselineUsage: parseJson(row.baseline_usage),
-    endUsage: parseJson(row.end_usage),
-    deltaUsage: parseJson(row.delta_usage),
     sourceKey: row.source_key ?? null,
     startOrdinal: row.start_ordinal == null ? null : Number(row.start_ordinal),
     endOrdinal: row.end_ordinal == null ? null : Number(row.end_ordinal),
@@ -1205,18 +1253,6 @@ function addQualityCounts(target, source) {
   for (const key of QUALITY_KEYS) target[key] += Number(source?.[key] ?? 0);
 }
 
-function usageFromTaskRow(row) {
-  const values = {
-    inputTokens: numberOrNull(row.delta_input_tokens),
-    cachedInputTokens: numberOrNull(row.delta_cached_input_tokens),
-    cacheWriteInputTokens: numberOrNull(row.delta_cache_write_input_tokens),
-    outputTokens: numberOrNull(row.delta_output_tokens),
-    reasoningOutputTokens: numberOrNull(row.delta_reasoning_output_tokens),
-    totalTokens: numberOrNull(row.delta_total_tokens),
-  };
-  return Object.values(values).some((value) => value != null) ? values : null;
-}
-
 function usageFromCalendarRow(row) {
   return {
     inputTokens: Number(row.input_tokens ?? 0),
@@ -1232,15 +1268,13 @@ function qualityFromCalendarRow(row) {
   return {
     complete: Number(row.complete_count ?? 0),
     provisional: Number(row.provisional_count ?? 0),
-    estimated: Number(row.estimated_count ?? 0),
     partial: Number(row.partial_count ?? 0),
-    discontinuity: Number(row.discontinuity_count ?? 0),
     unknown: Number(row.unknown_count ?? 0),
   };
 }
 
 function overallUsageFrom(target, usage) {
-  for (const [field] of TASK_USAGE_COLUMNS) target[field] += usage?.[field] ?? 0;
+  for (const field of USAGE_FIELDS) target[field] += usage?.[field] ?? 0;
 }
 
 function materializeCalendarMonth(month) {

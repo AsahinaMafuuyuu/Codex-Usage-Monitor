@@ -1057,15 +1057,11 @@ summary:focus-visible,
 .quality-chip.provisional::before { background: var(--blue); }
 .quality-chip.complete { color: var(--sage); }
 .quality-chip.complete::before { background: var(--sage); }
-.quality-chip.estimated,
 .quality-chip.partial,
 .quality-chip.unknown { color: var(--gold); }
-.quality-chip.estimated::before,
 .quality-chip.partial::before,
 .quality-chip.unknown::before { background: var(--gold); }
-.quality-chip.discontinuity,
 .status-chip.interrupted { color: var(--danger); }
-.quality-chip.discontinuity::before,
 .status-chip.interrupted::before { background: var(--danger); }
 
 .empty-agent { padding: 24px; color: var(--quiet); text-align: center; }

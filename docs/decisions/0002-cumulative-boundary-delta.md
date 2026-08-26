@@ -1,8 +1,8 @@
 # ADR-0002：用累计快照边界差分做任务归因
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0016
 - **Date:** 2026-08-24
-- **Aggregation role superseded by:** [ADR-0015](0015-request-ledger-primary-aggregation.md)。边界审计器与 `last_token_usage` 禁止裸累加规则仍有效。
+- **Superseded by:** [ADR-0016](0016-retire-boundary-ledger.md)。本 ADR 作为旧 Boundary Ledger 的历史设计记录保留；`last_token_usage` 禁止裸累加的原则由 Request Ledger 继续执行。
 
 ## Context
 

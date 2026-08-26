@@ -7,7 +7,7 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 ## Architecture Decisions
 
 - Observe `.codex` files without modifying Codex configuration or resuming live threads.
-- Treat `total_token_usage` as cumulative and derive task usage from boundary deltas; never sum `last_token_usage`.
+- Treat `total_token_usage` as cumulative and admit `last_token_usage` only when adjacent cumulative snapshots verify it; aggregate task usage exclusively from verified Request Ledger events.
 - Store usage metadata indefinitely, but load task instruction previews directly from source logs only when requested.
 - Use Node.js built-ins only: `node:http`, `node:sqlite`, filesystem watching, SSE, and static browser assets.
 - Bind only to loopback and require a per-launch session token exchanged for a strict cookie.
@@ -658,8 +658,8 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 - [x] 把“经累计快照验证的新增模型 usage”建模为一等审计事件，同时保留现有 Task Boundary Ledger 作为迁移期独立校验器。
 - [x] 用 `total_token_usage` 做 cumulative verifier / deduplicator / generation detector，而不是继续依赖跨任务永远单调的假设。
 - [x] 可靠处理 duplicate broadcast、generation reset、missing baseline、历史缺字段和跨 rollout 文件 continuation，不裸累加 `last_token_usage`。
-- [ ] 在没有损失审计质量的前提下，从 Request Ledger 聚合 Task / Agent / Session / Day，并提供模型请求数、tokens/request 等后续指标的数据基础。
-- [ ] 保持 Profile / 订阅额度与本地可审计 usage 分离；不得通过补偿系数追平 Profile。
+- [x] 在没有损失审计质量的前提下，从 Request Ledger 聚合 Task / Agent / Session / Day，并提供模型请求数、tokens/request 等后续指标的数据基础。
+- [x] 保持 Profile / 订阅额度与本地可审计 usage 分离；不得通过补偿系数追平 Profile。
 
 ### Task 1: Freeze the verified usage-event classifier
 
@@ -773,13 +773,47 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 - [x] SQLite migration, incremental tail and restart recovery are idempotent and bounded.
 - [x] Request Ledger becomes the primary aggregation source only after the above gates pass and the ADR is accepted.
 
+## Phase 14: Retire the Boundary Ledger
+
+**Goal:** 迁移门槛已经通过后，删除旧 Boundary Ledger 的运行时、SQLite、API 和 CLI 维护面，只在 Git 历史保留可复核基线，使 Request Ledger 成为唯一统计实现。
+
+### Task 1: Preserve the historical baseline before removal
+
+- [x] 在旧主方案仍可独立运行的 commit `4a38ba6` 创建 annotated tag `usage-boundary-ledger-v1`。
+- [x] tag 注释明确其为 Request Ledger promotion 前的 Historical Boundary Ledger aggregation baseline。
+- [x] 不通过 reset/rewrite 删除旧实现历史；ADR-0002 和 Phase 13 reconciliation 证据继续保留。
+
+### Task 2: Remove Boundary Ledger from the current runtime
+
+- [x] parser 不再维护 task baseline/end/boundary delta、Boundary task quality 或 generation-reset task discontinuity 状态。
+- [x] `src/reconciliation.js` 和 `npm run reconcile:request-ledger` 删除；Request-only 聚合移动到 `src/request-ledger.js`。
+- [x] API 不再暴露 `boundaryDeltaUsage` / `boundaryQuality`；UI 质量语义收敛到 `complete/provisional/partial/unknown`。
+- [x] Request Ledger 的相邻累计验证、cursor `last_usage`、unverified/anomaly coverage 和 parser health 诊断继续保留。
+
+### Task 3: Retire Boundary persistence with schema v11
+
+- [x] `tasks` 删除 `quality`、baseline/end、`delta_usage` 和所有 `delta_*` token 列，只保存任务身份/定位/展示元数据。
+- [x] `session_day_usage` 删除 Boundary 专属 `estimated_count` / `discontinuity_count`。
+- [x] v10→v11 迁移在 SQLite 内重建旧表，并从已有 Request Ledger 重算 Agent/Calendar aggregate。
+- [x] Request-ready v10 session 升级时 `replayedFiles=0`，不因退役旧方案重读 rollout。
+
+### Task 4: Record and verify the single-ledger architecture
+
+- [x] ADR-0016 接替 ADR-0002 的运行时角色，并结束 ADR-0015 的 Boundary 迁移保留条款。
+- [x] README / API / Architecture / Delivery / Changelog / AGENTS 与任务文档只把 Request Ledger 描述为当前统计事实源。
+- [x] 定向 parser/database/request-ledger tests 通过；完整测试和 syntax checks 在最终提交前再次执行。
+- [x] 对真实历史执行 read-only Request Ledger audit/benchmark，并记录 schema v11 最终证据。
+- [x] 删除完成、全量验证通过并提交后，在新 commit 创建 annotated tag `usage-request-ledger-v1`。
+
+**Verification:** `npm test`, `npm run check`, `npm run audit:request-ledger`, `npm run benchmark:request-ledger`, `git diff --check`, schema v10→v11 no-replay regression, final tag/status inspection.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Rollout wire format changes | High | Capability-based parsing, CLI version display, unknown-record counters, quality labels |
 | Copied paginated history is counted twice | High | Respect `subagent_history_start_ordinal` and deduplicate tasks by thread/turn |
-| Cumulative counters reset | High | Current implementation marks unexplained rollback as discontinuity; Phase 13 may recover only a validated new generation whose request usage is independently proven by cumulative/last invariants |
+| Cumulative counters reset | High | Request classifier accepts only a validated new generation whose request usage is independently proven by cumulative/last invariants; unexplained rollback remains anomaly/health evidence and cannot enter precise totals |
 | Windows file notifications are dropped | Medium | Combine file watching with one-second stat reconciliation |
 | Prompt text leaks into the archive | High | Never persist previews; serve them only after authenticated, explicit expansion |
 

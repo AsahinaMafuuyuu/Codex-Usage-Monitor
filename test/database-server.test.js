@@ -273,7 +273,8 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   });
   const stored = reopened.getSession(ROOT);
   assert.equal(stored.tasks.length, 1);
-  assert.equal(stored.tasks[0].deltaUsage.totalTokens, 42);
+  assert.equal("deltaUsage" in stored.tasks[0], false);
+  assert.equal("quality" in stored.tasks[0], false);
   assert.equal(stored.tasks[0].model, "gpt-5.6-terra");
   assert.equal(stored.tasks[0].effort, "xhigh");
   assert.equal(stored.modelUsageEvents.length, 1);
@@ -283,17 +284,14 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(stored.session.projectPath, "C:\\workspace\\codex-usage-monitor");
   const columns = reopened.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(columns.some((name) => /prompt|preview|content|message/iu.test(name)), false);
-  assert.equal(columns.includes("delta_total_tokens"), true);
+  assert.equal(columns.includes("quality"), false);
+  assert.equal(columns.includes("baseline_usage"), false);
+  assert.equal(columns.includes("end_usage"), false);
+  assert.equal(columns.includes("delta_usage"), false);
+  assert.equal(columns.some((name) => name.startsWith("delta_")), false);
   const eventColumns = reopened.db.prepare("PRAGMA table_info(model_usage_events)").all()
     .map((row) => row.name);
   assert.equal(eventColumns.some((name) => /prompt|preview|content|message|source_path|rollout_path/iu.test(name)), false);
-  const normalized = reopened.db.prepare(`
-    SELECT delta_input_tokens, delta_output_tokens, delta_total_tokens FROM tasks
-    WHERE thread_id=? AND turn_id=?
-  `).get(CHILD, TURN);
-  assert.equal(normalized.delta_input_tokens, 40);
-  assert.equal(normalized.delta_output_tokens, 2);
-  assert.equal(normalized.delta_total_tokens, 42);
   const calendar = reopened.getTimeline(new Map([[ROOT, {
     title: "Test",
     projectPath: "C:\\workspace\\codex-usage-monitor",
@@ -304,19 +302,17 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(calendar.months[0].days[0].sessions[0].tokensPerModelRequest, 42);
   assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
   assert.equal(reopened.getHealthStats().calendarRows, 1);
-  assert.equal(reopened.getHealthStats().schemaVersion, 10);
+  assert.equal(reopened.getHealthStats().schemaVersion, 11);
   assert.equal(reopened.getHealthStats().modelUsageEventRows, 1);
   assert.equal(reopened.getHealthStats().cacheSize, -2000);
   assert.equal(reopened.getHealthStats().mmapSize, 0);
   assert.equal(reopened.getHealthStats().walAutoCheckpoint, 256);
 });
 
-test("request ledger drives snapshot, agent, cost, and calendar usage while boundary evidence remains stored", async (t) => {
+test("request ledger exclusively drives snapshot, agent, cost, and calendar usage", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-primary-ledger-"));
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const data = snapshot();
-  data.tasks[0].quality = "discontinuity";
-  data.tasks[0].deltaUsage = null;
   data.agents[0].ownUsage = zeroUsage();
   data.agents[0].subtreeUsage = zeroUsage();
   database.replaceSession(data);
@@ -329,15 +325,15 @@ test("request ledger drives snapshot, agent, cost, and calendar usage while boun
   });
 
   const rawTask = database.getTask(CHILD, TURN);
-  assert.equal(rawTask.quality, "discontinuity");
-  assert.equal(rawTask.deltaUsage, null);
+  assert.equal("quality" in rawTask, false);
+  assert.equal("deltaUsage" in rawTask, false);
   const storedAgent = database.getSession(ROOT).agents[0];
   assert.equal(storedAgent.ownUsage.totalTokens, 42);
   const selected = monitor.snapshot(ROOT);
   assert.equal(selected.agents[0].tasks[0].deltaUsage.totalTokens, 42);
   assert.equal(selected.agents[0].tasks[0].quality, "complete");
-  assert.equal(selected.agents[0].tasks[0].boundaryQuality, "discontinuity");
-  assert.equal(selected.agents[0].tasks[0].boundaryDeltaUsage, null);
+  assert.equal("boundaryQuality" in selected.agents[0].tasks[0], false);
+  assert.equal("boundaryDeltaUsage" in selected.agents[0].tasks[0], false);
   assert.equal(selected.agents[0].tasks[0].usageSource, "request_ledger");
   assert.equal(selected.agents[0].tasks[0].requestCount, 1);
   assert.equal(selected.agents[0].tasks[0].tokensPerModelRequest, 42);
@@ -392,7 +388,7 @@ test("calendar-only persistence does not archive historical quota snapshots", as
   assert.equal(database.db.prepare("SELECT COUNT(*) AS count FROM quota_snapshots").get().count, 2);
 });
 
-test("schema v1 ingest cursors migrate to portable resumable schema v10", async (t) => {
+test("schema v1 ingest cursors migrate to portable resumable schema v11", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -430,7 +426,7 @@ test("schema v1 ingest cursors migrate to portable resumable schema v10", async 
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
   assert.equal(columns.some((column) => column.name === "source_key"), true);
   assert.equal(columns.some((column) => column.name === "path"), false);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 10);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 11);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].sourceKey, "sessions/2026/08/24/rollout-fixture.jsonl");
@@ -479,7 +475,7 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 10);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 11);
 });
 
 test("schema v8 sessions replay once to backfill the request ledger", async (t) => {
@@ -523,14 +519,14 @@ test("schema v8 sessions replay once to backfill the request ledger", async (t) 
   assert.equal(database.getModelUsageEvents(ROOT)[0].usage.totalTokens, 100);
 });
 
-test("schema v9 promotes request-ledger aggregates to v10 without replaying rollout", async (t) => {
-  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v9-primary-ledger-"));
+test("schema v10 retires boundary storage in v11 without replaying rollout", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v10-retire-boundary-"));
   const codexHome = join(directory, ".codex");
   const sessions = join(codexHome, "sessions", "2026", "08", "24");
   const databasePath = join(directory, "usage.sqlite");
   await mkdir(sessions, { recursive: true });
   await writeFile(
-    join(sessions, `rollout-v9-${ROOT}.jsonl`),
+    join(sessions, `rollout-v10-${ROOT}.jsonl`),
     makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"),
   );
   let monitor = null;
@@ -553,16 +549,35 @@ test("schema v9 promotes request-ledger aggregates to v10 without replaying roll
   legacy.prepare("UPDATE agents SET own_usage=?, subtree_usage=? WHERE root_session_id=?")
     .run(empty, empty, ROOT);
   legacy.exec(`
+    ALTER TABLE tasks ADD COLUMN quality TEXT;
+    ALTER TABLE tasks ADD COLUMN baseline_usage TEXT;
+    ALTER TABLE tasks ADD COLUMN end_usage TEXT;
+    ALTER TABLE tasks ADD COLUMN delta_usage TEXT;
+    ALTER TABLE tasks ADD COLUMN delta_total_tokens INTEGER;
+    UPDATE tasks SET quality='complete', baseline_usage='{}', end_usage='{}',
+      delta_usage='{}', delta_total_tokens=999999;
+    ALTER TABLE session_day_usage ADD COLUMN estimated_count INTEGER NOT NULL DEFAULT 0;
+    ALTER TABLE session_day_usage ADD COLUMN discontinuity_count INTEGER NOT NULL DEFAULT 0;
     UPDATE session_day_usage SET total_tokens=0, input_tokens=0, output_tokens=0,
       model_request_count=0 WHERE root_session_id='${ROOT}';
-    UPDATE sessions SET parser_version=9 WHERE id='${ROOT}';
-    PRAGMA user_version=9;
+    UPDATE sessions SET parser_version=10 WHERE id='${ROOT}';
+    PRAGMA user_version=10;
   `);
   legacy.close();
 
   ({ monitor, database } = await bootMonitor(codexHome, databasePath));
   assert.equal(database.getSessionIndexState(ROOT).requestLedgerReady, true);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 10);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 11);
+  const taskColumns = database.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
+  assert.equal(taskColumns.includes("quality"), false);
+  assert.equal(taskColumns.includes("baseline_usage"), false);
+  assert.equal(taskColumns.includes("end_usage"), false);
+  assert.equal(taskColumns.includes("delta_usage"), false);
+  assert.equal(taskColumns.some((name) => name.startsWith("delta_")), false);
+  const dayColumns = database.db.prepare("PRAGMA table_info(session_day_usage)").all()
+    .map((row) => row.name);
+  assert.equal(dayColumns.includes("estimated_count"), false);
+  assert.equal(dayColumns.includes("discontinuity_count"), false);
   const timeline = await monitor.timeline();
   assert.equal(monitor.health().timeline.replayedFiles, 0);
   assert.equal(timeline.usage.totalTokens, 100);
@@ -616,7 +631,8 @@ test("schema v7 absolute rollout locators migrate to portable keys without losin
   assert.equal(stored.session.rolloutKey, "sessions/2026/08/24/rollout-root.jsonl");
   assert.equal(stored.agents[0].rolloutKey, "sessions/2026/08/24/rollout-child.jsonl");
   assert.equal(stored.tasks[0].sourceKey, "sessions/2026/08/24/rollout-child.jsonl");
-  assert.equal(stored.tasks[0].deltaUsage.totalTokens, 42);
+  assert.equal("deltaUsage" in stored.tasks[0], false);
+  assert.equal(stored.modelUsageEvents[0].usage.totalTokens, 42);
   assert.equal(stored.session.projectPath, "C:\\workspace\\codex-usage-monitor");
   assert.equal(migrated.getTimeline().usage.totalTokens, 42);
 
@@ -1110,15 +1126,11 @@ function snapshot() {
       turnId: TURN,
       sequence: 1,
       status: "completed",
-      quality: "complete",
       startedAt: "2026-08-24T00:00:00.000Z",
       completedAt: "2026-08-24T00:01:00.000Z",
       durationMs: 60_000,
       model: "gpt-5.6-terra",
       effort: "xhigh",
-      baselineUsage: zeroUsage(),
-      endUsage: usage,
-      deltaUsage: usage,
       sourceKey,
       startByte: 0,
       endByte: 100,

@@ -2,7 +2,8 @@
 
 - **Status:** Accepted
 - **Date:** 2026-08-26
-- **Supersedes:** ADR-0002 中“任务边界差分作为正式聚合来源”的部分；ADR-0002 的边界审计器、`last_token_usage` 禁止裸累加及质量证据仍保留。
+- **Supersedes:** ADR-0002 中“任务边界差分作为正式聚合来源”的部分。
+- **Updated by:** [ADR-0016](0016-retire-boundary-ledger.md) 已在 schema v11 结束迁移期并删除 Boundary Ledger 运行时/存储/API；本 ADR 的 Request Ledger 主事实源、验证规则、日期和 request-unit 语义继续有效。
 
 ## Context
 
@@ -13,7 +14,7 @@ Phase 13 建立了逐 `token_count` 的 Request Ledger：`last_token_usage` 只�
 ## Decision
 
 - schema v10 起，Task / Agent / Session / Timeline 的展示与费用、缓存命中率计算以 **verified Request Ledger** 派生 usage 为主事实源。
-- `tasks.delta_usage`、`tasks.quality`、baseline/end 等既有 Boundary Ledger 字段在迁移版本中原样保留，不覆写、不删除；API task 额外返回 `boundaryDeltaUsage` / `boundaryQuality` 供审计。
+- schema v10 的迁移版本曾原样保留 `tasks.delta_usage`、`tasks.quality`、baseline/end 与 API boundary 字段；该迁移期保留决定已由 ADR-0016 在 schema v11 结束。
 - 只有 `verified_increment` 与 `generation_start` 进入主 usage。`duplicate` 增量恒为 0；task 内若仍有 `unverified` 或 `anomaly`，不得退回 Boundary delta 冒充主事实源，`deltaUsage` 只保留已验证部分并将质量降为 `partial`，明确表示这是可审计下限而非完整 task total。
 - `last_token_usage` 永远不独立累加；它必须由累计快照验证。无法证明的 generation 起点继续保留为 unverified。
 - Timeline 仍按 task `startedAt` 的监控器本地日期归属，以保持既有日期 API 语义；Request Ledger event 的 `observedAt` 只用于审计，不把 Timeline 改成事件日口径。
@@ -24,14 +25,14 @@ Phase 13 建立了逐 `token_count` 的 Request Ledger：`last_token_usage` 只�
 
 - **继续以 Boundary Ledger 为主、Request Ledger 只做诊断：** 拒绝。已验证 generation reset 会永久留下可恢复的精确用量缺口。
 - **直接累加所有 `last_token_usage`：** 拒绝。重复广播、缺 baseline 和 generation 重置都会产生双计或错误计量。
-- **把 `model_usage_events` 聚合后覆盖 `tasks.delta_usage`：** 拒绝。会销毁双账本迁移证据，无法继续做回归 reconciliation。
+- **在 schema v10 迁移期直接用 Request Ledger 覆盖 `tasks.delta_usage`：** 当时拒绝，因为会销毁双账本迁移证据；schema v11 在证据完成后选择彻底删除旧字段而不是覆盖它们。
 - **Timeline 改按 token event 日期：** 拒绝。会改变现有“任务开始日”契约，并造成跨午夜任务的历史日期漂移。
 - **遇到 Request Ledger 缺口时 fallback Boundary Ledger：** 拒绝。会让同一个 `deltaUsage` 字段混合两个事实源，隐藏 coverage 缺口。
 
 ## Consequences
 
-- 已验证 reset / missing-boundary 场景可以恢复为精确 request-derived task usage，同时旧 Boundary Ledger 仍可独立复核。
+- 已验证 reset / missing-boundary 场景可以恢复为精确 request-derived task usage；schema v10 迁移期曾支持进程内双账本复核，schema v11 起历史复核改由 Git tag `usage-boundary-ledger-v1` 提供。
 - schema v10 的 `session_day_usage` 增加 verified model request count；旧 v9 数据库升级时重建日物化索引与 Agent aggregate，但无需仅因聚合语义变化重读 `.codex`。
-- API 新增 `usageSource`、`requestCount`、`requestLedgerCoverage`、`boundaryDeltaUsage`、`boundaryQuality`，以及 Session/Timeline 的 `modelRequestCount` / `tokensPerModelRequest`；现有字段名保留，但 `deltaUsage`/aggregate 的事实源切换为 Request Ledger。
+- API 在 schema v10 新增 `usageSource`、`requestCount`、`requestLedgerCoverage` 和 Session/Timeline 的 `modelRequestCount` / `tokensPerModelRequest`；迁移期 `boundaryDeltaUsage` / `boundaryQuality` 已由 ADR-0016 删除。`deltaUsage`/aggregate 的事实源保持 Request Ledger。
 - 费用估算和缓存命中率继续消费同一套六字段 normalized usage，因此 cached input、reasoning output 不会被额外叠加到 total。
-- Boundary Ledger 至少保留一个迁移发布周期；是否删除必须由新的 ADR 和历史 reconciliation 证据单独决定。
+- Boundary Ledger 的迁移保留期已经完成；ADR-0016 根据历史 reconciliation 证据决定在 schema v11 退役它。

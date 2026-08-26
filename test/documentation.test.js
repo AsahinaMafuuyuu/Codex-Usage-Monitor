@@ -43,14 +43,18 @@ test("delivery documentation and multi-agent contract are complete", () => {
   }
 });
 
-test("accepted ADRs contain the required decision record sections", () => {
+test("decision ADRs contain a valid lifecycle status and required sections", () => {
   const decisionDirectory = resolve(root, "docs/decisions");
   const adrs = readdirSync(decisionDirectory).filter((name) => /^\d{4}-.+\.md$/u.test(name));
   assert.equal(adrs.length >= 6, true);
   for (const name of adrs) {
     const content = readFileSync(resolve(decisionDirectory, name), "utf8");
+    assert.match(
+      content,
+      /\*\*Status:\*\* (?:Accepted|Superseded by ADR-\d{4})/u,
+      `${name} has an invalid ADR lifecycle status`,
+    );
     for (const section of [
-      "**Status:** Accepted",
       "**Date:**",
       "## Context",
       "## Decision",

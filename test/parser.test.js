@@ -241,7 +241,7 @@ test("zero cumulative total with positive last usage stays unverified at an unpr
   assert.equal(result.usage, null);
 });
 
-test("counter rollback is reported as a discontinuity", async (t) => {
+test("unexplained counter rollback keeps verified usage as a partial lower bound", async (t) => {
   const fixture = await createFixture([
     line(0, "session_meta", childMeta()),
     event(1, "task_started", { turn_id: TURN }),
@@ -252,8 +252,9 @@ test("counter rollback is reported as a discontinuity", async (t) => {
   t.after(() => rm(fixture.directory, { recursive: true, force: true }));
   const parser = await parserFor(fixture.path);
   const task = parser.snapshot().tasks[0];
-  assert.equal(task.quality, "discontinuity");
-  assert.equal(task.deltaUsage, null);
+  assert.equal(task.quality, "partial");
+  assert.equal(task.deltaUsage.totalTokens, 200);
+  assert.equal(task.requestLedgerCoverage.anomaly, 1);
   const metadata = await scanRolloutMetadata(fixture.path);
   const entry = makeEntry(fixture.path, metadata.meta, metadata.envelopeTimestamp);
   const restoredParser = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
@@ -263,7 +264,7 @@ test("counter rollback is reported as a discontinuity", async (t) => {
   assert.equal(restoredParser.snapshot().health.status, "warning");
 });
 
-test("a verified generation reset invalidates the boundary ledger without becoming a parser anomaly", async (t) => {
+test("a verified generation reset contributes directly without becoming a parser anomaly", async (t) => {
   const fixture = await createFixture([
     line(0, "session_meta", childMeta()),
     event(1, "task_started", { turn_id: TURN }),
@@ -275,8 +276,9 @@ test("a verified generation reset invalidates the boundary ledger without becomi
   const parser = await parserFor(fixture.path);
   const snapshot = parser.snapshot();
   assert.equal(snapshot.modelUsageEvents.at(-1).classification, "generation_start");
-  assert.equal(snapshot.tasks[0].quality, "discontinuity");
-  assert.equal(snapshot.tasks[0].deltaUsage, null);
+  assert.equal(snapshot.tasks[0].quality, "complete");
+  assert.equal(snapshot.tasks[0].deltaUsage.totalTokens, 230);
+  assert.equal(snapshot.tasks[0].requestCount, 2);
   assert.equal(snapshot.health.discontinuities, 0);
 });
 
@@ -307,7 +309,7 @@ test("unknown formats and malformed task boundaries surface in parser health", a
   assert.equal(restoredHealth.status, "warning");
 });
 
-test("restored cursors tail active and subsequent tasks without losing cumulative baseline", async (t) => {
+test("restored cursors tail active and subsequent tasks without losing request continuity", async (t) => {
   const fixture = await createFixture([
     line(0, "session_meta", childMeta()),
     event(1, "task_started", { turn_id: TURN }),
@@ -338,8 +340,9 @@ test("restored cursors tail active and subsequent tasks without losing cumulativ
   await restoredParser.tailFile(entry);
   const snapshot = restoredParser.snapshot();
   assert.equal(snapshot.tasks[0].deltaUsage.totalTokens, 125);
-  assert.equal(snapshot.tasks[1].baselineUsage.totalTokens, 125);
   assert.equal(snapshot.tasks[1].deltaUsage.totalTokens, 75);
+  assert.equal(snapshot.tasks[1].requestCount, 1);
+  assert.equal(snapshot.modelUsageEvents.at(-1).classification, "verified_increment");
   assert.equal(snapshot.health.restoredFiles, 1);
   assert.equal(snapshot.health.replayedFiles, 0);
 });
@@ -378,9 +381,9 @@ test("restored cursors preserve cumulative usage observed between tasks", async 
   const replayedParser = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
   const replayed = await replayedParser.parseFiles([entry]);
   const replayedTask = replayed.tasks.find((task) => task.turnId === PARENT_TURN);
-  assert.equal(restoredTask.baselineUsage.totalTokens, 120);
   assert.equal(restoredTask.deltaUsage.totalTokens, 30);
   assert.deepEqual(restoredTask.deltaUsage, replayedTask.deltaUsage);
+  assert.equal(restoredTask.requestCount, 1);
 });
 
 test("same-thread rollout files preserve verified usage continuity across restore and terminal tail", async (t) => {

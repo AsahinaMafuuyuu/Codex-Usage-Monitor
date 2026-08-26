@@ -3,11 +3,13 @@
 - **Status:** Accepted
 - **Date:** 2026-08-24
 
+> 2026-08-26 更新：工程分组与缓存命中率公式继续有效；任务/智能体/会话 token 输入已由 ADR-0015/ADR-0016 统一为 verified Request Ledger 派生 usage，不再使用旧 Boundary task delta。
+
 ## Context
 
 根会话标题适合识别单次工作，但不能稳定表示它属于哪个工程，并且标题可能来自用户消息，受 ADR-0003 约束不能落入派生 SQLite。已核验的脱敏 fixture 与本机 rollout 首条 `session_meta` 都包含启动会话时的 `cwd`；它是定位会话工作区所需的元数据，不是 prompt 或 response 正文。
 
-用户需要先按工程目录浏览本地会话，同时在会话、智能体和任务三个层级比较缓存复用效果。Rollout 已提供逐字段边界差分，其中 `cachedInputTokens` 是 `inputTokens` 的缓存子集，因此无需引入新的推断数据源。
+用户需要先按工程目录浏览本地会话，同时在会话、智能体和任务三个层级比较缓存复用效果。可验证的 Request Ledger usage 中 `cachedInputTokens` 是 `inputTokens` 的缓存子集，因此无需引入新的推断数据源。
 
 ## Decision
 
@@ -16,7 +18,7 @@
 - 页面按完整工程目录建立分组。分组 key 只在浏览器内去除 Windows `\\?\` 扩展长度前缀、统一路径分隔符、去除末尾分隔符并做不区分大小写比较；界面展示去除该语法前缀后的观测路径，避免同一 Windows 目录被拆成两组，同时不重写其余跨平台路径。
 - 缺少根目录的会话进入明确的“未归类”分组，不使用标题、rollout 文件位置或子智能体目录猜测工程。
 - 缓存命中率统一定义为 `cachedInputTokens / inputTokens`。输入缺失、非正数，或缓存字段超出输入时显示不可用，不生成伪精确百分比。
-- 会话概览使用 `summary.totalUsage` 展示根智能体与全部后代的输入、输出及总命中率；智能体显示自身命中率，任务显示自身边界差分命中率。
+- 会话概览使用 `summary.totalUsage` 展示根智能体与全部后代的输入、输出及总命中率；智能体显示自身命中率，任务显示自身 Request-derived usage 命中率。
 - 当前任务表移除指令预览列和前端按需读取逻辑；受认证、内容不落库的 preview API 暂时保留，等待未来“查看完整对话”功能重新定义交互与内容范围。
 
 ## Alternatives considered

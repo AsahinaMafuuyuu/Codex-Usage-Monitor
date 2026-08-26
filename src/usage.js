@@ -44,11 +44,6 @@ export function normalizeUsage(raw) {
   return present ? result : null;
 }
 
-export function usageEquals(left, right) {
-  if (!left || !right) return false;
-  return USAGE_FIELDS.every((field) => left[field] === right[field]);
-}
-
 export function isMonotonic(previous, next) {
   if (!previous || !next) return true;
   return USAGE_FIELDS.every((field) => {
@@ -135,50 +130,6 @@ export function addUsage(left, right) {
     else result[field] = (a ?? 0) + (b ?? 0);
   }
   return result;
-}
-
-export function subtractUsage(baseline, end, { active = false, discontinuity = false } = {}) {
-  if (discontinuity) {
-    return { delta: null, quality: "discontinuity" };
-  }
-  if (!baseline || !end) {
-    return { delta: null, quality: active ? "unknown" : "partial" };
-  }
-
-  const delta = {};
-  let missing = false;
-  let backwards = false;
-  for (const field of USAGE_FIELDS) {
-    const startValue = baseline[field];
-    const endValue = end[field];
-    if (startValue == null || endValue == null) {
-      delta[field] = null;
-      missing = true;
-      continue;
-    }
-    if (endValue < startValue) {
-      delta[field] = null;
-      backwards = true;
-      continue;
-    }
-    delta[field] = endValue - startValue;
-  }
-  if (backwards) return { delta: null, quality: "discontinuity" };
-
-  const detailedFields = [
-    "inputTokens",
-    "cacheWriteInputTokens",
-    "outputTokens",
-    "reasoningOutputTokens",
-  ];
-  const totalOnlyGrowth =
-    (delta.totalTokens ?? 0) > 0 &&
-    detailedFields.every((field) => (delta[field] ?? 0) === 0);
-
-  if (active) return { delta, quality: "provisional" };
-  if (totalOnlyGrowth) return { delta, quality: "estimated" };
-  if (missing) return { delta, quality: "partial" };
-  return { delta, quality: "complete" };
 }
 
 export function sumTaskUsage(tasks) {

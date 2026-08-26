@@ -14,7 +14,7 @@
 - 全部已发现 session 的本地日期用量账页；时间导航按月、日和 session 展开，并保留质量覆盖计数。
 - Windows portable source locator：以 `.codex` 相对 source key 持久化 rollout 身份，并在当前用户/自定义 Codex home 下运行时重绑定。
 - Verified model-usage event classifier 与内部 Request Ledger：逐字段用累计快照验证 `last_token_usage`，区分 verified increment、duplicate、generation start、unverified 和 anomaly，并以 portable source identity 幂等持久化。
-- 双账本 reconciliation 与 verified model usage unit 指标；Task / Agent / Session / Timeline 可报告 request count 与 tokens/request，同时明确这些单元不等价于 HTTP 请求。
+- Phase 13 双账本 reconciliation 迁移证据与 verified model usage unit 指标；Task / Agent / Session / Timeline 可报告 request count 与 tokens/request，同时明确这些单元不等价于 HTTP 请求。
 
 ### Changed
 
@@ -28,12 +28,13 @@
 - 任务审计表将 Task / Status 固定为横向滚动上下文；主账页移除独立 reasoning 展示列后为 13 列 / 1314px，表头和值统一居中。底层 reasoning 字段及费用计算契约继续保留。
 - 会话总计 USD 不再用 `≥` 前缀改写金额本身，直接显示汇总对象中的已知金额；覆盖文案和悬停说明仍披露不可估算任务与“已知下限”语义。
 - 页面、会话导航和任务表滚动条统一为更轻的 8px 暖 taupe / muted-clay 主题；展开/折叠使用原生 `details` 过渡，会话与导航状态切换在支持时使用 View Transitions API，并继续服从 reduced-motion。
-- 日期账页 API 使用与逐任务会话相同的累计边界差分，覆盖未被选中的 session；日期按本地时区归类，质量不完整时不生成伪精确总量。
+- 日期账页 API 覆盖未被选中的 session；当前由 verified Request Ledger 统一聚合，日期按本地时区归类，质量不完整时只报告已验证下限。
 - SQLite 升级到 schema v7：任务增加六个正规化 delta 字段，并新增轻量 `session_day_usage` 物化索引；Timeline 从“任意更新后全历史回放”改为 dirty-session + cursor 增量同步，无变化请求只读取 SQL 聚合。
 - Timeline 后台补齐不再归档各历史 rollout 中的全部 quota 快照；SQLite page cache 固定约 2 MiB，禁用 mmap 扩张，并使用 256 页 WAL auto-checkpoint 与正常关闭 truncate checkpoint 控制常态内存和 WAL 大小。
 - SQLite 升级到 schema v8：`ingest_cursors` 以 `source_key` 为主键，session/agent/task/quota 的 rollout locator 改为 portable key；旧 `.codex` 绝对 locator 在迁移后清空，quota payload 同步去除 `sourcePath`。
 - SQLite 升级到 schema v9：新增 privacy-safe `model_usage_events` 双账本；旧 v8 session 在首次迁移时安全 replay 一次补建事件账本，完成后继续复用 cursor。Request Ledger 在 reconciliation 门槛通过前不替换现有 Task Boundary Ledger 聚合。
 - SQLite 升级到 schema v10：verified Request Ledger 成为 Task / Agent / Session / Timeline、缓存命中率和费用估算的主用量来源；`tasks.delta_usage/quality` 继续保留 Boundary Ledger 审计证据。`session_day_usage` 增加 `model_request_count`，v9→v10 只重建派生 Agent/Calendar aggregate，不因事实源切换重放 rollout。
+- SQLite 升级到 schema v11：结束双账本迁移期，删除 Boundary Ledger parser 计算、`tasks` 中的 baseline/end/delta/quality 与全部 `delta_*` 列、Timeline 的 Boundary 专属质量列、API boundary 审计字段和 `reconcile:request-ledger` CLI；已有 Request Ledger 的 v10 session 迁移时不重读 rollout。旧方案实现固定在 annotated tag `usage-boundary-ledger-v1`（`4a38ba6`），退役完成后的 Request-only 基线标记为 `usage-request-ledger-v1`。
 - 默认数据库和相对 `CODEX_MONITOR_DB` 都从工程根解析；工程外绝对 `CODEX_MONITOR_DB` 环境变量会回退项目默认数据库并提示，失效的 `CODEX_MONITOR_HOME` 则回退当前 Windows 用户 `.codex`。任务 preview 通过当前 Codex home 重新绑定 source key，不再依赖数据库中的旧绝对路径。
 
 ## [0.1.0] - 2026-08-24

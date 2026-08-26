@@ -3,13 +3,13 @@
 - **Status:** Accepted
 - **Date:** 2026-08-24
 
-> 2026-08-26 更新：价目、公式与覆盖语义继续有效；schema v10 起传给定价器的主 `deltaUsage` 已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger 派生值，SQLite 中保留的 Boundary `delta_usage` 不再作为费用 fallback。
+> 2026-08-26 更新：价目、公式与覆盖语义继续有效；schema v10 起传给定价器的 `deltaUsage` 已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger 派生值，schema v11 又按 [ADR-0016](0016-retire-boundary-ledger.md) 删除旧 Boundary `delta_usage` 存储，因此当前不存在第二套费用 fallback。
 
 ## Context
 
-任务已经持久化模型、effort 和六类累计 token 边界差分，但用户还需要逐任务、每个智能体及完整会话的美元计费效果。Codex Desktop 的本地 rollout 和账号级 `rate_limits` 不提供逐任务实际账单金额；订阅额度百分比也不能换算成美元。官方模型页提供标准 API 的 input、cached input、output 单价，GPT-5.6 还明确给出 cache write 为普通 input 的 1.25 倍。
+任务可以从 rollout 得到模型、effort 和 Request Ledger 派生的六类 token usage，但用户还需要逐任务、每个智能体及完整会话的美元计费效果。Codex Desktop 的本地 rollout 和账号级 `rate_limits` 不提供逐任务实际账单金额；订阅额度百分比也不能换算成美元。官方模型页提供标准 API 的 input、cached input、output 单价，GPT-5.6 还明确给出 cache write 为普通 input 的 1.25 倍。
 
-Rollout 的任务边界差分聚合一个 turn 内的多次响应，不能证明每次请求的上下文长度、服务层级、区域处理或收费工具调用。因此它不能重建实际 API 发票，也不能判断超过 272K input 的长上下文加价。
+Request Ledger 的 task 聚合可能包含一个 turn 内的多个 verified model usage units，不能证明底层 HTTP 请求的上下文长度、服务层级、区域处理或收费工具调用。因此它不能重建实际 API 发票，也不能判断超过 272K input 的长上下文加价。
 
 ## Decision
 

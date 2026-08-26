@@ -1,5 +1,6 @@
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
+import { materializeRequestLedgerTasks } from "./request-ledger.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import {
   addUsage,
@@ -7,9 +8,7 @@ import {
   normalizeRateLimits,
   normalizeTimestamp,
   normalizeUsage,
-  subtractUsage,
   sumTaskUsage,
-  usageEquals,
   zeroUsage,
 } from "./usage.js";
 
@@ -144,14 +143,12 @@ export class SessionRolloutParser {
       const entry =
         entriesBySource.get(storedAgent.rolloutKey ?? recoverLegacySourceKey(storedAgent.rolloutPath)) ??
         entriesByThread.get(storedAgent.threadId);
-      const source = parseMaybeJson(entry?.meta?.source ?? entry?.source);
       const storedTasks = (tasksByThread.get(storedAgent.threadId) ?? [])
         .slice()
         .sort((left, right) => left.sequence - right.sequence);
       const taskMap = new Map();
       let sequence = 0;
       let currentTaskId = null;
-      let lastUsage = null;
       for (const storedTask of storedTasks) {
         const taskEntry =
           entriesBySource.get(
@@ -161,11 +158,8 @@ export class SessionRolloutParser {
         taskMap.set(task.turnId, task);
         sequence = Math.max(sequence, task.sequence);
         if (task.status === "in_progress") currentTaskId = task.turnId;
-        const latestUsage = task.endUsage ?? task.baselineUsage;
-        if (latestUsage) lastUsage = structuredClone(latestUsage);
       }
       const isRoot = Boolean(storedAgent.isRoot);
-      const firstBaseline = storedTasks[0]?.baselineUsage ?? null;
       const thread = {
         rootSessionId: storedAgent.rootSessionId ?? this.rootSessionId,
         threadId: storedAgent.threadId,
@@ -186,12 +180,8 @@ export class SessionRolloutParser {
         tasks: taskMap,
         sequence,
         currentTaskId,
-        lastUsage,
+        lastUsage: null,
         usageGeneration: usageGenerationByThread.get(storedAgent.threadId) ?? 0,
-        safeZeroBaseline:
-          isRoot ||
-          Boolean(source?.subagent?.thread_spawn) ||
-          usageEquals(firstBaseline, zeroUsage()),
       };
       if (thread.cliVersion) this.health.cliVersions.add(thread.cliVersion);
       this.threads.set(thread.threadId, thread);
@@ -436,7 +426,6 @@ export class SessionRolloutParser {
       currentTaskId: null,
       lastUsage: null,
       usageGeneration: 0,
-      safeZeroBaseline: isRoot || Boolean(source?.subagent?.thread_spawn),
     };
     this.threads.set(threadId, thread);
     return thread;
@@ -460,11 +449,6 @@ export class SessionRolloutParser {
     let task = thread.tasks.get(turnId);
     if (!task) {
       thread.sequence += 1;
-      const baseline = thread.lastUsage
-        ? structuredClone(thread.lastUsage)
-        : thread.tasks.size === 0 && thread.safeZeroBaseline
-          ? zeroUsage()
-          : null;
       task = {
         rootSessionId: this.rootSessionId,
         threadId: thread.threadId,
@@ -476,10 +460,6 @@ export class SessionRolloutParser {
         durationMs: null,
         model: null,
         effort: null,
-        baselineUsage: baseline,
-        endUsage: null,
-        deltaUsage: null,
-        quality: baseline ? "unknown" : "partial",
         sourceKey,
         sourcePath,
         startOrdinal: ordinal,
@@ -488,8 +468,6 @@ export class SessionRolloutParser {
         endLine: null,
         startByte: position.lineStartOffset,
         endByte: null,
-        sawUsage: false,
-        discontinuity: false,
       };
       thread.tasks.set(turnId, task);
     } else {
@@ -521,7 +499,6 @@ export class SessionRolloutParser {
     const task = thread.currentTaskId ? thread.tasks.get(thread.currentTaskId) : null;
     if (usageEvent.classification === "generation_start") {
       thread.usageGeneration += 1;
-      if (task && usageEvent.rollbackFields.length > 0) task.discontinuity = true;
     }
     const modelUsageEvent = {
       rootSessionId: this.rootSessionId,
@@ -543,16 +520,7 @@ export class SessionRolloutParser {
     );
     if (!usage) return;
     context.lastUsage = structuredClone(usage);
-    if (usageEvent.classification === "duplicate") {
-      if (task) {
-        task.sawUsage = true;
-        task.endUsage = structuredClone(usage);
-        task.endOrdinal = ordinal;
-        task.endLine = position.lineNumber;
-        task.endByte = position.lineEndOffset;
-      }
-      return;
-    }
+    if (usageEvent.classification === "duplicate") return;
 
     if (
       usageEvent.classification === "anomaly" &&
@@ -560,12 +528,9 @@ export class SessionRolloutParser {
     ) {
       this.health.discontinuities += 1;
       context.discontinuities = (context.discontinuities ?? 0) + 1;
-      if (task) task.discontinuity = true;
     }
     thread.lastUsage = structuredClone(usage);
     if (task) {
-      task.sawUsage = true;
-      task.endUsage = structuredClone(usage);
       task.endOrdinal = ordinal;
       task.endLine = position.lineNumber;
       task.endByte = position.lineEndOffset;
@@ -592,10 +557,6 @@ export class SessionRolloutParser {
         durationMs: null,
         model: null,
         effort: null,
-        baselineUsage: null,
-        endUsage: null,
-        deltaUsage: null,
-        quality: "partial",
         sourceKey: thread.rolloutKey,
         sourcePath: thread.rolloutPath,
         startOrdinal: null,
@@ -604,8 +565,6 @@ export class SessionRolloutParser {
         endLine: position.lineNumber,
         startByte: position.lineStartOffset,
         endByte: position.lineEndOffset,
-        sawUsage: false,
-        discontinuity: false,
       };
       thread.tasks.set(turnId, task);
     }
@@ -636,10 +595,16 @@ export class SessionRolloutParser {
   snapshot() {
     const tasks = [];
     const agents = [];
+    const modelUsageEvents = [...this.modelUsageEvents.values()]
+      .sort((left, right) =>
+        compareText(left.sourceKey, right.sourceKey) || left.lineNumber - right.lineNumber
+      )
+      .map((event) => structuredClone(event));
     for (const thread of this.threads.values()) {
-      const threadTasks = [...thread.tasks.values()]
+      const taskMetadata = [...thread.tasks.values()]
         .sort((a, b) => a.sequence - b.sequence)
         .map((task) => materializeTask(task));
+      const threadTasks = materializeRequestLedgerTasks(taskMetadata, modelUsageEvents);
       tasks.push(...threadTasks);
       agents.push({
         rootSessionId: this.rootSessionId,
@@ -660,7 +625,6 @@ export class SessionRolloutParser {
         taskCount: threadTasks.length,
       });
     }
-
     computeSubtreeUsage(agents);
     const cursors = [...this.fileContexts.values()].map((context) => ({
       sourceKey: context.sourceKey,
@@ -692,11 +656,7 @@ export class SessionRolloutParser {
       quotas: [...this.quotaStates.values()].sort((a, b) =>
         compareText(a.observedAt, b.observedAt),
       ),
-      modelUsageEvents: [...this.modelUsageEvents.values()]
-        .sort((left, right) =>
-          compareText(left.sourceKey, right.sourceKey) || left.lineNumber - right.lineNumber
-        )
-        .map((event) => structuredClone(event)),
+      modelUsageEvents,
       cursors,
       health: {
         status: warningCount ? "warning" : "healthy",
@@ -930,26 +890,17 @@ export async function readCompleteJsonLines(filePath, startOffset, initialLineNu
 }
 
 function materializeTask(task) {
-  const active = task.status === "in_progress";
-  const result = subtractUsage(task.baselineUsage, task.sawUsage ? task.endUsage : null, {
-    active,
-    discontinuity: task.discontinuity,
-  });
   return {
     rootSessionId: task.rootSessionId,
     threadId: task.threadId,
     turnId: task.turnId,
     sequence: task.sequence,
     status: task.status,
-    quality: result.quality,
     startedAt: task.startedAt,
     completedAt: task.completedAt,
     durationMs: task.durationMs,
     model: task.model,
     effort: task.effort,
-    baselineUsage: task.baselineUsage,
-    endUsage: task.sawUsage ? task.endUsage : null,
-    deltaUsage: result.delta,
     sourceKey: task.sourceKey,
     sourcePath: task.sourcePath,
     startOrdinal: task.startOrdinal,
@@ -973,12 +924,6 @@ function restoreTask(storedTask, entry = null) {
     durationMs: numberOrNull(storedTask.durationMs),
     model: storedTask.model ?? null,
     effort: storedTask.effort ?? null,
-    baselineUsage: storedTask.baselineUsage
-      ? structuredClone(storedTask.baselineUsage)
-      : null,
-    endUsage: storedTask.endUsage ? structuredClone(storedTask.endUsage) : null,
-    deltaUsage: storedTask.deltaUsage ? structuredClone(storedTask.deltaUsage) : null,
-    quality: storedTask.quality ?? "unknown",
     sourceKey:
       storedTask.sourceKey ??
       entry?.sourceKey ??
@@ -990,8 +935,6 @@ function restoreTask(storedTask, entry = null) {
     endLine: numberOrNull(storedTask.endLine),
     startByte: numberOrNull(storedTask.startByte),
     endByte: numberOrNull(storedTask.endByte),
-    sawUsage: Boolean(storedTask.endUsage),
-    discontinuity: storedTask.quality === "discontinuity",
   };
 }
 

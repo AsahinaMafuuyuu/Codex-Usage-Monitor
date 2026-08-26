@@ -259,10 +259,10 @@ function formatDayLabel(value) {
 }
 
 function summarizeQuality(counts) {
-  const attention = (counts?.discontinuity ?? 0) + (counts?.partial ?? 0) + (counts?.unknown ?? 0);
+  const attention = (counts?.partial ?? 0) + (counts?.unknown ?? 0);
   if (attention) return `${attention} 条需注意`;
   if ((counts?.provisional ?? 0) > 0) return "实时";
-  return "边界完整";
+  return "验证完整";
 }
 
 function renderDashboard() {
@@ -641,8 +641,8 @@ function statusLabel(status) {
 
 function qualityLabel(quality) {
   return ({
-    complete: "边界完整", provisional: "实时", estimated: "估算",
-    partial: "部分", discontinuity: "计数中断", unknown: "未知",
+    complete: "已验证", provisional: "实时",
+    partial: "部分已验证", unknown: "未知",
   })[quality] || quality;
 }
 

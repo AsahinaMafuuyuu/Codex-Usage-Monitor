@@ -64,3 +64,7 @@
 - [x] Preserve usage continuity across rollout files and cumulative generations
 - [x] Run full-history dual-ledger reconciliation and record mismatch/coverage evidence
 - [x] Promote Request Ledger to the primary aggregation source only after reconciliation gates pass
+- [x] Preserve the historical Boundary implementation under annotated tag `usage-boundary-ledger-v1`
+- [x] Retire Boundary parser/storage/API/reconciliation paths with schema v11 and ADR-0016
+- [x] Run final schema v11 Request Ledger audit/benchmark and record the evidence
+- [x] Commit the Request-only architecture and create annotated tag `usage-request-ledger-v1`

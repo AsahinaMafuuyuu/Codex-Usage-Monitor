@@ -5,7 +5,7 @@
 
 > 后续实现说明：本 ADR 的日期口径和覆盖范围继续有效；“内存缓存失效后全量回放全部 rollout”的实现策略已由 [ADR-0013](0013-incremental-calendar-index.md) 替换为持久化 session-day 索引和 cursor 增量同步。
 >
-> 2026-08-26 更新：本 ADR 的 `startedAt` 本地日期归属和 month → day → session 契约继续有效；token 主聚合来源已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 从 Boundary Ledger 切换为 verified Request Ledger。
+> 2026-08-26 更新：本 ADR 的 `startedAt` 本地日期归属和 month → day → session 契约继续有效；token 聚合来源已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger，并由 [ADR-0016](0016-retire-boundary-ledger.md) 在 schema v11 确认为唯一运行时统计源。
 
 ## Context
 

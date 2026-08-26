@@ -221,6 +221,18 @@ npm test
 - `tasks.delta_usage/quality` 仍保存 Boundary Ledger；API 运行时另外返回 request-derived `deltaUsage/quality`、`boundaryDeltaUsage/boundaryQuality`、`requestLedgerCoverage` 与 request-count 指标，因此迁移证据没有被覆盖。
 - 本轮没有修改 `public/**`；现有页面继续消费同名 `deltaUsage` / Agent aggregate / Session summary 字段，静态 UI 契约测试保持通过。新增 request-count 字段属于向后兼容 API 扩展，不要求页面立即展示。
 
+### Phase 14：Boundary Ledger retirement / schema v11
+
+日期：2026-08-26。迁移期 reconciliation 已完成后，按 ADR-0016 将 Boundary Ledger 从当前 runtime / SQLite / API / CLI 中退役。旧方案在修改前先以 annotated tag `usage-boundary-ledger-v1` 固定到 commit `4a38ba6`，因此历史实现仍可从独立 worktree 复核，但主线只维护 Request Ledger。
+
+- schema v11 的 `tasks` 只保存任务身份、时间、模型/effort、portable source key 和 ordinal/line/byte 定位；`quality`、baseline/end、`delta_usage` 与全部 `delta_*` token 列已删除。`session_day_usage` 同时删除旧 Boundary 专属 `estimated_count` / `discontinuity_count`。
+- v10→v11 migration regression 人工构造旧 Boundary 列和错误 calendar/agent aggregate 后重新打开数据库，确认旧列被物理删除、Request Ledger aggregate 恢复正确，且 `replayedFiles=0`，即退役旧方案不会让 request-ready session 重读 rollout。
+- parser 不再计算 task boundary delta；`snapshot()` 直接由 `model_usage_events` 物化 `deltaUsage/quality/requestCount/requestLedgerCoverage`。verified generation reset 直接计入已证明 usage；无法解释 rollback 保留 anomaly/health evidence，task 只报告 verified lower bound 并降为 `partial`。
+- API/runtime 不再返回 `boundaryDeltaUsage` / `boundaryQuality`；双账本 `src/reconciliation.js` 和 `npm run reconcile:request-ledger` 已删除。只读 `audit:request-ledger` / `benchmark:request-ledger` 保留。
+- schema v11 真实历史只读 audit：412 rollout / 42,183 `token_count`；40,388 verified / 1,726 duplicate / 69 unverified / 0 anomaly，`hashChangedFiles=0`。该脚本按单文件 baseline 审计；跨文件连续 parser 仍为 40,389 verified / 68 unverified，与 Phase 13 已记录差异一致。
+- schema v11 临时全历史 benchmark：412 rollout、2,347 task rows、42,183 event rows、40,389 verified / 1,726 duplicate / 68 unverified / 0 anomaly；26,148.19 ms，关闭后 SQLite `30,318,592` bytes。相比 schema v10 的 `31,399,936` bytes 少约 `1.08 MB`，同时保持 `page_size=4096`、`cache_size=-2000`、`mmap_size=0`、`wal_autocheckpoint=256`。
+- 最终全量自动化验证：`npm test` 为 48 tests、47 passed、0 failed、1 skipped；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的真实五任务 fixture。`npm run check` 与 `git diff --check` 均通过；文档契约测试同时验证 Superseded ADR 生命周期状态和相对链接完整性。
+
 ### 2026-08-25：Overview / task ledger / scrollbar / motion polish
 
 本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。

@@ -3,7 +3,7 @@
 - **Status:** Accepted
 - **Date:** 2026-08-25
 
-> 2026-08-26 更新：本 ADR 的 SQLite 物化索引与 dirty-session/cursor 增量策略继续有效；`session_day_usage` 的 token 来源已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger，并在 schema v10 增加 verified model usage unit count。
+> 2026-08-26 更新：本 ADR 的 SQLite 物化索引与 dirty-session/cursor 增量策略继续有效；`session_day_usage` 的 token 来源已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger，并在 schema v11 按 [ADR-0016](0016-retire-boundary-ledger.md) 删除旧 Boundary 专属质量列，只保留 request-derived usage / model usage unit count / 四类 Request task quality。
 
 ## Context
 
