@@ -292,7 +292,7 @@ function renderDashboard() {
   elements["session-id"].textContent = snapshot.session.id;
   elements["session-id"].title = snapshot.session.id;
   elements["session-version"].textContent = snapshot.session.cliVersion || "版本未知";
-  elements["hero-total"].textContent = formatTokens(snapshot.summary.subagentUsage?.totalTokens);
+  elements["hero-total"].textContent = formatTokens(snapshot.summary.totalUsage?.totalTokens);
   elements["agent-count"].textContent = tokenFormatter.format(snapshot.summary.agentCount);
   elements["task-count"].textContent = tokenFormatter.format(snapshot.summary.taskCount);
   elements["active-task-count"].textContent = snapshot.summary.activeTasks

@@ -49,6 +49,8 @@ git diff --check
 
 当前界面已经具备：工程/时间双导航、Session 概览、输入/输出/缓存命中率、USD API 等值、额度快照、递归 Agent lineage、角色标签、13 列任务审计表、桌面/窄屏响应式、主题化滚动条与原生过渡动画。时间导航的 month/day/session 均以 `total token · USD` 展示，费用仍是标准 API 短上下文等值而非 Codex 订阅账单；完整质量状态在 session 行使用“费用统计”文案，partial/unknown 仍优先显示“需注意”。
 
+Session hero 的 `Total token` 使用 `summary.totalUsage.totalTokens`，即根智能体与全部后代的完整会话总量；不要再用仅子智能体的 `subagentUsage` 填充这个主数值。
+
 ## 3. 已冻结的视觉契约
 
 ### Phase 8：编辑式观测工作区

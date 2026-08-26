@@ -43,6 +43,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /cached \/ input/u);
   assert.match(html, /id="session-cost"/u);
   assert.match(html, />Total token<\/span>/u);
+  assert.match(html, /根智能体与全部后代 · 实时汇总/u);
+  assert.match(script, /elements\["hero-total"\]\.textContent = formatTokens\(snapshot\.summary\.totalUsage\?\.totalTokens\)/u);
   assert.match(html, /id="input-total"/u);
   assert.match(html, /id="output-total"/u);
   assert.match(html, /id="cache-hit-rate"/u);
