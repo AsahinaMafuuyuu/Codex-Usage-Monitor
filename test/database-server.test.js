@@ -865,6 +865,13 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assert.equal(payload.sessions[0].id, ROOT);
   assert.equal(payload.sessions[0].projectPath, "C:\\workspace\\project-alpha");
 
+  const brandImageResponse = await fetch(`${base}/assets/mizuki.png`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(brandImageResponse.status, 200);
+  assert.equal(brandImageResponse.headers.get("content-type"), "image/png");
+  assert.ok((await brandImageResponse.arrayBuffer()).byteLength > 0);
+
   const timelineResponse = await fetch(`${base}/api/timeline`, {
     headers: { Cookie: cookie },
   });

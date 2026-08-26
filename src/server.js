@@ -17,6 +17,7 @@ const STATIC_FILES = new Map([
   ["/", { path: join(publicDirectory, "index.html"), type: "text/html; charset=utf-8" }],
   ["/styles.css", { path: join(publicDirectory, "styles.css"), type: "text/css; charset=utf-8" }],
   ["/app.js", { path: join(publicDirectory, "app.js"), type: "text/javascript; charset=utf-8" }],
+  ["/assets/mizuki.png", { path: join(publicDirectory, "assets", "mizuki.png"), type: "image/png" }],
   ["/vendor/lucide.min.js", { path: join(lucideDirectory, "lucide.min.js"), type: "text/javascript; charset=utf-8" }],
 ]);
 const ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/u;
