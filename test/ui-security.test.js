@@ -78,9 +78,13 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /@media\s*\(max-width:\s*720px\)[\s\S]*?\.agent-tree\s*\{[^}]*--lineage-rail-offset:\s*10px;[^}]*--lineage-elbow-width:\s*8px/iu);
   assert.match(styles, /\.task-table \.task-name-head,\s*\.task-table \.task-name-cell\s*\{[^}]*position:\s*sticky;[^}]*left:\s*0/isu);
   assert.match(styles, /\.task-table \.task-status-head,\s*\.task-table \.task-status-cell\s*\{[^}]*position:\s*sticky;[^}]*left:\s*160px/isu);
-  assert.match(styles, /--scroll-thumb:\s*#aa9e90/iu);
-  assert.match(styles, /\.session-list::?-webkit-scrollbar,\s*\.workspace::?-webkit-scrollbar\s*\{[^}]*width:\s*8px/isu);
-  assert.match(styles, /\.task-table-wrap::?-webkit-scrollbar\s*\{[^}]*height:\s*8px/isu);
+  assert.match(styles, /--scroll-thumb:\s*#cbbdaf/iu);
+  assert.match(styles, /--scroll-thumb-hover:\s*#baa99b/iu);
+  assert.match(styles, /--scroll-thumb-active:\s*#aa9788/iu);
+  assert.match(styles, /\*::?-webkit-scrollbar\s*\{[^}]*width:\s*8px;[^}]*height:\s*8px/isu);
+  assert.match(styles, /\*::?-webkit-scrollbar-thumb:hover\s*\{[^}]*var\(--scroll-thumb-hover\)/isu);
+  assert.match(styles, /\*::?-webkit-scrollbar-thumb:active\s*\{[^}]*var\(--scroll-thumb-active\)/isu);
+  assert.match(styles, /\*::?-webkit-scrollbar-button\s*\{[^}]*display:\s*none;[^}]*width:\s*0;[^}]*height:\s*0/isu);
   assert.match(styles, /\.task-table-wrap:focus-visible/iu);
   assert.match(styles, /font-variant-numeric:\s*tabular-nums/iu);
   assert.match(styles, /prefers-reduced-motion/u);
