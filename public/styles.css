@@ -21,6 +21,10 @@
   --gold-soft: #f1e7d4;
   --danger: #a34f46;
   --danger-soft: #f2dfdc;
+  --scroll-thumb: #aa9e90;
+  --scroll-thumb-hover: #8f8274;
+  --scroll-accent: #b97860;
+  --scroll-track: #ece6dc;
   --display: Charter, "Iowan Old Style", "Palatino Linotype", "Songti SC", "Noto Serif CJK SC", serif;
   --body: "Segoe UI Variable", "Segoe UI", "PingFang SC", "Microsoft YaHei", sans-serif;
   --mono: "Cascadia Code", "Cascadia Mono", "SFMono-Regular", Consolas, monospace;
@@ -192,7 +196,7 @@ summary:focus-visible,
   padding: 0 13px 18px;
   overflow-y: auto;
   overscroll-behavior: contain;
-  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
   scrollbar-width: thin;
 }
 
@@ -412,9 +416,23 @@ summary:focus-visible,
   min-width: 0;
   overflow-y: auto;
   background: var(--paper);
-  scrollbar-color: var(--line-strong) transparent;
+  scrollbar-color: var(--scroll-thumb) transparent;
   scrollbar-width: thin;
 }
+
+.session-list::-webkit-scrollbar,
+.workspace::-webkit-scrollbar { width: 8px; }
+.session-list::-webkit-scrollbar-track,
+.workspace::-webkit-scrollbar-track { background: transparent; }
+.session-list::-webkit-scrollbar-thumb,
+.workspace::-webkit-scrollbar-thumb {
+  background: var(--scroll-thumb);
+  background-clip: padding-box;
+  border: 2px solid transparent;
+  border-radius: 99px;
+}
+.session-list::-webkit-scrollbar-thumb:hover,
+.workspace::-webkit-scrollbar-thumb:hover { background-color: var(--scroll-thumb-hover); }
 
 .workspace-bar {
   position: sticky;
@@ -869,17 +887,18 @@ summary:focus-visible,
   overflow-x: auto;
   background: var(--paper);
   border-top: 1px solid var(--line);
-  scrollbar-color: var(--clay) var(--paper-deep);
-  scrollbar-width: auto;
+  scrollbar-color: var(--scroll-accent) var(--scroll-track);
+  scrollbar-width: thin;
   overscroll-behavior-x: contain;
 }
-.task-table-wrap::-webkit-scrollbar { height: 10px; }
-.task-table-wrap::-webkit-scrollbar-track { background: var(--paper-deep); }
+.task-table-wrap::-webkit-scrollbar { height: 8px; }
+.task-table-wrap::-webkit-scrollbar-track { background: var(--scroll-track); }
 .task-table-wrap::-webkit-scrollbar-thumb {
-  background: var(--clay);
-  border: 2px solid var(--paper-deep);
+  background: var(--scroll-accent);
+  border: 1px solid var(--scroll-track);
   border-radius: 99px;
 }
+.task-table-wrap::-webkit-scrollbar-thumb:hover { background: var(--clay-dark); }
 .task-table {
   width: 100%;
   min-width: 1314px;

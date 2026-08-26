@@ -20,6 +20,7 @@
 - 每个智能体名称前显示独立 role badge。root、reviewer、test-worker、frontend-designer、backend/debugger、explorer 和通用 worker 使用受限语义色；未知角色采用中性 fallback，不从角色推断模型或用量。
 - 所有任务表使用同一 13 列 `colgroup`、`table-layout: fixed` 和 1314px 审计宽度；独立 reasoning 展示列不进入主账页，但底层 reasoning 数据继续用于审计与费用计算。表头和数据统一居中，数值继续使用 tabular numerals。窄屏保留表格自身横向滚动，不按设备继续隐藏审计字段。
 - 940px 以下切换为工程抽屉，720px 以下使用两列概览和两列智能体统计；保留键盘 focus-visible 与 `prefers-reduced-motion`。
+- 页面级与导航纵向滚动条统一使用 8px WebKit 轨道 / `scrollbar-width: thin`，采用暖 taupe thumb；任务账页横向滚动使用 muted clay 作为唯一强调色。滚动条不隐藏，也不使用 `scrollbar-gutter: stable` 额外侵占内容宽度。
 
 ## Alternatives considered
 

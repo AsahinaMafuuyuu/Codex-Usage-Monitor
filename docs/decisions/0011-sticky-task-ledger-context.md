@@ -15,7 +15,7 @@ Phase 8 将逐任务审计统一为固定宽度账页，以保证模型、effort
 - 所有表头与对应数据单元格统一居中对齐；数字仍使用 monospace + tabular numerals，因此居中不会牺牲同列纵向比较能力。
 - 将 Task 与 Status 设为同一横向滚动容器内的 sticky context：Task 固定在 `left: 0`，Status 固定在 `left: 160px`，与既有两列宽度严格对齐。
 - sticky 区域使用不透明 paper / paper-deep 背景，Status 右侧增加 hairline 与轻微阴影，使冻结上下文与可滚动数据形成明确边界，同时保留整行 hover 状态。
-- `.task-table-wrap` 继续作为唯一横向 overflow 边界；提高横向 scrollbar 的可见性，并设置 `overscroll-behavior-x: contain`，避免任务表横向浏览扩散为页面级滚动。
+- `.task-table-wrap` 继续作为唯一横向 overflow 边界；横向 scrollbar 使用 8px 的 muted-clay thumb 与暖灰 track，在保持可发现性的同时减少视觉重量，并设置 `overscroll-behavior-x: contain`，避免任务表横向浏览扩散为页面级滚动。
 - 将 `.task-table-wrap` 暴露为可键盘聚焦的 `region`，提供说明“任务与状态列固定，可横向滚动查看完整 13 列”，并复用 clay `:focus-visible` 焦点环。
 
 ## Alternatives considered
@@ -25,7 +25,7 @@ Phase 8 将逐任务审计统一为固定宽度账页，以保证模型、effort
 - **仅保留浏览器默认横向滚动条：** 拒绝。滚动后缺少任务身份与状态上下文，且滚动 affordance 仍偏弱。
 - **冻结 Task、Status、Start、Model 等更多列：** 拒绝。会在 390px 窄屏中占据大部分可视宽度，使真正需要横向检查的数据只剩极窄窗口。
 - **只冻结 Task 一列：** 可用但未采用。Status 是判断任务活动/完成状态的首要语义，与 Task 一起固定仍能在 339px 典型窄屏容器中留下约 103px 的滚动数据窗口。
-- **冻结 Task + Status 并强化 scrollbar：** 采用。在不改变审计字段和表格宽度的前提下最大化行上下文保持。
+- **冻结 Task + Status 并强化 scrollbar：** 采用。横向滚动条维持明确的主题色对比，但从旧的 10px 高度收敛到 8px，避免抢占账页视觉层级。
 
 ## Consequences
 
