@@ -18,6 +18,7 @@
 
 ### Changed
 
+- 额度刷新按钮的手写 SVG 替换为本地安装的 Lucide `refresh-cw` 图标；Lucide UMD 资源由 loopback 服务固定映射并受现有 `script-src 'self'` CSP 约束，不引入 CDN 或外部运行时请求。
 - 额度卡右上角不再显示“最新/可能过期”文字，改为可点击的刷新图标；点击时调用本地 `GET /api/quota?refresh=1` 重新发现并扫描最近 rollout，按钮在请求期间旋转并禁用重复点击，完成后直接更新 5 小时/1 周剩余额度。该操作不会调用模型或远端服务；Codex 尚未产生新 `rate_limits` 时会明确提示没有新快照。
 - 账号额度 current state 对同一 reset 窗口的并发 `rate_limits` 回退做保守 reconciliation：窗口内 `usedPercent` 只向最大已观测值收敛，reset 变化后重新开始；解决并发快照中 `100%` 被更晚的 `97%` 覆盖的问题。额度卡同时从“已使用”改为“剩余”，显示 `100 - usedPercent`，因此满额耗尽显示 `剩余 0%`。
 - 任务 API 增加 `costEstimate`，智能体增加 `ownCostEstimate` / `subtreeCostEstimate`，session snapshot 增加 `pricing`、`summary.totalCostEstimate` 和 `summary.subagentCostEstimate`；未知模型或不完整 token 明细不再生成伪精确费用。

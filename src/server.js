@@ -12,10 +12,12 @@ import { CodexRepository } from "./repository.js";
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(sourceDirectory, "..");
 const publicDirectory = join(projectRoot, "public");
+const lucideDirectory = join(projectRoot, "node_modules", "lucide", "dist", "umd");
 const STATIC_FILES = new Map([
   ["/", { path: join(publicDirectory, "index.html"), type: "text/html; charset=utf-8" }],
   ["/styles.css", { path: join(publicDirectory, "styles.css"), type: "text/css; charset=utf-8" }],
   ["/app.js", { path: join(publicDirectory, "app.js"), type: "text/javascript; charset=utf-8" }],
+  ["/vendor/lucide.min.js", { path: join(lucideDirectory, "lucide.min.js"), type: "text/javascript; charset=utf-8" }],
 ]);
 const ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/u;
 

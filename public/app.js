@@ -28,6 +28,13 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
 });
 
+window.lucide?.createIcons({
+  attrs: {
+    "aria-hidden": "true",
+    "stroke-width": 1.8,
+  },
+});
+
 elements["session-search"].addEventListener("input", (event) => {
   state.search = event.target.value;
   renderSessions();

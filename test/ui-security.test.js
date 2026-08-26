@@ -42,6 +42,10 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(html, /id="output-total"/u);
   assert.match(html, /id="cache-hit-rate"/u);
   assert.match(html, /id="quota-refresh"/u);
+  assert.match(html, /data-lucide="refresh-cw"/u);
+  assert.match(html, /src="\/vendor\/lucide\.min\.js"/u);
+  assert.doesNotMatch(html, /<button[^>]+id="quota-refresh"[^>]*>[\s\S]*?<path\b/iu);
+  assert.match(script, /window\.lucide\?\.createIcons/u);
   assert.match(script, /\/api\/quota\?refresh=1/u);
   assert.match(script, /quotaRefreshing/u);
   assert.match(styles, /\.quota-refresh\.refreshing svg/u);
