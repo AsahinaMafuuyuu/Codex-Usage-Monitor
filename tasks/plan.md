@@ -472,6 +472,93 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 - [x] Desktop and narrow-screen browser checks confirm month/day/session navigation and existing project navigation.
 - [x] Real-history total is reported with its exact date, timezone, quality counts, and source-hash check.
 
+## Phase 11: Incremental calendar index and bounded SQLite memory
+
+### Goals
+
+- [ ] Replace the all-history Timeline replay with a durable SQLite-derived calendar index so opening the time view does not reread the full rollout archive.
+- [ ] Reuse persisted parser cursors so historical sessions are imported once and later refreshes process only new or invalidated rollout bytes.
+- [ ] Keep SQLite memory bounded and make WAL growth observable/controlled without weakening the read-only `.codex` boundary.
+
+### Task 1: Persist normalized task usage and session-day aggregates
+
+**Description:** Advance the SQLite schema with normalized integer task-usage columns plus a compact `session_day_usage` materialized aggregate keyed by local date and root session. Rebuild a session's affected calendar rows transactionally whenever its derived task ledger is persisted.
+
+**Acceptance criteria:**
+
+- [ ] Existing databases migrate without losing sessions, tasks, cursors, quota snapshots, or source-locator metadata.
+- [ ] Six normalized usage counters preserve `NULL` when no precise task delta exists, while `session_day_usage` preserves task counts, active counts, six token totals, and all quality counters.
+- [ ] Calendar rows contain no prompt/response text and can be rebuilt solely from derived task metadata.
+
+**Verification:** `npm test -- --test-name-pattern "calendar index|schema v6"`, `npm run check`.
+
+**Dependencies:** Phase 10.
+
+**Files likely touched:** `src/database.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Incrementally synchronize all sessions before Timeline queries
+
+**Description:** Replace `buildTimeline()` full replay with cursor-aware session synchronization. Imported sessions restore their persisted task/cursor state and tail only changed bytes; never-imported or invalidated threads replay once. The timeline itself is then materialized from SQLite calendar rows.
+
+**Acceptance criteria:**
+
+- [ ] A second Timeline request with unchanged rollouts performs no rollout replay and returns the same aggregate.
+- [ ] Appending to one rollout updates only that root session's derived ledger/calendar rows; unrelated sessions are not replayed.
+- [ ] A source file shrink, stale cursor, or missing durable task state falls back to the parser's existing safe replay path rather than trusting stale data.
+
+**Verification:** `npm test -- --test-name-pattern "incremental timeline|calendar aggregate"`, `npm run check`.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/monitor.js`, `src/database.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 3: Bound SQLite cache/WAL behavior and measure the hot path
+
+**Description:** Explicitly configure a small SQLite page cache, enable incremental auto-checkpointing appropriate for this local workload, and expose enough storage diagnostics to verify that the timeline hot path stays SQL-bound instead of rollout-bound.
+
+**Acceptance criteria:**
+
+- [ ] SQLite page cache remains approximately 2 MiB and mmap is not expanded implicitly for this workload.
+- [ ] WAL auto-checkpointing prevents unbounded steady-state WAL growth while preserving current transaction semantics.
+- [ ] Verification records database size, calendar-index size, Timeline cold migration cost, subsequent hot-query latency, and process RSS delta on the real local dataset.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`, local performance harness.
+
+**Dependencies:** Tasks 1–2.
+
+**Files likely touched:** `src/database.js`, `docs/VERIFICATION.md`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Supersede the full-replay calendar decision
+
+**Description:** Record that ADR-0012's user-facing local-date semantics remain, but its in-memory full-history rebuild/cache strategy is superseded by a durable derived calendar index with cursor-aware synchronization.
+
+**Acceptance criteria:**
+
+- [ ] A new ADR documents the performance evidence, schema choice, invalidation model, memory bounds, and fallback replay semantics.
+- [ ] Architecture/API/README/changelog documentation no longer claims that every Timeline cache invalidation rereads all rollout files.
+- [ ] Documentation retains the distinction between audited local deltas and Codex subscription/billing semantics.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`.
+
+**Dependencies:** Tasks 1–3.
+
+**Files likely touched:** `docs/decisions/0012-calendar-usage-ledger.md`, `docs/decisions/0013-incremental-calendar-index.md`, `docs/decisions/README.md`, `docs/ARCHITECTURE.md`, `docs/API.md`, `README.md`, `CHANGELOG.md`, `docs/VERIFICATION.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Incremental calendar index
+
+- [ ] Full tests and syntax checks pass.
+- [ ] First migration/backfill is one-time; unchanged subsequent Timeline requests do not scan rollout history.
+- [ ] Real-history hot Timeline latency and additional RSS are materially below the Phase 10 full-replay baseline (~16–24 s and ~156 MiB additional RSS).
+- [ ] SQLite main/WAL sizes and page-cache settings are recorded after the migration.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |

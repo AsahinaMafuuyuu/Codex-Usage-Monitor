@@ -51,3 +51,7 @@
 - [x] Expose authenticated month/day/session timeline API
 - [x] Add project/time navigation mode with month and day expansion
 - [x] Document calendar reconciliation semantics and real-history evidence
+- [ ] Persist normalized task usage and compact session-day calendar aggregates
+- [ ] Replace all-history Timeline replay with cursor-aware incremental synchronization
+- [ ] Bound SQLite page-cache/WAL behavior and benchmark the SQL hot path
+- [ ] Record ADR-0013 and update calendar architecture/verification documentation
