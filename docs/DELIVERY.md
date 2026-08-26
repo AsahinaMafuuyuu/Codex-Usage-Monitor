@@ -79,6 +79,29 @@ npm test
 
 下一位智能体开始修改 `public/**` 前，应先阅读 [Frontend Handoff](FRONTEND-HANDOFF.md)。该文档记录精确 Git 基线、已冻结视觉/字体契约、Phase 9 后续顺序、浏览器验收协议和禁止越界修改的后端/安全边界。
 
+## 下一阶段交接：Request Ledger 双账本验证
+
+当前任务 token 仍以 `total_token_usage` 的任务边界差分为正式事实源。2026-08-26 对本机历史 rollout 做了一次只读 Request Ledger 可行性实验，结果显示：把 `last_token_usage` 视为“最近一次新增模型 usage”，再用累计 `total_token_usage` 做逐字段一致性校验和去重，可以恢复当前任务边界算法因累计 generation 重置而丢失的可审计用量；但在完成双账本回归前，不得直接用裸 `SUM(last_token_usage)` 替换现有实现。
+
+实验基线：
+
+- 扫描 `412` 个 rollout、`42,159` 条 `token_count`。
+- 识别 `1,726` 条累计值完全不变的重复广播；这些事件不得重复计量 `last_token_usage`。
+- 在兼容历史 schema（旧记录可能缺少 `cache_write_input_tokens`）后，得到 `40,388` 个可由累计值逐字段验证的新增 usage 单元；对已有前序累计值的有效增长事件，未观察到 `Δtotal_token_usage != last_token_usage` 的真实异常。
+- 另有 `45` 条文件首记录无法仅凭单文件证明，其中多数表现为 `total_tokens = 0` 且 `last_token_usage > 0`；必须保留为 `unverified` 或通过同一 thread 的跨文件前序状态继续验证，禁止猜测计入。
+- Request Ledger 对 2026-08-22 / 08-23 / 08-24 的可审计总量分别为 `60,289,305` / `64,066,930` / `175,486,562`。前两日与用户提供的 Profile `61,819,000` / `65,058,000` 仍分别相差约 `2.47%` / `1.52%`；08-24 与此前约 `180,000,000` 的 Profile 值相差约 `2.51%`。这些差额不得用补偿系数抹平。
+
+下一阶段实施顺序固定如下：
+
+1. **冻结 usage-event 分类契约。** 用 fixture 和真实历史验证 `verified_increment`、`duplicate`、`generation_start`、`unverified`、`anomaly`；逐字段比较 input / cached input / cache-write input（字段存在时）/ output / reasoning / total，而不是只比较 total。
+2. **建立双账本。** 新增内部 `model_usage_events` / Request Ledger，但保留现有 Task Boundary Ledger。Request Ledger 的单元语义是“经累计快照证明的新增模型 usage”，不是底层 HTTP 请求；产品层可显示“模型请求”，内部不得假定与网络请求一一对应。
+3. **跨文件保持 thread usage continuity。** 同一 `thread_id` 的累计状态不能被 rollout 文件边界截断；文件首记录只有在能由前序 generation 或 `total == last` 的新 generation 规则证明时才可计入。
+4. **生成 reconciliation report。** 对每个 complete task 验证 `Σ verified request usage == boundary deltaUsage`；reset / missing-baseline 任务单独列出 Request Ledger 可恢复值；重复广播必须为零增量；无法证明的记录必须保持质量标签而不是补值。
+5. **通过门槛后再切换事实源。** 只有完整测试、真实历史回放、增量 tail、SQLite 重启恢复、跨文件 continuity 和日期聚合均通过，才允许用 Request Ledger 聚合 Task / Agent / Session / Day；旧边界算法至少保留一个迁移期作为一致性审计器。
+6. **记录架构决策和迁移证据。** 新 ADR 应 supersede ADR-0002 中“任务边界累计差分是唯一主计量方式”的部分，但继续保留“不裸累加 `last_token_usage`”“不把 Profile 当本地 ground truth”“未知数据不伪造精确值”等不变量。
+
+详细任务拆分和验收条件见 [`tasks/plan.md`](../tasks/plan.md) 的 **Phase 13: Verified Request Ledger and dual-ledger reconciliation**。
+
 ## 交付核对
 
 - [x] 源码、静态页面和测试在独立项目目录中。
@@ -87,3 +110,4 @@ npm test
 - [x] 项目级 `AGENTS.md` 定义多智能体角色、所有权、并行边界和交接格式。
 - [x] 数据口径、隐私边界和真实样本证据已明确区分。
 - [x] 前端视觉迭代已提供独立接手文档与逐决策版本控制规则。
+- [x] Request Ledger 可行性实验、风险边界和下一阶段双账本迁移计划已写入交付文档；尚未声明 Request Ledger 已成为正式统计事实源。

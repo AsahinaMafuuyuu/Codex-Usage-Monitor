@@ -647,13 +647,133 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 - [x] A legacy v7 migration regression proves absolute rollout locators are removed without losing derived usage/calendar data.
 - [x] The final Git commit contains only the reviewed portability slice.
 
+## Phase 13: Verified Request Ledger and dual-ledger reconciliation
+
+### Evidence baseline
+
+2026-08-26 的只读历史实验扫描 `412` 个 rollout / `42,159` 条 `token_count`。兼容历史 schema 后，`1,726` 条累计值不变的事件可明确分类为 duplicate，`40,388` 个新增 usage 单元可由 `total_token_usage` 的逐字段增量验证，已有前序累计值的增长事件未观察到真实 `Δtotal != last` 异常；另有 `45` 条文件首记录仅凭单文件无法证明。实验 Request Ledger 对 2026-08-22 / 08-23 / 08-24 得到 `60,289,305` / `64,066,930` / `175,486,562`，与此前人工 generation-reset recovery 结果一致。
+
+### Goals
+
+- [ ] 把“经累计快照验证的新增模型 usage”建模为一等审计事件，同时保留现有 Task Boundary Ledger 作为迁移期独立校验器。
+- [ ] 用 `total_token_usage` 做 cumulative verifier / deduplicator / generation detector，而不是继续依赖跨任务永远单调的假设。
+- [ ] 可靠处理 duplicate broadcast、generation reset、missing baseline、历史缺字段和跨 rollout 文件 continuation，不裸累加 `last_token_usage`。
+- [ ] 在没有损失审计质量的前提下，从 Request Ledger 聚合 Task / Agent / Session / Day，并提供模型请求数、tokens/request 等后续指标的数据基础。
+- [ ] 保持 Profile / 订阅额度与本地可审计 usage 分离；不得通过补偿系数追平 Profile。
+
+### Task 1: Freeze the verified usage-event classifier
+
+**Description:** 在独立分类层规范化 `total_token_usage` / `last_token_usage`，逐字段判断新增 usage、重复广播、generation 起点和无法证明的记录。历史记录缺少 `cache_write_input_tokens` 时仅跳过该缺失字段的一致性断言，不把兼容缺字段误判为 anomaly。
+
+**Acceptance criteria:**
+
+- [ ] `current.total == previous.total` 分类为 `duplicate`，不产生新增 usage。
+- [ ] 所有可比较字段满足 `current.total - previous.total == current.last` 时分类为 `verified_increment`。
+- [ ] 累计值回退且新快照满足可证明的新 generation 条件时分类为 `generation_start`，而不是自动使整个 task `discontinuity`。
+- [ ] 无前序状态、`total=0 && last>0`、字段矛盾或无法解释的 rollback 保持 `unverified/anomaly`，不得猜测计量。
+- [ ] 全历史只读回归能复现 `412 / 42,159 / 1,726 / 40,388 / 45` 的实验分类基线，或在新增 rollout 后给出可解释的增量变化。
+
+**Verification:** parser fixture tests, read-only historical classifier harness, `npm run check`, source SHA-256 comparison.
+
+**Dependencies:** Phase 12.
+
+**Files likely touched:** `src/usage.js`, `src/rollout-parser.js`, `test/parser.test.js`, optional read-only verification harness under `test/` or `scripts/` if repository conventions permit.
+
+**Estimated scope:** Medium.
+
+### Task 2: Persist a privacy-safe model usage event ledger
+
+**Description:** Advance SQLite with a compact request-level derived ledger (recommended internal name `model_usage_events`) containing stable source identity, thread/turn attribution when known, event ordinal/timestamp, normalized usage fields, generation/classification and quality. Do not persist prompt/response/tool content. The durable identity must use portable `source_key`, not absolute paths.
+
+**Acceptance criteria:**
+
+- [ ] Duplicate replay / cursor restore is idempotent and cannot insert the same usage event twice.
+- [ ] Stored events contain only derived usage and locator metadata permitted by existing privacy rules.
+- [ ] Existing schema v8 task/calendar data migrates without loss; request-ledger backfill can be rebuilt from rollout and does not require Profile data.
+- [ ] Database size and migration/backfill cost are measured on the real local history before accepting the schema.
+
+**Verification:** schema migration tests, replay/idempotency tests, `npm test`, `npm run check`, database-size measurement.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/database.js`, `src/rollout-parser.js`, `test/database-server.test.js`, `test/parser.test.js`.
+
+**Estimated scope:** Large.
+
+### Task 3: Preserve usage continuity across rollout files and generations
+
+**Description:** Carry the latest verified cumulative state by `thread_id` across portable rollout source keys so a new file does not automatically create an unverifiable first event. Explicit generation changes remain visible in the ledger; file boundaries and generation boundaries are separate concepts.
+
+**Acceptance criteria:**
+
+- [ ] A continuation file whose first cumulative snapshot can be validated against the prior file produces the correct new usage exactly once.
+- [ ] `total == last` at a validated generation start may establish a zero baseline; `total=0 && last>0` remains unverified unless other evidence proves it.
+- [ ] The historical file-first special cases do not cause double counting when files are replayed, reordered by discovery, or restored from cursors.
+- [ ] Truncation/shrink/stale cursor falls back to the existing safe replay path and rebuilds request-derived state deterministically.
+
+**Verification:** multi-file fixtures, cursor restore/tail tests, historical first-event sample replay, `npm test`, `npm run check`.
+
+**Dependencies:** Tasks 1–2.
+
+**Files likely touched:** `src/rollout-parser.js`, `src/monitor.js`, `src/database.js`, `test/parser.test.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Large.
+
+### Task 4: Run both ledgers and produce a reconciliation report
+
+**Description:** During the migration period, derive per-task usage independently from Request Ledger and the existing boundary-delta algorithm. Expose an internal/test reconciliation report that explains matches and differences by quality instead of silently preferring one result.
+
+**Acceptance criteria:**
+
+- [ ] Every task currently classified `complete` must satisfy exact per-field equality between `Σ verified request usage` and existing `deltaUsage`, unless a documented schema limitation makes a field unavailable.
+- [ ] Known 2026-08-22 and 2026-08-24 reset cases are recovered by Request Ledger without manual special-case IDs.
+- [ ] 2026-08-22 / 08-23 / 08-24 day totals reproduce `60,289,305` / `64,066,930` / `175,486,562` for the audited historical snapshot.
+- [ ] Duplicate broadcasts add exactly zero usage; unverified events are counted in coverage/quality metrics but do not silently enter precise totals.
+- [ ] Reconciliation output distinguishes local parser differences from Profile differences and never treats Profile as a test oracle.
+
+**Verification:** full-history reconciliation harness, targeted parser/database tests, `npm test`, `npm run check`, `git diff --check`, source-hash verification.
+
+**Dependencies:** Tasks 1–3.
+
+**Files likely touched:** `src/usage.js`, `src/rollout-parser.js`, `src/database.js`, `src/monitor.js`, tests, `docs/VERIFICATION.md`.
+
+**Estimated scope:** Large.
+
+### Task 5: Promote Request Ledger only after migration gates pass
+
+**Description:** Once dual-ledger equality and incremental behavior are proven, switch Task / Agent / Session / Timeline aggregation to verified request events. Retain the old boundary ledger for at least the migration release as a reconciliation/checking path, then decide separately whether it can be retired.
+
+**Acceptance criteria:**
+
+- [ ] Session dashboard and Timeline preserve existing API semantics unless an ADR explicitly versions the contract.
+- [ ] Task totals, cost estimates and cache-hit calculations consume the same normalized request-derived token fields without double-counting reasoning or cached input.
+- [ ] Model request count and tokens/request may be exposed only from verified usage events; documentation states that these are model-usage units and not guaranteed one-to-one HTTP requests.
+- [ ] Incremental tail, restart restore, full replay and calendar materialization return identical totals for the same rollout state.
+- [ ] A new ADR supersedes the relevant part of ADR-0002 while preserving the prohibition on naked `last_token_usage` summation and the separation from Codex Profile/billing semantics.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`, real-history reconciliation, restart/tail/browser regression if UI metrics change.
+
+**Dependencies:** Task 4.
+
+**Files likely touched:** `src/usage.js`, `src/rollout-parser.js`, `src/database.js`, `src/monitor.js`, `public/**` only if request metrics are surfaced, `docs/decisions/0015-*.md`, `docs/ARCHITECTURE.md`, `docs/API.md`, `README.md`, `CHANGELOG.md`, `docs/VERIFICATION.md`.
+
+**Estimated scope:** Large.
+
+### Checkpoint: Request Ledger migration
+
+- [ ] Classifier has no unexplained mismatch on the audited historical dataset; any new anomaly is retained and documented, not force-classified.
+- [ ] Complete-task dual-ledger reconciliation is exact per field.
+- [ ] Known reset/missing-baseline recoveries are reproduced without session/turn-specific hacks.
+- [ ] SQLite migration, incremental tail and restart recovery are idempotent and bounded.
+- [ ] Request Ledger becomes the primary aggregation source only after the above gates pass and the ADR is accepted.
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
 |---|---|---|
 | Rollout wire format changes | High | Capability-based parsing, CLI version display, unknown-record counters, quality labels |
 | Copied paginated history is counted twice | High | Respect `subagent_history_start_ordinal` and deduplicate tasks by thread/turn |
-| Cumulative counters reset | High | Mark discontinuities and never synthesize a precise delta |
+| Cumulative counters reset | High | Current implementation marks unexplained rollback as discontinuity; Phase 13 may recover only a validated new generation whose request usage is independently proven by cumulative/last invariants |
 | Windows file notifications are dropped | Medium | Combine file watching with one-second stat reconciliation |
 | Prompt text leaks into the archive | High | Never persist previews; serve them only after authenticated, explicit expansion |
 

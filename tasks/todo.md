@@ -59,3 +59,8 @@
 - [x] Migrate SQLite schema v8 from absolute rollout locators to source keys
 - [x] Rebind cursors and task previews across Windows users/drives without path-only replay
 - [x] Document Windows portable-storage migration and verify relocation regressions
+- [ ] Freeze a schema-compatible verified model-usage event classifier
+- [ ] Add privacy-safe Request Ledger persistence beside the existing Task Boundary Ledger
+- [ ] Preserve usage continuity across rollout files and cumulative generations
+- [ ] Run full-history dual-ledger reconciliation and record mismatch/coverage evidence
+- [ ] Promote Request Ledger to the primary aggregation source only after reconciliation gates pass
