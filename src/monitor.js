@@ -188,7 +188,7 @@ export class UsageMonitor extends EventEmitter {
       parsed = await parser.parseFiles(files);
       replayedFiles = files.length;
     }
-    this.database.replaceSession(parsed);
+    this.database.replaceSession(parsed, { persistQuotas: false });
     return { replayedFiles, tailedFiles };
   }
 

@@ -210,7 +210,7 @@ export class MonitorDatabase {
         delta_output_tokens=CAST(json_extract(delta_usage, '$.outputTokens') AS INTEGER),
         delta_reasoning_output_tokens=CAST(json_extract(delta_usage, '$.reasoningOutputTokens') AS INTEGER),
         delta_total_tokens=CAST(json_extract(delta_usage, '$.totalTokens') AS INTEGER)
-      WHERE delta_usage IS NOT NULL AND delta_total_tokens IS NULL;
+      WHERE delta_usage IS NOT NULL AND json_valid(delta_usage) AND delta_total_tokens IS NULL;
     `);
 
     const timezone = localTimezone();
@@ -353,7 +353,7 @@ export class MonitorDatabase {
     });
   }
 
-  replaceSession(snapshot) {
+  replaceSession(snapshot, { persistQuotas = true } = {}) {
     const rootId = snapshot.session.id;
     this.transaction(() => {
       this.statements.upsertSession.run(
@@ -458,7 +458,9 @@ export class MonitorDatabase {
       );
     });
 
-    for (const quota of snapshot.quotas ?? []) this.saveQuota(quota);
+    if (persistQuotas) {
+      for (const quota of snapshot.quotas ?? []) this.saveQuota(quota);
+    }
   }
 
   saveQuota(quota) {

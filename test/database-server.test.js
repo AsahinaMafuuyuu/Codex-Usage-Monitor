@@ -181,6 +181,40 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(reopened.getHealthStats().walAutoCheckpoint, 256);
 });
 
+test("calendar-only persistence does not archive historical quota snapshots", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-calendar-quota-"));
+  const path = join(directory, "usage.sqlite");
+  const database = new MonitorDatabase(path);
+  t.after(async () => {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const data = snapshot();
+  data.quotas = [
+    {
+      observedAt: "2026-08-24T00:00:00.000Z",
+      limitId: "codex",
+      planType: "plus",
+      sourcePath: "C:\\fixture-a.jsonl",
+      primary: { usedPercent: 10, windowMinutes: 10_080, resetsAt: null },
+    },
+    {
+      observedAt: "2026-08-24T00:01:00.000Z",
+      limitId: "codex",
+      planType: "plus",
+      sourcePath: "C:\\fixture-b.jsonl",
+      primary: { usedPercent: 11, windowMinutes: 10_080, resetsAt: null },
+    },
+  ];
+
+  database.replaceSession(data, { persistQuotas: false });
+  assert.equal(database.db.prepare("SELECT COUNT(*) AS count FROM quota_snapshots").get().count, 0);
+
+  database.replaceSession(data);
+  assert.equal(database.db.prepare("SELECT COUNT(*) AS count FROM quota_snapshots").get().count, 2);
+});
+
 test("schema v1 ingest cursors migrate to resumable schema v7", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
