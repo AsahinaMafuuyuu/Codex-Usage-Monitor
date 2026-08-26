@@ -61,6 +61,6 @@
 - [x] Document Windows portable-storage migration and verify relocation regressions
 - [x] Freeze a schema-compatible verified model-usage event classifier
 - [x] Add privacy-safe Request Ledger persistence beside the existing Task Boundary Ledger
-- [ ] Preserve usage continuity across rollout files and cumulative generations
+- [x] Preserve usage continuity across rollout files and cumulative generations
 - [ ] Run full-history dual-ledger reconciliation and record mismatch/coverage evidence
 - [ ] Promote Request Ledger to the primary aggregation source only after reconciliation gates pass

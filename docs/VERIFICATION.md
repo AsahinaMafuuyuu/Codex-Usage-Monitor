@@ -186,6 +186,17 @@ npm test
 - session/thread 连续 parser 在该 backfill 中得到 40,389 verified、1,726 duplicate、68 unverified、0 anomaly；相比 Task 1“每文件重置 baseline”的只读实验多证明 1 条、少 1 条 unverified。该结果说明跨文件 continuity 确实存在可恢复信息，Task 3 必须用 deterministic multi-file fixture 固化其前序状态规则后才能进入 reconciliation。
 - Task 2 最终自动化验证：`npm test` 为 37 tests、36 passed、0 failed、1 skipped；唯一 skipped 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的既有真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
 
+### Phase 13 Task 3：same-thread rollout continuity
+
+日期：2026-08-26。Request Ledger 将 cumulative verifier 从“单文件状态”提升为“同一 thread 的连续状态”；文件边界与 generation 边界明确分离，仍不裸累加 `last_token_usage`。
+
+- deterministic multi-file fixture 使用同一 `thread_id` 的两个 rollout，并故意逆序传入 discovery 结果；parser 按 rollout 时间顺序回放，首文件得到 `generation_start=100`，后续文件首条得到 `verified_increment=50`，证明文件切换不会丢失累计 baseline。
+- cursor restore 在逆序 entries 输入下仍恢复两个 source 的正确任务路径和 terminal baseline；继续向第二个（terminal）rollout append 后得到单次 `verified_increment=30`，没有 replay 或重复插入。
+- 非 terminal rollout 若后续增长，restore 会把该 thread 的全部 source 标记为 replay；实时发现一个时间上更早的同-thread rollout 时，`tailFile` 直接请求 rebuild，而不是把它接到当前未来 baseline 后面。
+- 累计回退到 `total_tokens=0` 但 `last_token_usage>0` 的边界被明确保留为 `unverified / unproven_generation_start`；只有 `total == last` 等可验证零 baseline 才能成为 generation start。
+- 真实 412 rollout 临时 backfill：42,183 event rows、2,347 task rows、40,389 verified、1,726 duplicate、68 unverified、0 anomaly；耗时 23,169.79 ms，关闭后 SQLite 31,399,936 bytes，page/cache/WAL 约束保持 `4096 / -2000 / 0 / 256`。该结果与 Task 2 的跨-thread连续 parser 基线一致，说明本轮没有制造新的历史分类异常。
+- 最终自动化验证：`npm test` 为 41 tests、40 passed、0 failed、1 skipped；唯一 skipped 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+
 ### 2026-08-25：Overview / task ledger / scrollbar / motion polish
 
 本轮按用户指定顺序将视觉调整拆成独立提交；开始前在 clean HEAD `21daac7` 创建 `ui-polish-baseline-20260825` 标签，便于整轮回退和截图对照。

@@ -90,10 +90,16 @@ export class SessionRolloutParser {
     const cursorsBySource = new Map(cursors.map((cursor) => [cursorIdentity(cursor), cursor]));
     const validationBySource = new Map();
     const replayThreadIds = new Set();
+    const terminalSourceByThread = new Map();
+    for (const entry of sortedEntries) {
+      terminalSourceByThread.set(entryThreadId(entry), entryIdentity(entry));
+    }
     for (const entry of sortedEntries) {
       const sourceIdentity = entryIdentity(entry);
       const cursor = cursorsBySource.get(sourceIdentity);
-      const usable = await isCursorUsable(cursor, entry);
+      const usable = await isCursorUsable(cursor, entry, {
+        allowTail: terminalSourceByThread.get(entryThreadId(entry)) === sourceIdentity,
+      });
       validationBySource.set(sourceIdentity, usable);
       if (!usable) replayThreadIds.add(entryThreadId(entry));
     }
@@ -110,6 +116,9 @@ export class SessionRolloutParser {
 
     const entriesByThread = new Map(
       sortedEntries.map((entry) => [entryThreadId(entry), entry]),
+    );
+    const entriesBySource = new Map(
+      sortedEntries.map((entry) => [entryIdentity(entry), entry]),
     );
     const currentSources = new Set(sortedEntries.map((entry) => entryIdentity(entry)));
     const tasksByThread = new Map();
@@ -132,7 +141,9 @@ export class SessionRolloutParser {
 
     for (const storedAgent of storedSnapshot.agents ?? []) {
       if (replayThreadIds.has(storedAgent.threadId)) continue;
-      const entry = entriesByThread.get(storedAgent.threadId);
+      const entry =
+        entriesBySource.get(storedAgent.rolloutKey ?? recoverLegacySourceKey(storedAgent.rolloutPath)) ??
+        entriesByThread.get(storedAgent.threadId);
       const source = parseMaybeJson(entry?.meta?.source ?? entry?.source);
       const storedTasks = (tasksByThread.get(storedAgent.threadId) ?? [])
         .slice()
@@ -142,7 +153,11 @@ export class SessionRolloutParser {
       let currentTaskId = null;
       let lastUsage = null;
       for (const storedTask of storedTasks) {
-        const task = restoreTask(storedTask, entry);
+        const taskEntry =
+          entriesBySource.get(
+            storedTask.sourceKey ?? recoverLegacySourceKey(storedTask.sourcePath),
+          ) ?? entry;
+        const task = restoreTask(storedTask, taskEntry);
         taskMap.set(task.turnId, task);
         sequence = Math.max(sequence, task.sequence);
         if (task.status === "in_progress") currentTaskId = task.turnId;
@@ -202,6 +217,7 @@ export class SessionRolloutParser {
         fileSize: cursor.fileSize,
         modifiedAtMs: cursor.modifiedAtMs,
         firstMetaSeen: true,
+        entryTimestamp: entryTimestamp(entry),
       };
       this.fileContexts.set(entry.path, context);
       this.health.invalidLines += context.invalidLines;
@@ -227,12 +243,16 @@ export class SessionRolloutParser {
   async tailFile(entry) {
     const context = this.fileContexts.get(entry.path);
     if (!context) {
+      if (this.hasLaterSourceForThread(entry)) {
+        return { rebuilt: true, changed: false };
+      }
       await this.parseFile(entry, { reset: true });
       return { rebuilt: false, changed: true };
     }
     const fileStat = await stat(entry.path);
     if (fileStat.size < context.byteOffset) return { rebuilt: true, changed: false };
     if (fileStat.size === context.byteOffset) return { rebuilt: false, changed: false };
+    if (!this.isTerminalThreadSource(context)) return { rebuilt: true, changed: false };
     await this.parseFile(entry, { reset: false });
     return { rebuilt: false, changed: true };
   }
@@ -258,6 +278,7 @@ export class SessionRolloutParser {
         fileSize: 0,
         modifiedAtMs: null,
         firstMetaSeen: false,
+        entryTimestamp: entryTimestamp(entry),
       };
       this.fileContexts.set(entry.path, context);
       this.health.files = this.fileContexts.size;
@@ -694,6 +715,29 @@ export class SessionRolloutParser {
       if (event.sourceKey === sourceKey) this.modelUsageEvents.delete(key);
     }
   }
+
+  hasLaterSourceForThread(entry) {
+    const threadId = entryThreadId(entry);
+    if (!threadId) return false;
+    const candidate = entrySortKey(entryTimestamp(entry), entry.path);
+    return [...this.fileContexts.values()].some((context) => {
+      if (context.threadId !== threadId) return false;
+      return compareEntrySortKeys(
+        entrySortKey(context.entryTimestamp, context.path),
+        candidate,
+      ) > 0;
+    });
+  }
+
+  isTerminalThreadSource(context) {
+    const sources = [...this.fileContexts.values()]
+      .filter((item) => item.threadId === context.threadId)
+      .sort((left, right) => compareEntrySortKeys(
+        entrySortKey(left.entryTimestamp, left.path),
+        entrySortKey(right.entryTimestamp, right.path),
+      ));
+    return sources.at(-1)?.sourceKey === context.sourceKey;
+  }
 }
 
 export async function scanRolloutMetadata(filePath) {
@@ -1074,7 +1118,7 @@ function parseMaybeJson(value) {
   }
 }
 
-async function isCursorUsable(cursor, entry) {
+async function isCursorUsable(cursor, entry, { allowTail = true } = {}) {
   const filePath = entry.path;
   if (!cursor || cursorIdentity(cursor) !== entryIdentity(entry)) return false;
   if (
@@ -1089,10 +1133,15 @@ async function isCursorUsable(cursor, entry) {
   }
   try {
     const fileStat = await stat(filePath);
+    const sameSizeRewrite =
+      fileStat.size === cursor.fileSize &&
+      Math.abs(fileStat.mtimeMs - cursor.modifiedAtMs) > 2;
     return (
       fileStat.size >= cursor.fileSize &&
       fileStat.size >= cursor.byteOffset &&
-      fileStat.mtimeMs + 2 >= cursor.modifiedAtMs
+      fileStat.mtimeMs + 2 >= cursor.modifiedAtMs &&
+      !sameSizeRewrite &&
+      (allowTail || fileStat.size === cursor.fileSize)
     );
   } catch {
     return false;
@@ -1146,9 +1195,22 @@ async function readFirstCompleteLine(filePath) {
 }
 
 function compareEntries(left, right) {
-  const leftTime = left.meta?.timestamp ?? left.envelopeTimestamp ?? left.createdAt ?? "";
-  const rightTime = right.meta?.timestamp ?? right.envelopeTimestamp ?? right.createdAt ?? "";
-  return compareText(leftTime, rightTime) || compareText(left.path, right.path);
+  return compareEntrySortKeys(
+    entrySortKey(entryTimestamp(left), left.path),
+    entrySortKey(entryTimestamp(right), right.path),
+  );
+}
+
+function entryTimestamp(entry) {
+  return entry?.meta?.timestamp ?? entry?.envelopeTimestamp ?? entry?.createdAt ?? "";
+}
+
+function entrySortKey(timestamp, path) {
+  return { timestamp: timestamp ?? "", path: path ?? "" };
+}
+
+function compareEntrySortKeys(left, right) {
+  return compareText(left.timestamp, right.timestamp) || compareText(left.path, right.path);
 }
 
 function compareText(left, right) {

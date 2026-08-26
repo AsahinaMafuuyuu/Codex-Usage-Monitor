@@ -105,6 +105,19 @@ export function classifyModelUsageEvent(previousTotal, currentTotal, lastUsage) 
     );
   }
 
+  if (
+    delta.rollbackFields.length &&
+    currentTotal.totalTokens === 0 &&
+    lastUsage.totalTokens > 0
+  ) {
+    return usageEventResult(
+      "unverified",
+      null,
+      "unproven_generation_start",
+      delta,
+    );
+  }
+
   return usageEventResult(
     "anomaly",
     null,

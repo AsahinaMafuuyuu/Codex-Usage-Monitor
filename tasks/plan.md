@@ -657,7 +657,7 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 - [x] 把“经累计快照验证的新增模型 usage”建模为一等审计事件，同时保留现有 Task Boundary Ledger 作为迁移期独立校验器。
 - [x] 用 `total_token_usage` 做 cumulative verifier / deduplicator / generation detector，而不是继续依赖跨任务永远单调的假设。
-- [ ] 可靠处理 duplicate broadcast、generation reset、missing baseline、历史缺字段和跨 rollout 文件 continuation，不裸累加 `last_token_usage`。
+- [x] 可靠处理 duplicate broadcast、generation reset、missing baseline、历史缺字段和跨 rollout 文件 continuation，不裸累加 `last_token_usage`。
 - [ ] 在没有损失审计质量的前提下，从 Request Ledger 聚合 Task / Agent / Session / Day，并提供模型请求数、tokens/request 等后续指标的数据基础。
 - [ ] 保持 Profile / 订阅额度与本地可审计 usage 分离；不得通过补偿系数追平 Profile。
 
@@ -706,10 +706,10 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] A continuation file whose first cumulative snapshot can be validated against the prior file produces the correct new usage exactly once.
-- [ ] `total == last` at a validated generation start may establish a zero baseline; `total=0 && last>0` remains unverified unless other evidence proves it.
-- [ ] The historical file-first special cases do not cause double counting when files are replayed, reordered by discovery, or restored from cursors.
-- [ ] Truncation/shrink/stale cursor falls back to the existing safe replay path and rebuilds request-derived state deterministically.
+- [x] A continuation file whose first cumulative snapshot can be validated against the prior file produces the correct new usage exactly once.
+- [x] `total == last` at a validated generation start may establish a zero baseline; `total=0 && last>0` remains unverified unless other evidence proves it.
+- [x] The historical file-first special cases do not cause double counting when files are replayed, reordered by discovery, or restored from cursors.
+- [x] Truncation/shrink/stale cursor falls back to the existing safe replay path and rebuilds request-derived state deterministically.
 
 **Verification:** multi-file fixtures, cursor restore/tail tests, historical first-event sample replay, `npm test`, `npm run check`.
 
@@ -718,6 +718,8 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 **Files likely touched:** `src/rollout-parser.js`, `src/monitor.js`, `src/database.js`, `test/parser.test.js`, `test/database-server.test.js`.
 
 **Estimated scope:** Large.
+
+**Delivered evidence (2026-08-26):** Same-thread multi-file fixtures prove chronological replay even when discovery order is reversed, cursor restore preserves the terminal cumulative baseline, only the terminal source may be tailed incrementally, growth in a non-terminal source invalidates the entire thread cursor chain, and a newly discovered older source requests deterministic rebuild instead of consuming a future baseline. A real-history temporary backfill still produces 42,183 events with 40,389 verified / 1,726 duplicate / 68 unverified / 0 anomaly, confirming the one additional cross-file verified event observed after Task 2 without introducing extra historical anomalies.
 
 ### Task 4: Run both ledgers and produce a reconciliation report
 

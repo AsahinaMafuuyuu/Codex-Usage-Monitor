@@ -16,6 +16,7 @@ const ROOT = "11111111-1111-4111-8111-111111111111";
 const CHILD = "22222222-2222-4222-8222-222222222222";
 const PARENT_TURN = "33333333-3333-4333-8333-333333333333";
 const TURN = "44444444-4444-4444-8444-444444444444";
+const THIRD_TURN = "55555555-5555-4555-8555-555555555555";
 
 test("paginated copied history is skipped and cumulative snapshots are differenced", async (t) => {
   const fixture = await createFixture([
@@ -229,6 +230,17 @@ test("verified model-usage classifier tolerates legacy missing cache-write field
   assert.deepEqual(result.mismatchFields, []);
 });
 
+test("zero cumulative total with positive last usage stays unverified at an unproven generation boundary", () => {
+  const result = classifyModelUsageEvent(
+    normalizeUsage(usage(100)),
+    normalizeUsage(zeroWireUsage()),
+    normalizeUsage(usageIncrement(10)),
+  );
+  assert.equal(result.classification, "unverified");
+  assert.equal(result.reason, "unproven_generation_start");
+  assert.equal(result.usage, null);
+});
+
 test("counter rollback is reported as a discontinuity", async (t) => {
   const fixture = await createFixture([
     line(0, "session_meta", childMeta()),
@@ -354,6 +366,128 @@ test("restored cursors preserve cumulative usage observed between tasks", async 
   assert.deepEqual(restoredTask.deltaUsage, replayedTask.deltaUsage);
 });
 
+test("same-thread rollout files preserve verified usage continuity across restore and terminal tail", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-multifile-"));
+  const firstPath = join(directory, `rollout-first-${CHILD}.jsonl`);
+  const secondPath = join(directory, `rollout-second-${CHILD}.jsonl`);
+  const firstMeta = childMeta({ timestamp: "2026-08-24T00:00:00.000Z" });
+  const secondMeta = childMeta({ timestamp: "2026-08-24T00:10:00.000Z" });
+  await writeFile(firstPath, [
+    line(0, "session_meta", firstMeta),
+    event(1, "task_started", { turn_id: TURN }),
+    token(2, usage(100)),
+    event(3, "task_complete", { turn_id: TURN }),
+  ].map(JSON.stringify).join("\n") + "\n");
+  await writeFile(secondPath, [
+    line(4, "session_meta", secondMeta),
+    event(5, "task_started", { turn_id: PARENT_TURN }),
+    token(6, usage(150), null, usageDelta(100, 150)),
+    event(7, "task_complete", { turn_id: PARENT_TURN }),
+  ].map(JSON.stringify).join("\n") + "\n");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const entries = [
+    makeEntry(firstPath, firstMeta, firstMeta.timestamp, "sessions/2026/08/24/rollout-first.jsonl"),
+    makeEntry(secondPath, secondMeta, secondMeta.timestamp, "sessions/2026/08/24/rollout-second.jsonl"),
+  ];
+  const parser = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
+  const stored = await parser.parseFiles(entries);
+  assert.deepEqual(
+    stored.modelUsageEvents.map((item) => [item.classification, item.usage?.totalTokens, item.generation]),
+    [["generation_start", 100, 1], ["verified_increment", 50, 1]],
+  );
+  assert.deepEqual(stored.tasks.map((task) => task.deltaUsage?.totalTokens), [100, 50]);
+
+  const restored = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
+  const recovery = await restored.restore(stored, stored.cursors, [...entries].reverse());
+  assert.deepEqual(recovery.replayPaths, []);
+  assert.equal(restored.snapshot().modelUsageEvents.length, 2);
+  const restoredFirstTask = restored.snapshot().tasks.find((task) => task.turnId === TURN);
+  const restoredSecondTask = restored.snapshot().tasks.find((task) => task.turnId === PARENT_TURN);
+  assert.equal(restoredFirstTask.sourcePath, firstPath);
+  assert.equal(restoredSecondTask.sourcePath, secondPath);
+
+  await appendFile(secondPath, [
+    event(8, "task_started", { turn_id: THIRD_TURN }),
+    token(9, usage(180), null, usageDelta(150, 180)),
+    event(10, "task_complete", { turn_id: THIRD_TURN }),
+  ].map(JSON.stringify).join("\n") + "\n");
+  const tail = await restored.tailFile(entries[1]);
+  assert.deepEqual(tail, { rebuilt: false, changed: true });
+  const afterTail = restored.snapshot();
+  assert.equal(afterTail.modelUsageEvents.length, 3);
+  assert.equal(afterTail.modelUsageEvents.at(-1).classification, "verified_increment");
+  assert.equal(afterTail.modelUsageEvents.at(-1).usage.totalTokens, 30);
+  assert.equal(afterTail.tasks.find((task) => task.turnId === THIRD_TURN).deltaUsage.totalTokens, 30);
+});
+
+test("growth in a non-terminal same-thread rollout invalidates the whole thread cursor chain", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-multifile-replay-"));
+  const firstPath = join(directory, `rollout-first-${CHILD}.jsonl`);
+  const secondPath = join(directory, `rollout-second-${CHILD}.jsonl`);
+  const firstMeta = childMeta({ timestamp: "2026-08-24T00:00:00.000Z" });
+  const secondMeta = childMeta({ timestamp: "2026-08-24T00:10:00.000Z" });
+  await writeFile(firstPath, [
+    line(0, "session_meta", firstMeta),
+    event(1, "task_started", { turn_id: TURN }),
+    token(2, usage(100)),
+    event(3, "task_complete", { turn_id: TURN }),
+  ].map(JSON.stringify).join("\n") + "\n");
+  await writeFile(secondPath, [
+    line(4, "session_meta", secondMeta),
+    event(5, "task_started", { turn_id: PARENT_TURN }),
+    token(6, usage(150), null, usageDelta(100, 150)),
+    event(7, "task_complete", { turn_id: PARENT_TURN }),
+  ].map(JSON.stringify).join("\n") + "\n");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+  const entries = [
+    makeEntry(firstPath, firstMeta, firstMeta.timestamp, "sessions/2026/08/24/rollout-first.jsonl"),
+    makeEntry(secondPath, secondMeta, secondMeta.timestamp, "sessions/2026/08/24/rollout-second.jsonl"),
+  ];
+  const parser = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
+  const stored = await parser.parseFiles(entries);
+
+  await appendFile(firstPath, `${JSON.stringify(event(8, "agent_message"))}\n`);
+  const restored = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
+  const recovery = await restored.restore(stored, stored.cursors, entries);
+  assert.deepEqual(recovery.restoredPaths, []);
+  assert.deepEqual(recovery.replayPaths, [firstPath, secondPath]);
+  assert.equal(restored.snapshot().modelUsageEvents.length, 0);
+});
+
+test("a newly discovered older same-thread rollout requests a rebuild instead of using a future baseline", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-multifile-order-"));
+  const olderPath = join(directory, `rollout-older-${CHILD}.jsonl`);
+  const newerPath = join(directory, `rollout-newer-${CHILD}.jsonl`);
+  const olderMeta = childMeta({ timestamp: "2026-08-24T00:00:00.000Z" });
+  const newerMeta = childMeta({ timestamp: "2026-08-24T00:10:00.000Z" });
+  await writeFile(olderPath, `${JSON.stringify(line(0, "session_meta", olderMeta))}\n`);
+  await writeFile(newerPath, [
+    line(0, "session_meta", newerMeta),
+    token(1, usage(150), null, usage(150)),
+  ].map(JSON.stringify).join("\n") + "\n");
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const olderEntry = makeEntry(
+    olderPath,
+    olderMeta,
+    olderMeta.timestamp,
+    "sessions/2026/08/24/rollout-older.jsonl",
+  );
+  const newerEntry = makeEntry(
+    newerPath,
+    newerMeta,
+    newerMeta.timestamp,
+    "sessions/2026/08/24/rollout-newer.jsonl",
+  );
+  const parser = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
+  await parser.parseFiles([newerEntry]);
+  assert.deepEqual(
+    await parser.tailFile(olderEntry),
+    { rebuilt: true, changed: false },
+  );
+});
+
 test("an untrusted cursor is rejected so its thread can be replayed cleanly", async (t) => {
   const fixture = await createFixture([
     line(0, "session_meta", childMeta()),
@@ -440,9 +574,10 @@ async function parserFor(path) {
   return parser;
 }
 
-function makeEntry(path, meta, envelopeTimestamp) {
+function makeEntry(path, meta, envelopeTimestamp, sourceKey = null) {
   return {
     path,
+    sourceKey: sourceKey ?? undefined,
     threadId: meta.id,
     rootSessionId: meta.session_id,
     parentThreadId: meta.parent_thread_id,
