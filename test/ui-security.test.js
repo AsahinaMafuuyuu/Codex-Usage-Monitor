@@ -27,8 +27,9 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /renderSessionsByTime/u);
   assert.match(script, /formatTimelineUsageCost\(month\.usage, month\.costEstimate\)/u);
   assert.match(script, /formatTimelineUsageCost\(day\.usage, day\.costEstimate\)/u);
-  assert.match(script, /formatTimelineUsageCost\(session\.usage, session\.costEstimate\)/u);
-  assert.match(script, /return "费用统计"/u);
+  assert.match(script, /formatTokens\(session\.usage\?\.totalTokens\)/u);
+  assert.match(script, /formatTimelineSessionCost\(session\.costEstimate\?\.amountUsd\)/u);
+  assert.match(script, /minimumFractionDigits:\s*2,[\s\S]*?maximumFractionDigits:\s*2/iu);
   assert.match(script, /document\.startViewTransition/u);
   assert.match(script, /prefers-reduced-motion: reduce/u);
   assert.match(script, /formatMonthLabel/u);
@@ -93,6 +94,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.doesNotMatch(styles, /\.session-identity h2\s*\{[^}]*text-wrap:\s*balance/isu);
   assert.match(styles, /\.session-item strong\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/isu);
   assert.doesNotMatch(styles, /\.session-item strong\s*\{[^}]*-webkit-line-clamp/isu);
+  assert.match(styles, /\.time-session-project\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/isu);
+  assert.match(styles, /\.time-session-cost\s*\{[^}]*flex:\s*0 0 auto;[^}]*white-space:\s*nowrap/isu);
   assert.match(styles, /\.role-reviewer/u);
   assert.match(styles, /\.role-test-worker/u);
   assert.match(styles, /--lineage-rail-offset:\s*18px/iu);

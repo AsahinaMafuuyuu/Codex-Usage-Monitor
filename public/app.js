@@ -284,11 +284,19 @@ function renderSessionsByTime(sessions) {
 }
 
 function renderTimeSession(session) {
-  const quality = summarizeQuality(session.qualityCounts);
+  const project = projectName(normalizeProjectPath(session.projectPath));
+  const costTitle = costSummaryTitle(session.costEstimate, "该会话");
   return `<button class="session-item time-session-item ${session.id === state.selectedId ? "active" : ""}"
     type="button" data-session-id="${escapeHtml(session.id)}">
     <strong title="${escapeHtml(session.title || "未命名会话")}">${escapeHtml(session.title || "未命名会话")}</strong>
-    <span><time title="${escapeHtml(costSummaryTitle(session.costEstimate, "该会话"))}">${formatTimelineUsageCost(session.usage, session.costEstimate)}</time><b>${escapeHtml(projectName(normalizeProjectPath(session.projectPath)))} · ${escapeHtml(quality)}</b></span>
+    <span>
+      <time title="Total token: ${escapeHtml(formatTokens(session.usage?.totalTokens))}">${formatTokens(session.usage?.totalTokens)}</time>
+      <b class="time-session-meta" title="${escapeHtml(`${project} · ${costTitle}`)}">
+        <span class="time-session-project">${escapeHtml(project)}</span>
+        <span class="time-session-separator" aria-hidden="true">·</span>
+        <span class="time-session-cost">${formatTimelineSessionCost(session.costEstimate?.amountUsd)}</span>
+      </b>
+    </span>
   </button>`;
 }
 
@@ -332,13 +340,6 @@ function formatDayLabel(value) {
   return Number.isNaN(date.valueOf()) ? value : new Intl.DateTimeFormat("zh-CN", {
     month: "long", day: "numeric", weekday: "short",
   }).format(date);
-}
-
-function summarizeQuality(counts) {
-  const attention = (counts?.partial ?? 0) + (counts?.unknown ?? 0);
-  if (attention) return `${attention} 条需注意`;
-  if ((counts?.provisional ?? 0) > 0) return "实时";
-  return "费用统计";
 }
 
 function renderDashboard() {
@@ -901,6 +902,16 @@ function formatUsdAmount(value) {
 
 function formatTimelineUsageCost(usage, costEstimate) {
   return `${formatTokens(usage?.totalTokens)} · ${formatUsdAmount(costEstimate?.amountUsd)}`;
+}
+
+function formatTimelineSessionCost(value) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
 }
 
 function costSummaryCoverage(summary) {
