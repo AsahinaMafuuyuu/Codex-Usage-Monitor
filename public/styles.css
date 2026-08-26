@@ -876,7 +876,7 @@ summary:focus-visible,
 .agent-stat strong {
   display: block;
   overflow: hidden;
-  text-align: right;
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1215,7 +1215,7 @@ summary:focus-visible,
   .agent-title-line strong { width: 100%; font-size: 19px; }
   .agent-stats { grid-column: 1 / -1; grid-row: 2; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px 18px; }
   .agent-stat span,
-  .agent-stat strong { text-align: left; }
+  .agent-stat strong { text-align: center; }
   .agent-chevron { grid-column: 2; grid-row: 1; }
   .task-table { min-width: 1314px; }
   .empty-state h2 { font-size: 31px; }
