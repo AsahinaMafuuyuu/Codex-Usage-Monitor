@@ -319,11 +319,12 @@ function renderQuota() {
   elements["quota-freshness"].className = `freshness-chip ${quota.stale ? "stale" : "fresh"}`;
   const windows = [quota.primary, quota.secondary].filter(Boolean);
   elements["quota-windows"].innerHTML = windows.map((window) => {
-    const percent = clamp(window.usedPercent ?? 0, 0, 100);
+    const usedPercent = clamp(window.usedPercent ?? 0, 0, 100);
+    const remainingPercent = clamp(100 - usedPercent, 0, 100);
     const windowLabel = formatWindow(window.windowMinutes);
     return `<div class="quota-window">
-      <div class="quota-window-label"><span>${windowLabel} · ${formatReset(window.resetsAt)}</span><strong>${percent}%</strong></div>
-      <progress class="quota-progress ${percent >= 80 ? "high" : ""}" max="100" value="${percent}" aria-label="${windowLabel}窗口已使用 ${percent}%">${percent}%</progress>
+      <div class="quota-window-label"><span>${windowLabel} · ${formatReset(window.resetsAt)}</span><strong>剩余 ${remainingPercent}%</strong></div>
+      <progress class="quota-progress ${remainingPercent <= 20 ? "low" : ""}" max="100" value="${remainingPercent}" aria-label="${windowLabel}窗口剩余 ${remainingPercent}%">${remainingPercent}%</progress>
     </div>`;
   }).join("");
 }

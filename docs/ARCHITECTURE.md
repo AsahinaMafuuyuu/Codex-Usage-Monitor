@@ -99,7 +99,7 @@ SQLite schema v11 包含 `sessions`、`agents`、`tasks`、`model_usage_events`�
 
 ## 实时更新
 
-`fs.watch` 提供快速通知，1 秒 stat 轮询补偿 Windows 丢失通知，10 秒 reconciliation 发现新增或移动到归档目录的文件。tail cursor 停在最后一个完整换行处并持久化；重启时只有通过大小/mtime 校验的 append-only 文件才从该 offset 继续，不可验证文件会安全全量回放。未完成尾行保留到下一次读取。选择会话的变化通过 `snapshot` SSE 推送，账号额度和健康状态使用独立事件。
+`fs.watch` 提供快速通知，1 秒 stat 轮询补偿 Windows 丢失通知，10 秒 reconciliation 发现新增或移动到归档目录的文件。tail cursor 停在最后一个完整换行处并持久化；重启时只有通过大小/mtime 校验的 append-only 文件才从该 offset 继续，不可验证文件会安全全量回放。未完成尾行保留到下一次读取。选择会话的变化通过 `snapshot` SSE 推送，账号额度和健康状态使用独立事件。账号 current quota 在内存中按 primary/secondary 各自的 `windowMinutes + resetsAt` 做窗口级 reconciliation：同一窗口使用观测到的最大 `usedPercent` 抵抗并发旧响应回退，不同 reset 则优先更新后的窗口；SQLite `quota_snapshots` 继续保存单条规范化观测，不把派生 current state 伪装成原始快照。
 
 Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 record/event 和缺少必需任务 ID 的记录分别计入 `unknownRecords`、`skippedRecords` 并触发 warning。这样既容忍新字段，又不会把格式变化静默伪装为健康。
 

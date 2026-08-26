@@ -718,8 +718,8 @@ summary:focus-visible,
 .quota-progress::-webkit-progress-bar { background: var(--line); border-radius: 99px; }
 .quota-progress::-webkit-progress-value { background: var(--sage); border-radius: 99px; }
 .quota-progress::-moz-progress-bar { background: var(--sage); border-radius: 99px; }
-.quota-progress.high::-webkit-progress-value { background: var(--gold); }
-.quota-progress.high::-moz-progress-bar { background: var(--gold); }
+.quota-progress.low::-webkit-progress-value { background: var(--gold); }
+.quota-progress.low::-moz-progress-bar { background: var(--gold); }
 
 .section-heading {
   display: flex;

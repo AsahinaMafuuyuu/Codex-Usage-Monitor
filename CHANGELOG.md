@@ -18,6 +18,7 @@
 
 ### Changed
 
+- 账号额度 current state 对同一 reset 窗口的并发 `rate_limits` 回退做保守 reconciliation：窗口内 `usedPercent` 只向最大已观测值收敛，reset 变化后重新开始；解决并发快照中 `100%` 被更晚的 `97%` 覆盖的问题。额度卡同时从“已使用”改为“剩余”，显示 `100 - usedPercent`，因此满额耗尽显示 `剩余 0%`。
 - 任务 API 增加 `costEstimate`，智能体增加 `ownCostEstimate` / `subtreeCostEstimate`，session snapshot 增加 `pricing`、`summary.totalCostEstimate` 和 `summary.subagentCostEstimate`；未知模型或不完整 token 明细不再生成伪精确费用。
 - SQLite 升级到 schema v6，以 nullable `project_path` 保存根会话定位元数据；列表与 snapshot API 增加 `projectPath`。
 - 任务表移除指令预览列及其前端读取逻辑；受认证的 preview API 暂时保留供后续完整对话功能重新设计。

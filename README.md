@@ -68,7 +68,7 @@ codex-usage-monitor\
 - 通过文件观察与 1 秒轮询实时增量更新，并用 SSE 刷新页面。
 - 任务表不显示指令正文；受认证的旧 preview API 暂时保留，供后续完整对话功能重新设计。
 - 任务表固定 14 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏审计字段。
-- 展示独立的账号级 `rate_limits` 快照；超过 5 分钟标为可能过期。
+- 展示独立的账号级 `rate_limits` 快照；同一 reset 窗口内若并发 rollout 返回互相回退的 `used_percent`，运行时按该窗口观测到的最大已用比例保守收敛，避免把 100% 错降成 97%。页面统一显示 `100 - used_percent` 的剩余额度；超过 5 分钟标为可能过期。
 
 ## 数据口径
 
@@ -77,7 +77,7 @@ codex-usage-monitor\
 - schema v11 中任务 token 只来自经相邻 `total_token_usage` 逐字段验证的 Request Ledger；`last_token_usage` 只作为候选新增量被验证，绝不裸累加。不存在第二套运行时边界差分或 fallback。
 - `modelRequestCount` 表示已验证且归属任务的模型用量单元，`tokensPerModelRequest` 只由这些单元计算；它们不保证与 HTTP 请求或 Codex 服务端计费请求一一对应。
 - 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
-- 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度。
+- 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度；页面显示的是剩余比例，底层仍保留 Codex 原始 `used_percent` 语义。只有 `resetsAt + windowMinutes` 能确认处于同一窗口时才做单调收敛，进入新 reset 后允许比例重新降低。
 - 美元值使用版本化官方标准 API 价目计算，不是 Codex 订阅实际扣费；不包含无法从任务汇总证明的长上下文、服务层级、区域或工具费用。部分任务不可估算时，任务数量和 coverage 文案仍被保留，显示金额只是已知部分。
 - Request Ledger task 的 `complete` 表示其已归属事件均可验证且六类字段完整；若同 task 仍有 unverified/anomaly，只累计已验证下限并降为 `partial`，不从其他统计口径补值。
 - 时间以 UTC ISO-8601 存储，页面按浏览器本地时区显示。

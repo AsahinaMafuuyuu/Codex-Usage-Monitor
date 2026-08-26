@@ -198,7 +198,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 { "quota": null }
 ```
 
-有数据时 `quota` 包含 limit ID/name、plan type、primary/secondary 窗口、观测时间、来源路径、`ageMs` 和 `stale`。超过 5 分钟或时间不可解析时 `stale=true`。额度不与任务 token 换算。
+有数据时 `quota` 包含 limit ID/name、plan type、primary/secondary 窗口、观测时间、来源路径、`ageMs` 和 `stale`。超过 5 分钟或时间不可解析时 `stale=true`。若同一 `limitId`、plan、`windowMinutes` 与 `resetsAt` 下的并发快照出现 `usedPercent` 回退，运行时 current quota 对该窗口取已观测最大 `usedPercent`，并附加 `reconciled=true`；`resetsAt` 变化后不继承旧窗口最大值。持久化的 quota snapshot 仍保存各条规范化原始观测。额度不与任务 token 换算；前端把 `usedPercent` 转成 `100 - usedPercent` 的剩余比例展示。
 
 ### `GET /api/health`
 
