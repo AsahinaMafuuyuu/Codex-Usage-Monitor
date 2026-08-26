@@ -25,6 +25,10 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /session\.projectPath/u);
   assert.match(script, /data-session-view/u);
   assert.match(script, /renderSessionsByTime/u);
+  assert.match(script, /formatTimelineUsageCost\(month\.usage, month\.costEstimate\)/u);
+  assert.match(script, /formatTimelineUsageCost\(day\.usage, day\.costEstimate\)/u);
+  assert.match(script, /formatTimelineUsageCost\(session\.usage, session\.costEstimate\)/u);
+  assert.match(script, /return "费用统计"/u);
   assert.match(script, /document\.startViewTransition/u);
   assert.match(script, /prefers-reduced-motion: reduce/u);
   assert.match(script, /formatMonthLabel/u);
@@ -38,6 +42,7 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.doesNotMatch(script, /data-preview-thread|<th>指令<\/th>/u);
   assert.match(script, /cached \/ input/u);
   assert.match(html, /id="session-cost"/u);
+  assert.match(html, />Total token<\/span>/u);
   assert.match(html, /id="input-total"/u);
   assert.match(html, /id="output-total"/u);
   assert.match(html, /id="cache-hit-rate"/u);

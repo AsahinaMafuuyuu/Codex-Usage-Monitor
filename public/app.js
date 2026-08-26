@@ -200,14 +200,14 @@ function renderSessionsByTime(sessions) {
     return `<details class="time-group" ${monthOpen ? "open" : ""}>
       <summary class="time-heading">
         <span><strong>${escapeHtml(formatMonthLabel(month.key))}</strong><code>${escapeHtml(month.key)}</code></span>
-        <span class="time-meta"><b>${formatTokens(month.usage.totalTokens)}</b><i aria-hidden="true">›</i></span>
+        <span class="time-meta" title="${escapeHtml(costSummaryTitle(month.costEstimate, `${formatMonthLabel(month.key)} `))}"><b>${formatTimelineUsageCost(month.usage, month.costEstimate)}</b><i aria-hidden="true">›</i></span>
       </summary>
       <div class="time-days">${month.days.map((day) => {
         const dayOpen = Boolean(query) || day.key === selectedDate || day.key === currentDayKey();
         return `<details class="time-day" ${dayOpen ? "open" : ""}>
           <summary class="time-day-heading">
             <span><strong>${escapeHtml(formatDayLabel(day.key))}</strong><code>${escapeHtml(day.key)}</code></span>
-            <span class="time-meta"><b>${formatTokens(day.usage.totalTokens)}</b><i aria-hidden="true">›</i></span>
+            <span class="time-meta" title="${escapeHtml(costSummaryTitle(day.costEstimate, `${formatDayLabel(day.key)} `))}"><b>${formatTimelineUsageCost(day.usage, day.costEstimate)}</b><i aria-hidden="true">›</i></span>
           </summary>
           <div class="time-sessions">${day.sessions.map(renderTimeSession).join("")}</div>
         </details>`;
@@ -221,7 +221,7 @@ function renderTimeSession(session) {
   return `<button class="session-item time-session-item ${session.id === state.selectedId ? "active" : ""}"
     type="button" data-session-id="${escapeHtml(session.id)}">
     <strong title="${escapeHtml(session.title || "未命名会话")}">${escapeHtml(session.title || "未命名会话")}</strong>
-    <span><time title="${escapeHtml(session.updatedAt || "")}">${formatTokens(session.usage.totalTokens)}</time><b>${escapeHtml(projectName(normalizeProjectPath(session.projectPath)))} · ${escapeHtml(quality)}</b></span>
+    <span><time title="${escapeHtml(costSummaryTitle(session.costEstimate, "该会话"))}">${formatTimelineUsageCost(session.usage, session.costEstimate)}</time><b>${escapeHtml(projectName(normalizeProjectPath(session.projectPath)))} · ${escapeHtml(quality)}</b></span>
   </button>`;
 }
 
@@ -271,7 +271,7 @@ function summarizeQuality(counts) {
   const attention = (counts?.partial ?? 0) + (counts?.unknown ?? 0);
   if (attention) return `${attention} 条需注意`;
   if ((counts?.provisional ?? 0) > 0) return "实时";
-  return "验证完整";
+  return "费用统计";
 }
 
 function renderDashboard() {
@@ -629,6 +629,10 @@ function formatUsdAmount(value) {
     minimumFractionDigits: 2,
     maximumFractionDigits,
   }).format(value);
+}
+
+function formatTimelineUsageCost(usage, costEstimate) {
+  return `${formatTokens(usage?.totalTokens)} · ${formatUsdAmount(costEstimate?.amountUsd)}`;
 }
 
 function costSummaryCoverage(summary) {
