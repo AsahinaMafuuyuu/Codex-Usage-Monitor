@@ -679,6 +679,13 @@ summary:focus-visible,
   padding: 20px 18px 18px;
   background: transparent;
 }
+.activity-group .metric-card:first-child {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
+}
 .activity-group .metric-card + .metric-card,
 .token-group .metric-card:nth-child(even) { border-left: 1px solid color-mix(in srgb, var(--line) 74%, transparent); }
 .token-group .metric-card:nth-child(n + 3) { border-top: 1px solid color-mix(in srgb, var(--line) 74%, transparent); }
