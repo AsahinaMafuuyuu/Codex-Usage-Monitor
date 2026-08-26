@@ -497,15 +497,19 @@ summary:focus-visible,
   border-bottom: 1px solid var(--line-strong);
 }
 
+.session-identity { min-width: 0; }
+
 .session-identity h2 {
-  max-width: 920px;
+  max-width: 100%;
   margin: 12px 0 24px;
+  overflow: hidden;
   font-family: var(--display);
   font-size: clamp(36px, 3.4vw, 48px);
   font-weight: 500;
   line-height: 1.04;
   letter-spacing: -.04em;
-  text-wrap: balance;
+  text-overflow: ellipsis;
+  white-space: nowrap;
 }
 
 .session-project-row,

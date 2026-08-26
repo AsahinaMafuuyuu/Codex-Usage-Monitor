@@ -275,7 +275,9 @@ function renderDashboard() {
   }
   elements["empty-state"].hidden = true;
   elements.dashboard.hidden = false;
-  elements["session-title"].textContent = snapshot.session.title || "未命名会话";
+  const sessionTitle = snapshot.session.title || "未命名会话";
+  elements["session-title"].textContent = sessionTitle;
+  elements["session-title"].title = sessionTitle;
   elements["session-project"].textContent = normalizeProjectPath(snapshot.session.projectPath) || "未记录工程目录";
   elements["session-project"].title = snapshot.session.projectPath || "";
   elements["session-id"].textContent = snapshot.session.id;
