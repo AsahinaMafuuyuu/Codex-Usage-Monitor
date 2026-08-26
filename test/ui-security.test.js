@@ -47,7 +47,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /class="agent-children/u);
   assert.match(script, /role-badge/u);
   assert.match(script, /<colgroup>/u);
-  assert.match(script, /role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 14 列"/u);
+  assert.match(script, /role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 13 列"/u);
+  assert.doesNotMatch(script, /<th>推理<\/th>|col-reasoning/u);
   assert.match(script, /class="task-name-head"/u);
   assert.match(script, /class="task-status-head"/u);
   assert.match(script, /class="task-status-cell"/u);
@@ -62,7 +63,10 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.eyebrow\s*\{[^}]*font-family:\s*var\(--body\)/isu);
   assert.match(styles, /\.role-badge\s*\{[^}]*font-family:\s*var\(--body\)/isu);
   assert.match(styles, /\.task-table th\s*\{[^}]*font-family:\s*var\(--body\)/isu);
+  assert.match(styles, /\.task-table th\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.task-table td\s*\{[^}]*font-family:\s*var\(--mono\)/isu);
+  assert.match(styles, /\.task-table td\s*\{[^}]*text-align:\s*center/isu);
+  assert.match(styles, /\.task-table\s*\{[^}]*min-width:\s*1314px/isu);
   assert.match(styles, /\.role-reviewer/u);
   assert.match(styles, /\.role-test-worker/u);
   assert.match(styles, /--lineage-rail-offset:\s*18px/iu);

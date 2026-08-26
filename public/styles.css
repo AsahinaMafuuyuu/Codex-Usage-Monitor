@@ -882,7 +882,7 @@ summary:focus-visible,
 }
 .task-table {
   width: 100%;
-  min-width: 1390px;
+  min-width: 1314px;
   table-layout: fixed;
   border-collapse: collapse;
   font-variant-numeric: tabular-nums;
@@ -897,7 +897,6 @@ summary:focus-visible,
 .task-table .col-cache { width: 96px; }
 .task-table .col-hit { width: 76px; }
 .task-table .col-output { width: 86px; }
-.task-table .col-reasoning { width: 76px; }
 .task-table .col-total { width: 96px; }
 .task-table .col-cost { width: 110px; }
 .task-table .col-quality { width: 89px; }
@@ -910,12 +909,10 @@ summary:focus-visible,
   font-family: var(--body);
   font-size: var(--text-utility);
   font-weight: 700;
-  text-align: right;
+  text-align: center;
   letter-spacing: .06em;
   white-space: nowrap;
 }
-.task-table th:first-child,
-.task-table td:first-child { padding-left: 18px; text-align: left; }
 .task-table .task-name-head,
 .task-table .task-name-cell {
   position: sticky;
@@ -944,7 +941,7 @@ summary:focus-visible,
   border-bottom: 1px solid color-mix(in srgb, var(--line) 72%, transparent);
   font-family: var(--mono);
   font-size: var(--text-utility);
-  text-align: right;
+  text-align: center;
   text-overflow: ellipsis;
   white-space: nowrap;
 }
@@ -1156,7 +1153,7 @@ summary:focus-visible,
   .agent-stat span,
   .agent-stat strong { text-align: left; }
   .agent-chevron { grid-column: 2; grid-row: 1; }
-  .task-table { min-width: 1390px; }
+  .task-table { min-width: 1314px; }
   .empty-state h2 { font-size: 31px; }
 }
 

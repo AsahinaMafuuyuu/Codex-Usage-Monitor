@@ -18,7 +18,7 @@
 - 会话总计 USD 直接显示当前汇总对象的 `amountUsd` 格式化结果，不再在数值前附加 `≥`；当覆盖不完整时，旁侧覆盖文案与 title 仍必须明确“已估算 / 不可估算”和已知下限语义，避免把部分金额包装成完整账单。
 - 智能体 DOM 使用递归的 `agent-branch > agent-node + agent-children` 结构。children 自身持有连续竖轨和父子横向连接，层级由结构表达而不是预计算整卡 margin。
 - 每个智能体名称前显示独立 role badge。root、reviewer、test-worker、frontend-designer、backend/debugger、explorer 和通用 worker 使用受限语义色；未知角色采用中性 fallback，不从角色推断模型或用量。
-- 所有任务表使用同一 14 列 `colgroup`、`table-layout: fixed` 和 1390px 审计宽度；文本首列左对齐，其余数值采用 tabular numerals 右对齐。窄屏保留表格自身横向滚动，不压缩或隐藏审计字段。
+- 所有任务表使用同一 13 列 `colgroup`、`table-layout: fixed` 和 1314px 审计宽度；独立 reasoning 展示列不进入主账页，但底层 reasoning 数据继续用于审计与费用计算。表头和数据统一居中，数值继续使用 tabular numerals。窄屏保留表格自身横向滚动，不按设备继续隐藏审计字段。
 - 940px 以下切换为工程抽屉，720px 以下使用两列概览和两列智能体统计；保留键盘 focus-visible 与 `prefers-reduced-motion`。
 
 ## Alternatives considered
