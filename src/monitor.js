@@ -14,7 +14,7 @@ import {
   SessionRolloutParser,
 } from "./rollout-parser.js";
 import { materializeRequestLedgerTasks } from "./request-ledger.js";
-import { addUsage, zeroUsage } from "./usage.js";
+import { addUsage, reconcileRateLimitSnapshots, zeroUsage } from "./usage.js";
 
 export class UsageMonitor extends EventEmitter {
   constructor({ repository, database }) {
@@ -42,12 +42,14 @@ export class UsageMonitor extends EventEmitter {
       lastSyncMs: 0,
       lastSyncAt: null,
     };
+    this.currentQuota = null;
     this.closed = false;
   }
 
   async initialize() {
     await this.repository.initialize();
     this.refreshTimelineDirtySessions();
+    this.currentQuota = this.database.getLatestQuota();
     await this.refreshGlobalQuota();
     this.startWatchers();
     this.pollTimer = setInterval(() => void this.pollSelectedFiles(), 1000);
@@ -345,7 +347,7 @@ export class UsageMonitor extends EventEmitter {
   }
 
   quota() {
-    const quota = this.database.getLatestQuota();
+    const quota = this.currentQuota ?? this.database.getLatestQuota();
     if (!quota) return null;
     const ageMs = Date.now() - Date.parse(quota.observedAt);
     return { ...quota, stale: !Number.isFinite(ageMs) || ageMs > 5 * 60 * 1000, ageMs };
@@ -492,16 +494,18 @@ export class UsageMonitor extends EventEmitter {
       .allFiles()
       .sort((a, b) => (b.modifiedAtMs ?? 0) - (a.modifiedAtMs ?? 0))
       .slice(0, 12);
-    let latest = this.database.getLatestQuota();
+    let latest = this.currentQuota ?? this.database.getLatestQuota();
     for (const entry of recent) {
       try {
         const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
-        if (quota && (!latest || quota.observedAt > latest.observedAt)) latest = quota;
+        if (!quota) continue;
+        this.database.saveQuota(quota);
+        latest = reconcileRateLimitSnapshots(latest, quota);
       } catch (error) {
         if (error?.code !== "ENOENT") this.recordError(`额度扫描失败：${entry.path}`, error);
       }
     }
-    if (latest) this.database.saveQuota(latest);
+    this.currentQuota = latest;
     return latest;
   }
 
@@ -509,19 +513,25 @@ export class UsageMonitor extends EventEmitter {
     try {
       const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
       if (!quota) return;
-      const current = this.database.getLatestQuota();
-      if (!current || quota.observedAt >= current.observedAt) {
-        this.database.saveQuota(quota);
-        this.emit("quota", this.quota());
-      }
+      this.database.saveQuota(quota);
+      this.currentQuota = reconcileRateLimitSnapshots(
+        this.currentQuota ?? this.database.getLatestQuota(),
+        quota,
+      );
+      this.emit("quota", this.quota());
     } catch (error) {
       if (error?.code !== "ENOENT") throw error;
     }
   }
 
   saveLatestParsedQuota(quotas) {
-    const latest = [...(quotas ?? [])].sort((a, b) => a.observedAt.localeCompare(b.observedAt)).at(-1);
-    if (latest) this.database.saveQuota(latest);
+    const snapshots = [...(quotas ?? [])].sort((a, b) => a.observedAt.localeCompare(b.observedAt));
+    let current = this.currentQuota ?? this.database.getLatestQuota();
+    for (const quota of snapshots) {
+      this.database.saveQuota(quota);
+      current = reconcileRateLimitSnapshots(current, quota);
+    }
+    this.currentQuota = current;
   }
 
   recordError(context, error) {

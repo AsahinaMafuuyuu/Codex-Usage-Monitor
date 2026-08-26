@@ -388,6 +388,37 @@ test("calendar-only persistence does not archive historical quota snapshots", as
   assert.equal(database.db.prepare("SELECT COUNT(*) AS count FROM quota_snapshots").get().count, 2);
 });
 
+test("global quota does not regress within the same reset window when concurrent snapshots arrive out of order", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-quota-race-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "26");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `rollout-quota-full-${ROOT}.jsonl`),
+    makeQuotaRollout(ROOT, "2026-08-26T08:39:21.277Z", 100, 31, 1_787_748_993, 1_788_317_703),
+  );
+  await writeFile(
+    join(sessions, `rollout-quota-lagging-${OTHER_ROOT}.jsonl`),
+    makeQuotaRollout(OTHER_ROOT, "2026-08-26T08:39:21.958Z", 97, 31, 1_787_748_993, 1_788_317_703),
+  );
+
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  const repository = new CodexRepository(codexHome, database);
+  const monitor = new UsageMonitor({ repository, database });
+  t.after(() => {
+    monitor.close();
+    database.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+
+  await monitor.initialize();
+  const quota = monitor.quota();
+  assert.equal(quota.primary.usedPercent, 100);
+  assert.equal(quota.secondary.usedPercent, 31);
+  assert.equal(quota.primary.resetsAt, "2026-08-26T12:56:33.000Z");
+  assert.equal(quota.reconciled, true);
+});
+
 test("schema v1 ingest cursors migrate to portable resumable schema v11", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
@@ -1051,6 +1082,44 @@ function makeCalendarTaskAppend(turnId, cumulativeTotalTokens, timestamp) {
     { timestamp, ordinal: 6, type: "turn_context", payload: { turn_id: turnId, model: "gpt-5.6-terra", effort: "xhigh" } },
     { timestamp, ordinal: 7, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: lastUsage } } },
     { timestamp, ordinal: 8, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+  ].map(JSON.stringify).join("\n") + "\n";
+}
+
+function makeQuotaRollout(rootId, timestamp, primaryUsed, secondaryUsed, primaryReset, secondaryReset) {
+  return [
+    {
+      timestamp,
+      ordinal: 0,
+      type: "session_meta",
+      payload: {
+        id: rootId,
+        session_id: rootId,
+        timestamp,
+        cwd: "C:\\workspace\\quota-race",
+      },
+    },
+    {
+      timestamp,
+      ordinal: 1,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        rate_limits: {
+          limit_id: "codex",
+          plan_type: "plus",
+          primary: {
+            used_percent: primaryUsed,
+            window_minutes: 300,
+            resets_at: primaryReset,
+          },
+          secondary: {
+            used_percent: secondaryUsed,
+            window_minutes: 10_080,
+            resets_at: secondaryReset,
+          },
+        },
+      },
+    },
   ].map(JSON.stringify).join("\n") + "\n";
 }
 

@@ -179,6 +179,78 @@ export function normalizeRateLimits(raw, observedAt, sourcePath) {
   return snapshot.primary || snapshot.secondary ? snapshot : null;
 }
 
+export function reconcileRateLimitSnapshots(current, candidate) {
+  if (!current) return candidate ?? null;
+  if (!candidate) return current;
+
+  const currentObservedAt = timestampMs(current.observedAt);
+  const candidateObservedAt = timestampMs(candidate.observedAt);
+  const candidateIsLater = candidateObservedAt >= currentObservedAt;
+  const latest = candidateIsLater ? candidate : current;
+
+  if (current.limitId !== candidate.limitId || !samePlan(current.planType, candidate.planType)) {
+    return latest;
+  }
+
+  const primary = reconcileRateLimitWindow(
+    current.primary,
+    candidate.primary,
+    currentObservedAt,
+    candidateObservedAt,
+  );
+  const secondary = reconcileRateLimitWindow(
+    current.secondary,
+    candidate.secondary,
+    currentObservedAt,
+    candidateObservedAt,
+  );
+  const reconciled =
+    primary?.usedPercent !== latest.primary?.usedPercent
+    || primary?.resetsAt !== latest.primary?.resetsAt
+    || secondary?.usedPercent !== latest.secondary?.usedPercent
+    || secondary?.resetsAt !== latest.secondary?.resetsAt;
+
+  return {
+    ...latest,
+    primary,
+    secondary,
+    ...(reconciled ? { reconciled: true } : {}),
+  };
+}
+
+function reconcileRateLimitWindow(current, candidate, currentObservedAt, candidateObservedAt) {
+  if (!current) return candidate ?? null;
+  if (!candidate) return current;
+
+  const currentReset = timestampMs(current.resetsAt);
+  const candidateReset = timestampMs(candidate.resetsAt);
+  const sameWindowMinutes = current.windowMinutes === candidate.windowMinutes;
+
+  if (sameWindowMinutes && Number.isFinite(currentReset) && Number.isFinite(candidateReset)) {
+    if (candidateReset > currentReset) return candidate;
+    if (currentReset > candidateReset) return current;
+
+    const latest = candidateObservedAt >= currentObservedAt ? candidate : current;
+    const currentUsed = current.usedPercent;
+    const candidateUsed = candidate.usedPercent;
+    if (Number.isFinite(currentUsed) && Number.isFinite(candidateUsed)) {
+      return { ...latest, usedPercent: Math.max(currentUsed, candidateUsed) };
+    }
+    return latest;
+  }
+
+  return candidateObservedAt >= currentObservedAt ? candidate : current;
+}
+
+function timestampMs(value) {
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : Number.NEGATIVE_INFINITY;
+}
+
+function samePlan(current, candidate) {
+  return current == null || candidate == null || current === candidate;
+}
+
 function numberOrNull(value) {
   return typeof value === "number" && Number.isFinite(value) ? value : null;
 }

@@ -10,13 +10,36 @@ import {
   scanRolloutMetadata,
   SessionRolloutParser,
 } from "../src/rollout-parser.js";
-import { classifyModelUsageEvent, normalizeUsage } from "../src/usage.js";
+import {
+  classifyModelUsageEvent,
+  normalizeUsage,
+  reconcileRateLimitSnapshots,
+} from "../src/usage.js";
 
 const ROOT = "11111111-1111-4111-8111-111111111111";
 const CHILD = "22222222-2222-4222-8222-222222222222";
 const PARENT_TURN = "33333333-3333-4333-8333-333333333333";
 const TURN = "44444444-4444-4444-8444-444444444444";
 const THIRD_TURN = "55555555-5555-4555-8555-555555555555";
+
+test("rate-limit reconciliation keeps the strictest usage inside one reset window and releases it after reset", () => {
+  const full = quotaSnapshot("2026-08-26T08:39:21.277Z", 100, "2026-08-26T12:56:33.000Z");
+  const lagging = quotaSnapshot("2026-08-26T08:39:21.958Z", 97, "2026-08-26T12:56:33.000Z");
+  const reconciled = reconcileRateLimitSnapshots(full, lagging);
+  assert.equal(reconciled.primary.usedPercent, 100);
+  assert.equal(reconciled.observedAt, lagging.observedAt);
+  assert.equal(reconciled.reconciled, true);
+
+  const reset = quotaSnapshot("2026-08-26T13:00:00.000Z", 4, "2026-08-26T17:56:33.000Z");
+  const afterReset = reconcileRateLimitSnapshots(reconciled, reset);
+  assert.equal(afterReset.primary.usedPercent, 4);
+  assert.equal(afterReset.primary.resetsAt, "2026-08-26T17:56:33.000Z");
+
+  const oldWindowStraggler = quotaSnapshot("2026-08-26T13:00:00.500Z", 100, "2026-08-26T12:56:33.000Z");
+  const afterStraggler = reconcileRateLimitSnapshots(afterReset, oldWindowStraggler);
+  assert.equal(afterStraggler.primary.usedPercent, 4);
+  assert.equal(afterStraggler.primary.resetsAt, "2026-08-26T17:56:33.000Z");
+});
 
 test("paginated copied history is skipped and cumulative snapshots are differenced", async (t) => {
   const fixture = await createFixture([
@@ -650,6 +673,24 @@ function token(ordinal, total, primary = null, last = null) {
       ? { limit_id: "codex", plan_type: "plus", primary: { ...primary, window_minutes: 10_080, resets_at: 1_800_000_000 } }
       : null,
   });
+}
+
+function quotaSnapshot(observedAt, primaryUsed, primaryReset) {
+  return {
+    limitId: "codex",
+    planType: "plus",
+    observedAt,
+    primary: {
+      usedPercent: primaryUsed,
+      windowMinutes: 300,
+      resetsAt: primaryReset,
+    },
+    secondary: {
+      usedPercent: 31,
+      windowMinutes: 10_080,
+      resetsAt: "2026-09-02T02:55:03.000Z",
+    },
+  };
 }
 
 function usage(total) {
