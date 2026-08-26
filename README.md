@@ -62,7 +62,7 @@ codex-usage-monitor\
 ## 页面能力
 
 - 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话，只完整解析当前选择及其递归子智能体；目录缺失时明确归入“未归类”。
-- 左侧可切换“工程”和“时间”两种导航；时间视图按本地时区从月展开到日，再列出当天 session 和已审计 total token。历史只在首次导入时建立 task/cursor ledger，之后按变化 session 增量 tail，并直接查询轻量 SQLite session-day 索引。
+- 左侧可切换“工程”和“时间”两种导航；时间视图按本地时区从月展开到日，再列出当天 session，并同时展示已审计 total token 与按同一 Request Ledger 即时计算的标准 API USD 等值。历史只在首次导入时建立 task/cursor ledger，之后按变化 session 增量 tail，并直接查询轻量 SQLite session-day 索引。
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。

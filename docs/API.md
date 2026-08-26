@@ -50,6 +50,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
   "months": [{
     "key": "2026-08",
     "usage": {},
+    "costEstimate": { "status": "estimated", "amountUsd": 0.0, "currency": "USD", "estimatedTasks": 0, "unavailableTasks": 0 },
     "modelRequestCount": 0,
     "tokensPerModelRequest": null,
     "taskCount": 0,
@@ -58,6 +59,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
     "days": [{
       "key": "2026-08-24",
       "usage": {},
+      "costEstimate": { "status": "estimated", "amountUsd": 0.0, "currency": "USD", "estimatedTasks": 0, "unavailableTasks": 0 },
       "modelRequestCount": 0,
       "tokensPerModelRequest": null,
       "taskCount": 0,
@@ -69,6 +71,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
         "projectPath": "C:\\workspace\\example",
         "date": "2026-08-24",
         "usage": {},
+        "costEstimate": { "status": "estimated", "amountUsd": 0.0, "currency": "USD", "estimatedTasks": 0, "unavailableTasks": 0 },
         "modelRequestCount": 0,
         "tokensPerModelRequest": null,
         "taskCount": 0,
@@ -81,7 +84,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 }
 ```
 
-`months` 和 `days` 均按 key 降序排列；页面用原生 `details` 展开月份、日期和当天 session。日期 key 仍按任务 `startedAt` 的本地时区生成。`usage` 只累加 Request Ledger 中已验证且已归属 task 的 usage；同 task 存在 unverified/anomaly 时只保留已验证部分并以 `partial` 披露。schema v11 不存在第二套 Boundary task delta 或 fallback。`modelRequestCount` 只统计 verified model usage units，`tokensPerModelRequest=usage.totalTokens/modelRequestCount`；它们不保证与 HTTP 请求或服务端计费请求一一对应。没有可归入本地日期的任务进入 `unattributed`。
+`months` 和 `days` 均按 key 降序排列；页面用原生 `details` 展开月份、日期和当天 session。日期 key 仍按任务 `startedAt` 的本地时区生成。`usage` 只累加 Request Ledger 中已验证且已归属 task 的 usage；同 task 存在 unverified/anomaly 时只保留已验证部分并以 `partial` 披露。schema v11 不存在第二套 Boundary task delta 或 fallback。`modelRequestCount` 只统计 verified model usage units，`tokensPerModelRequest=usage.totalTokens/modelRequestCount`；它们不保证与 HTTP 请求或服务端计费请求一一对应。`costEstimate` 在读取 Timeline 时按同一批 request-derived task usage、任务模型和当前版本化标准 API 价目即时计算，不写入 SQLite；month/day/session 逐级汇总 `estimatedTasks` / `unavailableTasks`，因此价格版本变化不会留下陈旧持久化金额。没有可归入本地日期的任务进入 `unattributed`。
 
 该接口的 total token 是本地 rollout 的审计汇总，不是 Codex 个人资料的订阅账单字段。个人资料可能采用不同的服务端时间边界、未公开的请求级计费口径或包含本地无法证明的记录；二者只应比较量级和质量覆盖，不应要求逐字相等。
 

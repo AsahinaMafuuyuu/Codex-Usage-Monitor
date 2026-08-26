@@ -943,6 +943,69 @@ export class MonitorDatabase {
     };
   }
 
+  getTimelineCostTasks() {
+    const rows = this.db.prepare(`
+      SELECT t.root_session_id, t.thread_id, t.turn_id, t.started_at, t.model,
+             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start') THEN 1 ELSE 0 END)
+               AS verified_count,
+             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                       AND m.input_tokens IS NULL THEN 1 ELSE 0 END) AS missing_input_tokens,
+             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                       AND m.cached_input_tokens IS NULL THEN 1 ELSE 0 END) AS missing_cached_input_tokens,
+             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                       AND m.cache_write_input_tokens IS NULL THEN 1 ELSE 0 END) AS missing_cache_write_input_tokens,
+             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                       AND m.output_tokens IS NULL THEN 1 ELSE 0 END) AS missing_output_tokens,
+             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                       AND m.reasoning_output_tokens IS NULL THEN 1 ELSE 0 END) AS missing_reasoning_output_tokens,
+             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                       AND m.total_tokens IS NULL THEN 1 ELSE 0 END) AS missing_total_tokens,
+             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                               THEN m.input_tokens ELSE 0 END), 0) AS input_tokens,
+             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                               THEN m.cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
+             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                               THEN m.cache_write_input_tokens ELSE 0 END), 0) AS cache_write_input_tokens,
+             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                               THEN m.output_tokens ELSE 0 END), 0) AS output_tokens,
+             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                               THEN m.reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
+             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
+                               THEN m.total_tokens ELSE 0 END), 0) AS total_tokens
+      FROM tasks t
+      LEFT JOIN model_usage_events m
+        ON m.root_session_id=t.root_session_id
+       AND m.thread_id=t.thread_id
+       AND m.turn_id=t.turn_id
+      WHERE t.started_at IS NOT NULL
+      GROUP BY t.root_session_id, t.thread_id, t.turn_id, t.started_at, t.model
+      ORDER BY t.root_session_id, t.started_at, t.thread_id, t.turn_id
+    `).all();
+    return rows.map((row) => {
+      const verifiedCount = Number(row.verified_count ?? 0);
+      const usage = verifiedCount > 0 ? {
+        inputTokens: row.missing_input_tokens ? null : Number(row.input_tokens ?? 0),
+        cachedInputTokens: row.missing_cached_input_tokens ? null : Number(row.cached_input_tokens ?? 0),
+        cacheWriteInputTokens: row.missing_cache_write_input_tokens
+          ? null
+          : Number(row.cache_write_input_tokens ?? 0),
+        outputTokens: row.missing_output_tokens ? null : Number(row.output_tokens ?? 0),
+        reasoningOutputTokens: row.missing_reasoning_output_tokens
+          ? null
+          : Number(row.reasoning_output_tokens ?? 0),
+        totalTokens: row.missing_total_tokens ? null : Number(row.total_tokens ?? 0),
+      } : null;
+      return {
+        rootSessionId: row.root_session_id,
+        threadId: row.thread_id,
+        turnId: row.turn_id,
+        startedAt: row.started_at,
+        model: row.model ?? null,
+        deltaUsage: usage,
+      };
+    });
+  }
+
   getHealthStats() {
     const cursors = this.db.prepare(`
       SELECT COUNT(*) AS files, COALESCE(SUM(invalid_lines), 0) AS invalid_lines,

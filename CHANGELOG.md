@@ -12,6 +12,7 @@
 - 根会话 `cwd` 工程目录持久化与按完整路径分组的会话导航。
 - 会话输入/输出/总缓存命中率，以及智能体和任务级缓存命中率。
 - 全部已发现 session 的本地日期用量账页；时间导航按月、日和 session 展开，并保留质量覆盖计数。
+- 时间账页为 month/day/session 增加即时 API 等值费用汇总；费用从已持久化 task 模型和 verified Request Ledger 用量按当前价目计算，不把金额写入 SQLite。
 - Windows portable source locator：以 `.codex` 相对 source key 持久化 rollout 身份，并在当前用户/自定义 Codex home 下运行时重绑定。
 - Verified model-usage event classifier 与内部 Request Ledger：逐字段用累计快照验证 `last_token_usage`，区分 verified increment、duplicate、generation start、unverified 和 anomaly，并以 portable source identity 幂等持久化。
 - Phase 13 双账本 reconciliation 迁移证据与 verified model usage unit 指标；Task / Agent / Session / Timeline 可报告 request count 与 tokens/request，同时明确这些单元不等价于 HTTP 请求。

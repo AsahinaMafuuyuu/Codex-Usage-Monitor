@@ -53,6 +53,10 @@ test("calendar aggregate includes unselected sessions and local-day quality", as
   assert.equal(sessionsById.size, 2);
   assert.equal(sessionsById.get(ROOT).usage.totalTokens, 100);
   assert.equal(sessionsById.get(OTHER_ROOT).usage.totalTokens, 240);
+  assert.equal(sessionsById.get(ROOT).costEstimate.status, "estimated");
+  assert.equal(sessionsById.get(ROOT).costEstimate.amountUsd, 0.0003);
+  assert.equal(sessionsById.get(OTHER_ROOT).costEstimate.amountUsd, 0.00058);
+  assert.equal(timeline.months[0].costEstimate.amountUsd, 0.00088);
   assert.deepEqual(
     [...sessionsById.values()].map((session) => session.date).sort(),
     [localDayKey("2026-08-24T12:00:00.000Z"), localDayKey("2026-08-25T12:00:00.000Z")].sort(),

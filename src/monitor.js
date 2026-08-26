@@ -113,7 +113,8 @@ export class UsageMonitor extends EventEmitter {
       lastSyncMs: Date.now() - started,
       lastSyncAt: new Date().toISOString(),
     };
-    return this.database.getTimeline(this.repository.sessions);
+    const timeline = this.database.getTimeline(this.repository.sessions);
+    return attachTimelineCosts(timeline, this.database.getTimelineCostTasks());
   }
 
   refreshTimelineDirtySessions() {
@@ -584,4 +585,44 @@ export class UsageMonitor extends EventEmitter {
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];
   }
+}
+
+function attachTimelineCosts(timeline, tasks) {
+  const taskCostsBySessionDay = new Map();
+  for (const task of tasks ?? []) {
+    const day = localDayKey(task.startedAt);
+    if (!day) continue;
+    const key = `${task.rootSessionId}\u0000${day}`;
+    const pricedTask = {
+      ...task,
+      costEstimate: estimateTaskCost(task.model, task.deltaUsage),
+    };
+    if (!taskCostsBySessionDay.has(key)) taskCostsBySessionDay.set(key, []);
+    taskCostsBySessionDay.get(key).push(pricedTask);
+  }
+
+  for (const month of timeline.months ?? []) {
+    for (const day of month.days ?? []) {
+      for (const session of day.sessions ?? []) {
+        const key = `${session.id}\u0000${day.key}`;
+        session.costEstimate = summarizeTaskCosts(taskCostsBySessionDay.get(key) ?? []);
+      }
+      day.costEstimate = combineCostSummaries(
+        (day.sessions ?? []).map((session) => session.costEstimate),
+      );
+    }
+    month.costEstimate = combineCostSummaries(
+      (month.days ?? []).map((day) => day.costEstimate),
+    );
+  }
+  return timeline;
+}
+
+function localDayKey(value) {
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return null;
+  const year = date.getFullYear();
+  const month = String(date.getMonth() + 1).padStart(2, "0");
+  const day = String(date.getDate()).padStart(2, "0");
+  return `${year}-${month}-${day}`;
 }
