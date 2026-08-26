@@ -41,6 +41,10 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(html, /id="input-total"/u);
   assert.match(html, /id="output-total"/u);
   assert.match(html, /id="cache-hit-rate"/u);
+  assert.match(html, /id="quota-refresh"/u);
+  assert.match(script, /\/api\/quota\?refresh=1/u);
+  assert.match(script, /quotaRefreshing/u);
+  assert.match(styles, /\.quota-refresh\.refreshing svg/u);
   assert.match(html, /content="light"/u);
   assert.match(html, /id="session-project"/u);
   assert.match(html, /data-session-view="project"/u);

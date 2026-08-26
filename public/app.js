@@ -7,6 +7,7 @@ const state = {
   search: "",
   sessionView: localStorage.getItem("codex-monitor-session-view") === "time" ? "time" : "project",
   connected: false,
+  quotaRefreshing: false,
 };
 
 const elements = Object.fromEntries(
@@ -16,7 +17,7 @@ const elements = Object.fromEntries(
     "empty-state", "loading-state", "dashboard", "session-title", "session-project", "session-id",
     "session-version", "hero-total", "agent-count", "task-count", "active-task-count",
     "input-total", "cached-total", "cache-hit-rate", "output-total", "session-cost",
-    "session-cost-coverage", "quota-plan", "quota-freshness", "quota-windows",
+    "session-cost-coverage", "quota-plan", "quota-refresh", "quota-windows",
     "agent-tree", "toast",
   ].map((id) => [id, document.getElementById(id)]),
 );
@@ -53,6 +54,7 @@ elements["session-list"].addEventListener("click", (event) => {
   const button = event.target.closest("[data-session-id]");
   if (button) void selectSession(button.dataset.sessionId);
 });
+elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
 
 await initialize();
 
@@ -309,14 +311,11 @@ function renderQuota() {
   const quota = state.snapshot?.quota;
   if (!quota) {
     elements["quota-plan"].textContent = "暂无本地快照";
-    elements["quota-freshness"].textContent = "不可用";
-    elements["quota-freshness"].className = "freshness-chip stale";
     elements["quota-windows"].innerHTML = '<span class="empty-agent">等待下一条 rate_limits 记录</span>';
+    syncQuotaRefreshButton();
     return;
   }
   elements["quota-plan"].textContent = `${quota.planType || "Codex"} · ${quota.limitName || quota.limitId}`;
-  elements["quota-freshness"].textContent = quota.stale ? "可能过期" : "最新";
-  elements["quota-freshness"].className = `freshness-chip ${quota.stale ? "stale" : "fresh"}`;
   const windows = [quota.primary, quota.secondary].filter(Boolean);
   elements["quota-windows"].innerHTML = windows.map((window) => {
     const usedPercent = clamp(window.usedPercent ?? 0, 0, 100);
@@ -327,6 +326,49 @@ function renderQuota() {
       <progress class="quota-progress ${remainingPercent <= 20 ? "low" : ""}" max="100" value="${remainingPercent}" aria-label="${windowLabel}窗口剩余 ${remainingPercent}%">${remainingPercent}%</progress>
     </div>`;
   }).join("");
+  syncQuotaRefreshButton();
+}
+
+async function refreshQuota() {
+  if (state.quotaRefreshing) return;
+  const previousObservedAt = state.snapshot?.quota?.observedAt ?? null;
+  state.quotaRefreshing = true;
+  syncQuotaRefreshButton();
+  try {
+    const payload = await fetchJson("/api/quota?refresh=1");
+    if (state.snapshot) state.snapshot.quota = payload.quota;
+    renderQuota();
+    const currentObservedAt = payload.quota?.observedAt ?? null;
+    if (currentObservedAt && currentObservedAt !== previousObservedAt) {
+      toast(`额度已更新 · ${formatDate(currentObservedAt)}`);
+    } else if (payload.quota) {
+      toast("已重新扫描本地额度，暂未发现新的快照");
+    } else {
+      toast("已重新扫描，但尚未发现 rate_limits 记录");
+    }
+  } catch (error) {
+    toast(`额度刷新失败：${error.message}`);
+  } finally {
+    state.quotaRefreshing = false;
+    syncQuotaRefreshButton();
+  }
+}
+
+function syncQuotaRefreshButton() {
+  const button = elements["quota-refresh"];
+  const quota = state.snapshot?.quota;
+  button.disabled = state.quotaRefreshing;
+  button.classList.toggle("refreshing", state.quotaRefreshing);
+  button.setAttribute("aria-busy", String(state.quotaRefreshing));
+  if (state.quotaRefreshing) {
+    button.setAttribute("aria-label", "正在刷新账号额度");
+    button.title = "正在重新扫描本地 Codex 额度快照";
+    return;
+  }
+  button.setAttribute("aria-label", "刷新账号额度");
+  button.title = quota?.observedAt
+    ? `刷新账号额度 · 当前快照 ${formatDate(quota.observedAt)}`
+    : "刷新账号额度";
 }
 
 function renderAgents() {
