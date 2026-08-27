@@ -4,6 +4,7 @@ import {
   combineCostSummaries,
   estimateRequestCost,
   normalizeServiceTier,
+  priceTasksByRequestEvents,
   pricingCatalogSummary,
   resolveHistoricalRate,
   summarizeTaskCosts,
@@ -329,26 +330,118 @@ test("T-COST-034 Fast and long context are never multiplied together", () => {
   assert.equal(estimate.multipliers.fast, 1);
 });
 
-test("legacy rollup helpers remain stable before the public contract cutover", () => {
-  assert.equal(pricingCatalogSummary().basis, "openai-standard-api-short-context");
-  assert.deepEqual(summarizeTaskCosts([
-    { costEstimate: { status: "estimated", amountUsd: 1.25 } },
-    { costEstimate: { status: "unavailable", amountUsd: null } },
-  ]), {
-    status: "partial",
-    amountUsd: 1.25,
-    currency: "USD",
-    estimatedTasks: 1,
-    unavailableTasks: 1,
-  });
-  assert.deepEqual(combineCostSummaries([
-    { status: "estimated", amountUsd: 1.25, estimatedTasks: 2, unavailableTasks: 0 },
-    { status: "partial", amountUsd: 0.5, estimatedTasks: 1, unavailableTasks: 2 },
-  ]), {
-    status: "partial",
-    amountUsd: 1.75,
-    currency: "USD",
-    estimatedTasks: 3,
-    unavailableTasks: 2,
-  });
+test("T-COST-040 task cost is the sum of request costs, never aggregate-task pricing", () => {
+  const task = { threadId: "thread", turnId: "turn", model: "gpt-5.6-sol" };
+  const events = [
+    { ...request({ inputTokens: 200_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 200_000 }), threadId: "thread", turnId: "turn" },
+    { ...request({ inputTokens: 200_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 200_000 }), threadId: "thread", turnId: "turn" },
+  ];
+  const [priced] = priceTasksByRequestEvents([task], events);
+  assert.equal(priced.costEstimate.status, "estimated");
+  assert.equal(priced.costEstimate.amountUsd, 2);
+  assert.equal(priced.costEstimate.estimatedRequests, 2);
+  assert.equal(priced.costEstimate.partialRequests, 0);
+  assert.equal(priced.costEstimate.unavailableRequests, 0);
+});
+
+test("T-COST-041 unresolved pricing evidence makes a task partial without erasing known USD", () => {
+  const task = { threadId: "thread", turnId: "turn", model: "gpt-5.6-sol" };
+  const events = [
+    { ...request({ inputTokens: 100_000, cachedInputTokens: 0, outputTokens: 0, totalTokens: 100_000 }), threadId: "thread", turnId: "turn" },
+    {
+      ...request({
+        serviceTier: null,
+        inputTokens: 100_000,
+        cachedInputTokens: 0,
+        outputTokens: 0,
+        totalTokens: 100_000,
+      }),
+      threadId: "thread",
+      turnId: "turn",
+    },
+    {
+      classification: "anomaly",
+      threadId: "thread",
+      turnId: "turn",
+      model: "gpt-5.6-sol",
+      observedAt: AT("2026-08-26"),
+      serviceTier: "default",
+      usage: null,
+    },
+  ];
+  const [priced] = priceTasksByRequestEvents([task], events);
+  assert.equal(priced.costEstimate.status, "partial");
+  assert.equal(priced.costEstimate.amountUsd, 1);
+  assert.equal(priced.costEstimate.estimatedRequests, 1);
+  assert.equal(priced.costEstimate.partialRequests, 1);
+  assert.equal(priced.costEstimate.unavailableRequests, 1);
+  assert.equal(priced.costEstimate.featureCoverage.serviceTier, "partial");
+});
+
+test("T-COST-042 public rollups expose subscription-standard request coverage", () => {
+  assert.equal(pricingCatalogSummary().basis, "subscription-standard-equivalent");
+  const taskSummary = summarizeTaskCosts([
+    {
+      costEstimate: {
+        status: "estimated",
+        amountUsd: 1.25,
+        estimatedRequests: 2,
+        partialRequests: 0,
+        unavailableRequests: 0,
+        featureCoverage: {
+          historicalRate: "verified",
+          requestBoundary: "verified",
+          serviceTier: "verified",
+        },
+      },
+    },
+    {
+      costEstimate: {
+        status: "unavailable",
+        amountUsd: null,
+        estimatedRequests: 0,
+        partialRequests: 0,
+        unavailableRequests: 1,
+      },
+    },
+  ]);
+  assert.equal(taskSummary.status, "partial");
+  assert.equal(taskSummary.amountUsd, 1.25);
+  assert.equal(taskSummary.basis, "subscription-standard-equivalent");
+  assert.equal(taskSummary.estimatedTasks, 1);
+  assert.equal(taskSummary.partialTasks, 0);
+  assert.equal(taskSummary.unavailableTasks, 1);
+  assert.equal(taskSummary.estimatedRequests, 2);
+  assert.equal(taskSummary.unavailableRequests, 1);
+
+  const combined = combineCostSummaries([
+    {
+      status: "estimated",
+      amountUsd: 1.25,
+      estimatedTasks: 2,
+      partialTasks: 0,
+      unavailableTasks: 0,
+      estimatedRequests: 3,
+      partialRequests: 0,
+      unavailableRequests: 0,
+    },
+    {
+      status: "partial",
+      amountUsd: 0.5,
+      estimatedTasks: 1,
+      partialTasks: 1,
+      unavailableTasks: 2,
+      estimatedRequests: 1,
+      partialRequests: 1,
+      unavailableRequests: 2,
+    },
+  ]);
+  assert.equal(combined.status, "partial");
+  assert.equal(combined.amountUsd, 1.75);
+  assert.equal(combined.estimatedTasks, 3);
+  assert.equal(combined.partialTasks, 1);
+  assert.equal(combined.unavailableTasks, 2);
+  assert.equal(combined.estimatedRequests, 4);
+  assert.equal(combined.partialRequests, 1);
+  assert.equal(combined.unavailableRequests, 2);
 });

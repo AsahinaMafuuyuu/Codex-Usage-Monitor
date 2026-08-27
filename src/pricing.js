@@ -181,6 +181,86 @@ export function estimateRequestCost(event, {
   };
 }
 
+export function priceTasksByRequestEvents(tasks, events, options = {}) {
+  const eventsByTask = new Map();
+  for (const event of events ?? []) {
+    const key = pricingTaskKey(event?.threadId, event?.turnId);
+    const list = eventsByTask.get(key) ?? [];
+    list.push(event);
+    eventsByTask.set(key, list);
+  }
+  return (tasks ?? []).map((task) => {
+    const taskEvents = eventsByTask.get(pricingTaskKey(task?.threadId, task?.turnId)) ?? [];
+    const requestCosts = [];
+    for (const event of taskEvents) {
+      if (event?.classification === "duplicate") continue;
+      requestCosts.push(estimateRequestCost(event, options));
+    }
+    return {
+      ...task,
+      costEstimate: summarizeRequestCosts(requestCosts),
+    };
+  });
+}
+
+export function summarizeRequestCosts(costs) {
+  let amountUsd = 0;
+  let knownAmountCount = 0;
+  let estimatedRequests = 0;
+  let partialRequests = 0;
+  let unavailableRequests = 0;
+  const rateVersions = new Set();
+  const limitations = new Set();
+  const reasons = new Set();
+  const coverageValues = {
+    historicalRate: [],
+    requestBoundary: [],
+    serviceTier: [],
+  };
+  for (const cost of costs ?? []) {
+    if (!cost) continue;
+    if (cost.status === "estimated") estimatedRequests += 1;
+    else if (cost.status === "partial") partialRequests += 1;
+    else unavailableRequests += 1;
+    if (Number.isFinite(cost.amountUsd)) {
+      amountUsd += cost.amountUsd;
+      knownAmountCount += 1;
+    }
+    if (cost.rateVersion) rateVersions.add(cost.rateVersion);
+    for (const limitation of cost.limitations ?? []) limitations.add(limitation);
+    if (cost.reason) reasons.add(cost.reason);
+    for (const key of Object.keys(coverageValues)) {
+      if (cost.featureCoverage?.[key]) coverageValues[key].push(cost.featureCoverage[key]);
+    }
+  }
+  const requestCount = estimatedRequests + partialRequests + unavailableRequests;
+  const status = knownAmountCount === 0
+    ? "unavailable"
+    : partialRequests > 0 || unavailableRequests > 0
+      ? "partial"
+      : "estimated";
+  return {
+    status,
+    amountUsd: knownAmountCount ? roundUsd(amountUsd) : null,
+    currency: SUBSCRIPTION_PRICING_CATALOG.currency,
+    basis: SUBSCRIPTION_PRICING_CATALOG.basis,
+    policyVersion: SUBSCRIPTION_PRICING_CATALOG.policyVersion,
+    requestCount,
+    estimatedRequests,
+    partialRequests,
+    unavailableRequests,
+    featureCoverage: {
+      historicalRate: aggregateFeatureCoverage(coverageValues.historicalRate),
+      requestBoundary: aggregateFeatureCoverage(coverageValues.requestBoundary),
+      serviceTier: aggregateFeatureCoverage(coverageValues.serviceTier),
+    },
+    rateVersions: [...rateVersions].sort(),
+    limitations: [...limitations].sort(),
+    reasons: [...reasons].sort(),
+    reason: requestCount === 0 ? "no_request_pricing_evidence" : null,
+  };
+}
+
 export const PRICING_CATALOG = Object.freeze({
   version: "2026-08-24",
   currency: "USD",
@@ -291,55 +371,108 @@ export function estimateTaskCost(model, usage, now = Date.now()) {
   };
 }
 
-export function pricingCatalogSummary(now = Date.now()) {
+export function pricingCatalogSummary() {
   return {
-    ...PRICING_CATALOG,
-    limitations: [...PRICING_CATALOG.limitations],
-    sources: [...PRICING_CATALOG.sources],
-    stale: isCatalogStale(now),
-    supportedModels: Object.keys(RATE_CARDS),
+    ...SUBSCRIPTION_PRICING_CATALOG,
+    limitations: [...SUBSCRIPTION_PRICING_CATALOG.limitations],
+    sources: [...SUBSCRIPTION_PRICING_CATALOG.sources],
+    stale: false,
+    supportedModels: [...new Set(HISTORICAL_RATE_INTERVALS.map((record) => record.model))].sort(),
   };
 }
 
 export function summarizeTaskCosts(tasks) {
   let amountUsd = 0;
   let estimatedTasks = 0;
+  let partialTasks = 0;
   let unavailableTasks = 0;
+  let estimatedRequests = 0;
+  let partialRequests = 0;
+  let unavailableRequests = 0;
+  const coverage = [];
   for (const task of tasks) {
-    if (task.costEstimate?.status === "estimated") {
-      amountUsd += task.costEstimate.amountUsd;
-      estimatedTasks += 1;
-    } else {
-      unavailableTasks += 1;
-    }
+    const estimate = task.costEstimate;
+    if (estimate?.status === "estimated") estimatedTasks += 1;
+    else if (estimate?.status === "partial") partialTasks += 1;
+    else unavailableTasks += 1;
+    amountUsd += estimate?.amountUsd ?? 0;
+    estimatedRequests += estimate?.estimatedRequests ?? 0;
+    partialRequests += estimate?.partialRequests ?? 0;
+    unavailableRequests += estimate?.unavailableRequests ?? 0;
+    if (estimate?.featureCoverage) coverage.push(estimate.featureCoverage);
   }
-  return costSummary(amountUsd, estimatedTasks, unavailableTasks);
+  return costSummary({
+    amountUsd,
+    estimatedTasks,
+    partialTasks,
+    unavailableTasks,
+    estimatedRequests,
+    partialRequests,
+    unavailableRequests,
+    coverage,
+  });
 }
 
 export function combineCostSummaries(summaries) {
   let amountUsd = 0;
   let estimatedTasks = 0;
+  let partialTasks = 0;
   let unavailableTasks = 0;
+  let estimatedRequests = 0;
+  let partialRequests = 0;
+  let unavailableRequests = 0;
+  const coverage = [];
   for (const summary of summaries) {
     if (!summary) continue;
     amountUsd += summary.amountUsd ?? 0;
     estimatedTasks += summary.estimatedTasks ?? 0;
+    partialTasks += summary.partialTasks ?? 0;
     unavailableTasks += summary.unavailableTasks ?? 0;
+    estimatedRequests += summary.estimatedRequests ?? 0;
+    partialRequests += summary.partialRequests ?? 0;
+    unavailableRequests += summary.unavailableRequests ?? 0;
+    if (summary.featureCoverage) coverage.push(summary.featureCoverage);
   }
-  return costSummary(amountUsd, estimatedTasks, unavailableTasks);
+  return costSummary({
+    amountUsd,
+    estimatedTasks,
+    partialTasks,
+    unavailableTasks,
+    estimatedRequests,
+    partialRequests,
+    unavailableRequests,
+    coverage,
+  });
 }
 
-function costSummary(amountUsd, estimatedTasks, unavailableTasks) {
+function costSummary({
+  amountUsd,
+  estimatedTasks,
+  partialTasks,
+  unavailableTasks,
+  estimatedRequests,
+  partialRequests,
+  unavailableRequests,
+  coverage,
+}) {
+  const knownTasks = estimatedTasks + partialTasks;
   return {
-    status: estimatedTasks === 0
+    status: knownTasks === 0
       ? "unavailable"
-      : unavailableTasks > 0
+      : partialTasks > 0 || unavailableTasks > 0
         ? "partial"
         : "estimated",
-    amountUsd: estimatedTasks ? roundUsd(amountUsd) : null,
-    currency: PRICING_CATALOG.currency,
+    amountUsd: knownTasks ? roundUsd(amountUsd) : null,
+    currency: SUBSCRIPTION_PRICING_CATALOG.currency,
+    basis: SUBSCRIPTION_PRICING_CATALOG.basis,
+    policyVersion: SUBSCRIPTION_PRICING_CATALOG.policyVersion,
     estimatedTasks,
+    partialTasks,
     unavailableTasks,
+    estimatedRequests,
+    partialRequests,
+    unavailableRequests,
+    featureCoverage: combineFeatureCoverageObjects(coverage),
   };
 }
 
@@ -541,6 +674,25 @@ function unavailableRequestCost(reason, model, observedAt, rate = null) {
     limitations: [...SUBSCRIPTION_PRICING_CATALOG.limitations],
     reason,
   };
+}
+
+function pricingTaskKey(threadId, turnId) {
+  return `${threadId ?? ""}\u0000${turnId ?? ""}`;
+}
+
+function aggregateFeatureCoverage(values) {
+  const normalized = [...new Set((values ?? []).filter(Boolean))];
+  if (normalized.length === 0) return "unknown";
+  if (normalized.length === 1) return normalized[0];
+  return "partial";
+}
+
+function combineFeatureCoverageObjects(items) {
+  const keys = ["historicalRate", "requestBoundary", "serviceTier"];
+  return Object.fromEntries(keys.map((key) => [
+    key,
+    aggregateFeatureCoverage((items ?? []).map((item) => item?.[key]).filter(Boolean)),
+  ]));
 }
 
 function timestampMs(value) {

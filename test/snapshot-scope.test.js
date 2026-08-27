@@ -96,9 +96,17 @@ test("T-DAY-010..033 materializes request-ledger task and agent day slices", () 
   assert.equal(day2.summary.modelRequestCount, 2);
   assert.equal(day2.summary.totalUsage.totalTokens, 200, "unattributed 999-token event must stay diagnostic-only");
 
-  assert.equal(day1.summary.totalCostEstimate.estimatedTasks, 1);
-  assert.equal(day2.summary.totalCostEstimate.estimatedTasks, 2);
-  assert.notEqual(day1.summary.totalCostEstimate.amountUsd, day2.summary.totalCostEstimate.amountUsd);
+  assert.equal(day1.summary.totalCostEstimate.status, "partial");
+  assert.equal(day1.summary.totalCostEstimate.estimatedTasks, 0);
+  assert.equal(day1.summary.totalCostEstimate.partialTasks, 1);
+  assert.equal(day1.summary.totalCostEstimate.estimatedRequests, 1);
+  assert.equal(day1.summary.totalCostEstimate.unavailableRequests, 1);
+  assert.equal(day1.summary.totalCostEstimate.amountUsd, 0.0002);
+  assert.equal(day2.summary.totalCostEstimate.status, "partial");
+  assert.equal(day2.summary.totalCostEstimate.estimatedTasks, 1);
+  assert.equal(day2.summary.totalCostEstimate.partialTasks, 1);
+  assert.equal(day2.summary.totalCostEstimate.amountUsd, 0.0004);
+  assert.equal(full.summary.totalCostEstimate.amountUsd, 0.0006);
 });
 
 test("T-DAY-021/022 keeps lifecycle slices without usage and event-backed slices without timestamps", () => {
@@ -149,6 +157,47 @@ test("T-DAY-040 calendar slices use observedAt and task lifecycle rather than ta
   assert.equal(slices[1].taskCount, 2);
   assert.equal(slices[0].modelRequestCount, 1);
   assert.equal(slices[1].modelRequestCount, 2);
+});
+
+test("T-COST-050/051/052 request costs follow event day and historical rate boundaries", () => {
+  const turnId = "abababab-abab-4bab-8bab-abababababab";
+  const stored = {
+    session: { id: ROOT, title: "historical-cost" },
+    agents: [agent(ROOT, null, 0, true)],
+    tasks: [{
+      rootSessionId: ROOT,
+      threadId: ROOT,
+      turnId,
+      sequence: 1,
+      status: "completed",
+      startedAt: "2026-07-29T23:50:00Z",
+      completedAt: "2026-07-30T00:10:00Z",
+      model: "gpt-5.6-terra",
+      effort: "high",
+    }],
+    modelUsageEvents: [
+      event({ threadId: ROOT, turnId, classification: "generation_start", total: 100_000, observedAt: "2026-07-29T16:58:00-07:00" }),
+      event({ threadId: ROOT, turnId, classification: "verified_increment", total: 100_000, observedAt: "2026-07-30T17:02:00-07:00" }),
+    ],
+  };
+  const day1 = materializeScopedSnapshot(stored, { type: "day", day: "2026-07-29" });
+  const day2 = materializeScopedSnapshot(stored, { type: "day", day: "2026-07-30" });
+  const full = materializeScopedSnapshot(stored, { type: "session" });
+  const calendar = materializeCalendarSlices(stored);
+
+  assert.equal(day1.summary.totalCostEstimate.amountUsd, 0.25);
+  assert.equal(day2.summary.totalCostEstimate.amountUsd, 0.2);
+  assert.equal(full.summary.totalCostEstimate.amountUsd, 0.45);
+  assert.equal(calendar.find((slice) => slice.day === "2026-07-29").costEstimate.amountUsd, 0.25);
+  assert.equal(calendar.find((slice) => slice.day === "2026-07-30").costEstimate.amountUsd, 0.2);
+  assert.deepEqual(
+    day1.agents[0].tasks[0].costEstimate.rateVersions,
+    ["gpt-5.6-terra@2026-07-09"],
+  );
+  assert.deepEqual(
+    day2.agents[0].tasks[0].costEstimate.rateVersions,
+    ["gpt-5.6-terra@2026-07-30"],
+  );
 });
 
 function crossMidnightStoredSession() {
@@ -216,6 +265,9 @@ function event({ threadId, turnId, classification, total, observedAt }) {
     classification,
     observedAt,
     usage: total == null ? null : usage(total),
+    model: "gpt-5.6-terra",
+    serviceTier: "default",
+    pricingContextQuality: "verified",
   };
 }
 

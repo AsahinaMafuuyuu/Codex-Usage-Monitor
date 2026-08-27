@@ -1046,46 +1046,31 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assert.equal(task.effort, "xhigh");
   assert.equal(task.costEstimate.status, "estimated");
   assert.equal(task.costEstimate.amountUsd, 0.0003);
-  assert.equal(selected.pricing.basis, "openai-standard-api-short-context");
-  assert.deepEqual(selected.summary.totalCostEstimate, {
-    status: "partial",
-    amountUsd: 0.0003,
-    currency: "USD",
-    estimatedTasks: 1,
-    unavailableTasks: 1,
+  assert.equal(selected.pricing.basis, "subscription-standard-equivalent");
+  assertCostSummary(selected.summary.totalCostEstimate, {
+    status: "partial", amountUsd: 0.0003, estimatedTasks: 1, unavailableTasks: 1,
+    estimatedRequests: 1, unavailableRequests: 1,
   });
-  assert.deepEqual(selected.summary.subagentCostEstimate, {
-    status: "partial",
-    amountUsd: 0.0003,
-    currency: "USD",
-    estimatedTasks: 1,
-    unavailableTasks: 1,
+  assertCostSummary(selected.summary.subagentCostEstimate, {
+    status: "partial", amountUsd: 0.0003, estimatedTasks: 1, unavailableTasks: 1,
+    estimatedRequests: 1, unavailableRequests: 1,
   });
   const rootAgent = selected.agents.find((agent) => agent.isRoot);
   const childAgent = selected.agents.find((agent) => agent.threadId === CHILD);
-  assert.deepEqual(rootAgent.ownCostEstimate, {
-    status: "unavailable",
-    amountUsd: null,
-    currency: "USD",
-    estimatedTasks: 0,
-    unavailableTasks: 0,
+  assertCostSummary(rootAgent.ownCostEstimate, {
+    status: "unavailable", amountUsd: null, estimatedTasks: 0, unavailableTasks: 0,
+    estimatedRequests: 0, unavailableRequests: 0,
   });
   assert.deepEqual(rootAgent.subtreeCostEstimate, selected.summary.totalCostEstimate);
-  assert.deepEqual(childAgent.ownCostEstimate, {
-    status: "estimated",
-    amountUsd: 0.0003,
-    currency: "USD",
-    estimatedTasks: 1,
-    unavailableTasks: 0,
+  assertCostSummary(childAgent.ownCostEstimate, {
+    status: "estimated", amountUsd: 0.0003, estimatedTasks: 1, unavailableTasks: 0,
+    estimatedRequests: 1, unavailableRequests: 0,
   });
   assert.deepEqual(childAgent.subtreeCostEstimate, selected.summary.subagentCostEstimate);
   const grandchildAgent = selected.agents.find((agent) => agent.threadId === GRANDCHILD);
-  assert.deepEqual(grandchildAgent.ownCostEstimate, {
-    status: "unavailable",
-    amountUsd: null,
-    currency: "USD",
-    estimatedTasks: 0,
-    unavailableTasks: 1,
+  assertCostSummary(grandchildAgent.ownCostEstimate, {
+    status: "unavailable", amountUsd: null, estimatedTasks: 0, unavailableTasks: 1,
+    estimatedRequests: 0, unavailableRequests: 1,
   });
   assert.deepEqual(grandchildAgent.subtreeCostEstimate, grandchildAgent.ownCostEstimate);
 
@@ -1287,8 +1272,9 @@ function makeSubagentRollout(threadId, turnId, totalTokens, options = {}) {
     },
     { timestamp, ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
     { timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: turnId, model, effort: "xhigh" } },
-    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: usage } } },
-    { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "thread_settings_applied", thread_settings: { service_tier: "default" } } },
+    { timestamp, ordinal: 4, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: usage } } },
+    { timestamp, ordinal: 5, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ].map(JSON.stringify).join("\n") + "\n";
 }
 
@@ -1385,8 +1371,9 @@ function makeCalendarRootRollout(rootId, turnId, totalTokens, timestamp) {
     },
     { timestamp, ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: turnId } },
     { timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: turnId, model: "gpt-5.6-terra", effort: "xhigh" } },
-    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: usage } } },
-    { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
+    { timestamp, ordinal: 3, type: "event_msg", payload: { type: "thread_settings_applied", thread_settings: { service_tier: "default" } } },
+    { timestamp, ordinal: 4, type: "event_msg", payload: { type: "token_count", info: { total_token_usage: usage, last_token_usage: usage } } },
+    { timestamp, ordinal: 5, type: "event_msg", payload: { type: "task_complete", turn_id: turnId } },
   ].map(JSON.stringify).join("\n") + "\n";
 }
 
@@ -1517,6 +1504,18 @@ function assertSecurityHeaders(headers) {
   assert.equal(headers.get("x-content-type-options"), "nosniff");
   assert.equal(headers.get("referrer-policy"), "no-referrer");
   assert.match(headers.get("content-security-policy"), /default-src 'self'/u);
+}
+
+function assertCostSummary(actual, expected) {
+  assert.equal(actual.status, expected.status);
+  assert.equal(actual.amountUsd, expected.amountUsd);
+  assert.equal(actual.currency, "USD");
+  assert.equal(actual.basis, "subscription-standard-equivalent");
+  assert.equal(actual.estimatedTasks, expected.estimatedTasks);
+  assert.equal(actual.unavailableTasks, expected.unavailableTasks);
+  assert.equal(actual.estimatedRequests, expected.estimatedRequests);
+  assert.equal(actual.unavailableRequests, expected.unavailableRequests);
+  assert.ok(actual.featureCoverage);
 }
 
 async function authenticateApplication(app) {

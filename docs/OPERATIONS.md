@@ -51,16 +51,16 @@ npm run start:no-open
 
 ## USD 价目维护
 
-进程不会联网获取价格。`src/pricing.js` 内的标准 API 短上下文价目表带 `version`、`capturedAt` 和 `reviewAfter`；页面在复核日期后显示“价目待复核”，但不会静默切换或猜测新价格。
+进程不会联网获取价格。`src/pricing.js` 内维护不可变 Historical Rate Catalog；resolver 按 `model + event.observedAt` 选择唯一有效区间，并由 policy version 决定 long-context / Fast / cache-write 语义。历史记录不能通过覆盖“当前价格”来回写。
 
 更新价目时：
 
-1. 只使用 OpenAI 官方模型/定价页面，逐项核对 input、cached input、cache write 和 output。
-2. 更新价目版本、抓取/复核日期和来源 URL；不要覆盖不再适用的历史证据而不记录变更。
-3. 同步 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)、API 文档和 CHANGELOG。
-4. 为每个变更模型更新精确分项测试，然后运行 `npm test`、`npm run check` 和桌面/窄屏浏览器验收。
+1. 只使用 OpenAI 官方模型/定价/订阅计量材料，核对 effective interval、input/cached/output 以及 feature multiplier。
+2. 新价格新增 interval，不修改已发生历史区间；gap/overlap 必须让测试失败，而不是选最近价。
+3. 同步 [ADR-0019](decisions/0019-request-level-subscription-standard-cost.md)、DESIGN、API 文档和 CHANGELOG。
+4. 更新 T-COST historical/feature fixtures，然后运行 `npm test`、`npm run check`、`git diff --check` 和桌面/窄屏浏览器验收。
 
-价格显示始终是当前标准 API 等值，不是 Codex 订阅实际扣费。不要从 `rate_limits`、plan type 或账号额度百分比反推美元。
+价格显示始终是 **Subscription Standard-Rate Equivalent**，不是 Plus 实际扣费。不要从 `rate_limits`、plan type 或账号额度百分比反推美元。
 
 ## SQLite、备份和重建
 
@@ -132,9 +132,9 @@ DB source_key：sessions/2026/08/25/rollout-abc.jsonl
 
 ### USD 显示“不可估算”或与实际账单不同
 
-任务必须同时有受支持的官方模型映射和一致的 input/cached/cache-write/output 差分才能估算。内部 alias、未知模型、total-only 增长或字段缺失会显示不可估算，不会套用相近模型价格。
+费用必须有 verified Request Ledger usage、事件发生时可解析的历史模型价，以及对应 request pricing evidence。service tier 缺失会保留基础金额但降低为 partial；未知模型、历史价 gap、矛盾 usage 或不支持的 Fast+long-context 组合不会猜测。
 
-即使有金额，它也只代表价目表版本对应的标准 API 短上下文等值。Codex 订阅、超过 272K input 的请求、Fast/Batch/Flex/Priority、区域处理和收费工具调用可能采用不同口径，不能用该字段对账。
+长上下文只按单个 verified usage unit 的 `input >272K` 判定；Fast/priority 只按 event-level service tier 应用。即使 coverage 完整，金额也只是订阅标准价等值，不是 Plus invoice；区域处理和收费工具仍未纳入当前 policy。
 
 ### 端口全部被占用
 

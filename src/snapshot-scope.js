@@ -1,6 +1,6 @@
 import {
   combineCostSummaries,
-  estimateTaskCost,
+  priceTasksByRequestEvents,
   summarizeTaskCosts,
 } from "./pricing.js";
 import { materializeRequestLedgerTasks } from "./request-ledger.js";
@@ -35,7 +35,10 @@ export function materializeScopedSnapshot(stored, scope = { type: "session" }) {
   const sourceEvents = stored?.modelUsageEvents ?? [];
   const tasks = normalized.type === "day"
     ? materializeTaskDaySlices(sourceTasks, sourceEvents, normalized.range)
-    : materializeRequestLedgerTasks(sourceTasks, sourceEvents).map(withCostEstimate);
+    : priceTasksByRequestEvents(
+      materializeRequestLedgerTasks(sourceTasks, sourceEvents),
+      sourceEvents,
+    );
   const agents = materializeAgents(stored?.agents ?? [], tasks, normalized.type);
   const agentsById = new Map(agents.map((agent) => [agent.threadId, agent]));
   const rootAgent = agents.find((agent) => agent.isRoot);
@@ -120,7 +123,10 @@ function materializeTaskDaySlices(tasks, events, range) {
   const scopedTasks = tasks.filter((task) =>
     taskLifecycleIntersects(task, range) || eventBackedTaskKeys.has(taskKey(task.threadId, task.turnId)),
   );
-  return materializeRequestLedgerTasks(scopedTasks, scopedEvents).map(withCostEstimate);
+  return priceTasksByRequestEvents(
+    materializeRequestLedgerTasks(scopedTasks, scopedEvents),
+    scopedEvents,
+  );
 }
 
 function materializeAgents(sourceAgents, tasks, scopeType) {
@@ -247,7 +253,7 @@ function materializeCalendarTaskSlices(tasks, events, now) {
     const materialized = [];
     for (const { task, events: taskEvents } of daySlices.values()) {
       const [slice] = materializeRequestLedgerTasks([task], taskEvents);
-      if (slice) materialized.push(withCostEstimate(slice));
+      if (slice) materialized.push(priceTasksByRequestEvents([slice], taskEvents)[0]);
     }
     result.set(day, materialized);
   }
@@ -265,13 +271,6 @@ function taskLifecycleIntersects(task, range) {
 function eventInRange(event, range) {
   const observedMs = timestampMs(event?.observedAt);
   return Number.isFinite(observedMs) && observedMs >= range.startMs && observedMs < range.endMs;
-}
-
-function withCostEstimate(task) {
-  return {
-    ...task,
-    costEstimate: estimateTaskCost(task.model, task.deltaUsage),
-  };
 }
 
 function normalizeScope(scope) {

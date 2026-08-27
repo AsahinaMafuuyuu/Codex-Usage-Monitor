@@ -677,7 +677,7 @@ function renderTaskTableShell(rows = "") {
       <col class="col-cost"><col class="col-quality">
     </colgroup>
     <thead><tr>
-      <th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="按当前标准 API 短上下文价格估算，不等于 Codex 订阅实际扣费">估算 USD</th><th>质量</th>
+      <th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>
     </tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
@@ -958,7 +958,7 @@ function formatUsdEstimate(estimate) {
 function formatUsdSummary(summary) {
   const value = summary?.amountUsd;
   if (value == null || !Number.isFinite(value)) return "—";
-  return `${summary.status === "partial" ? "≥" : ""}${formatUsdAmount(value)}`;
+  return formatUsdAmount(value);
 }
 
 function formatUsdAmount(value) {
@@ -988,45 +988,50 @@ function formatTimelineSessionCost(value) {
 }
 
 function costSummaryCoverage(summary) {
-  const estimated = summary?.estimatedTasks ?? 0;
-  const unavailable = summary?.unavailableTasks ?? 0;
-  if (estimated + unavailable === 0) return "暂无任务 · 标准 API 等值";
-  if (summary?.status === "partial") return `${estimated} 已估算 · ${unavailable} 不可估算`;
-  if (summary?.status === "estimated") return `${estimated} 个任务 · 标准 API 等值`;
-  return `${unavailable} 个任务不可估算`;
+  const requests = (summary?.estimatedRequests ?? 0) +
+    (summary?.partialRequests ?? 0) +
+    (summary?.unavailableRequests ?? 0);
+  if (requests === 0) return "暂无可计价请求 · 订阅标准价等值";
+  if (summary?.status === "partial") {
+    return `${summary.estimatedRequests ?? 0} 完整 · ${summary.partialRequests ?? 0} 部分 · ${summary.unavailableRequests ?? 0} 不可用`;
+  }
+  if (summary?.status === "estimated") return `${requests} 个请求 · 订阅标准价等值`;
+  return `${requests} 个请求不可估算`;
 }
 
 function costSummaryTitle(summary, scope) {
-  const estimated = summary?.estimatedTasks ?? 0;
-  const unavailable = summary?.unavailableTasks ?? 0;
-  if (estimated + unavailable === 0) return `${scope}暂无任务，因而没有费用估算。`;
+  const requests = (summary?.estimatedRequests ?? 0) +
+    (summary?.partialRequests ?? 0) +
+    (summary?.unavailableRequests ?? 0);
+  if (requests === 0) return `${scope}暂无可计价的 verified Request Ledger usage unit。`;
   if (summary?.status === "partial") {
-    return `${scope}有 ${estimated} 个任务已估算、${unavailable} 个任务不可估算；显示金额只是已知下限，不是 Codex 订阅实际扣费。`;
+    return `${scope}的订阅标准价等值存在 pricing evidence 缺口；显示金额仅为当前可证明部分，不是 Plus 实际扣费。${formatFeatureCoverage(summary.featureCoverage)}`;
   }
   if (summary?.status === "estimated") {
-    return `${scope}共 ${estimated} 个任务，按当前标准 API 短上下文价格估算；不等于 Codex 订阅实际扣费。`;
+    return `${scope}共 ${requests} 个 verified usage unit，按事件发生时的历史订阅标准价及可证明的长上下文/Fast 条件估算；不是 Plus 实际扣费。`;
   }
-  return `${scope}的 ${unavailable} 个任务缺少可审计的模型、价格或 token 明细，无法估算。`;
+  return `${scope}缺少可审计的历史模型价格或 request-level pricing evidence，无法估算。`;
 }
 
 function costEstimateLabel(estimate) {
-  if (estimate?.status !== "estimated") return "不可估算";
-  return estimate.catalogStale ? "价目待复核" : "API 等值";
+  if (estimate?.status === "estimated") return "订阅标准价等值";
+  if (estimate?.status === "partial") return "部分可估";
+  return "不可估算";
 }
 
 function costEstimateTitle(estimate) {
-  if (!estimate || estimate.status !== "estimated") {
-    return ({
-      missing_model: "rollout 未记录任务模型，无法匹配官方价格。",
-      unsupported_model: "该模型没有已验证的官方价格映射。",
-      missing_usage: "任务缺少可计算的 token 差分。",
-      incomplete_usage_breakdown: "任务缺少输入、缓存或输出 token 明细。",
-      inconsistent_usage_breakdown: "任务 token 明细互相矛盾，未生成伪精确费用。",
-    })[estimate?.reason] || "缺少可审计的模型或 token 明细。";
-  }
-  const rates = estimate.ratesPerMillion;
-  const stale = estimate.catalogStale ? " 当前价目已到复核日期。" : "";
-  return `${estimate.pricedModel} 当前标准 API 短上下文等值：输入 $${rates.input}/1M、缓存输入 $${rates.cachedInput}/1M、缓存写入 $${rates.cacheWriteInput}/1M、输出 $${rates.output}/1M。不等于 Codex 订阅实际扣费；未含长上下文、服务层级、区域和工具费用。${stale}`;
+  if (!estimate) return "缺少可审计的 request pricing evidence。";
+  const requests = estimate.requestCount ?? 0;
+  if (requests === 0) return "该任务没有可计价的 verified Request Ledger usage unit。";
+  const rates = (estimate.rateVersions ?? []).join("、") || "历史价目不可用";
+  const reasons = (estimate.reasons ?? []).join("、");
+  const suffix = reasons ? ` 限制：${reasons}。` : "";
+  return `按 ${requests} 个 verified usage unit 逐请求汇总；价目版本：${rates}。${formatFeatureCoverage(estimate.featureCoverage)}不是 Plus 实际扣费。${suffix}`;
+}
+
+function formatFeatureCoverage(coverage) {
+  if (!coverage) return "";
+  return ` 历史价：${coverage.historicalRate ?? "unknown"}；请求边界：${coverage.requestBoundary ?? "unknown"}；服务层级：${coverage.serviceTier ?? "unknown"}。`;
 }
 
 function formatWindow(minutes) {

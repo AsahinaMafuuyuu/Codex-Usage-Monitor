@@ -4,7 +4,6 @@ import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import {
   combineCostSummaries,
-  estimateTaskCost,
   pricingCatalogSummary,
   summarizeTaskCosts,
 } from "./pricing.js";
@@ -528,12 +527,8 @@ function attachTimelineCosts(timeline, tasks) {
     const day = task.day;
     if (!day) continue;
     const key = `${task.rootSessionId}\u0000${day}`;
-    const pricedTask = {
-      ...task,
-      costEstimate: estimateTaskCost(task.model, task.deltaUsage),
-    };
     if (!taskCostsBySessionDay.has(key)) taskCostsBySessionDay.set(key, []);
-    taskCostsBySessionDay.get(key).push(pricedTask);
+    taskCostsBySessionDay.get(key).push(task);
   }
 
   for (const month of timeline.months ?? []) {

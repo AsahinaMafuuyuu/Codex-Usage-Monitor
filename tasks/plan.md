@@ -1089,9 +1089,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] Task cost = `Σ requestCost`，Agent/Session lineage 汇总和 unavailable count 守恒。
-- [ ] Full Session / Day / Timeline 在相同 coverage 下逐项对账一致。
-- [ ] 页面仍可简洁显示 `$xx.xx`，但明确不是实际 Plus 扣费，并能解释 partial/unknown feature coverage。
+- [x] Task cost = `Σ requestCost`，Agent/Session lineage 汇总和 unavailable count 守恒。
+- [x] Full Session / Day / Timeline 在相同 coverage 下逐项对账一致。
+- [x] 页面仍可简洁显示 `$xx.xx`，但明确不是实际 Plus 扣费，并能解释 partial/unknown feature coverage。
 
 **Verification:** `T-COST-040~052`, `T-COST-070~073`；桌面/窄屏 browser contract（若 UI 有变化）。
 

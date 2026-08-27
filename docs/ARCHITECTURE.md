@@ -27,9 +27,9 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 | `src/usage.js` | 规范化六类 token，并以相邻累计快照验证/去重/识别 model-usage event generation |
 | `src/request-ledger.js` | 将 verified model-usage events 按 task 聚合为唯一运行时 `deltaUsage`、质量、coverage 和 request-count 指标 |
 | `src/snapshot-scope.js` | 统一解析本地自然日边界，并从 Request Ledger 物化 full/day Task Slice、Agent lineage、Session summary 与 Calendar Slice |
-| `src/pricing.js` | 用版本化官方标准 API 价目生成逐任务 USD 等值，并合并智能体/会话覆盖摘要 |
+| `src/pricing.js` | 用历史订阅标准价逐 verified Request Ledger usage unit 计算 request cost，并合并 Task/Agent/Session/Day coverage |
 | `src/source-locator.js` | 在当前 Codex home 的绝对 runtime path 与可持久化 `.codex` 相对 source key 之间做安全转换和旧路径恢复 |
-| `src/database.js` | 管理 schema v12、WAL、幂等 upsert、工程元数据、portable source key、Request Ledger、任务定位元数据、可恢复 ingest cursor 和 event-observed session-day 物化索引 |
+| `src/database.js` | 管理 schema v13、WAL、幂等 upsert、工程元数据、portable source key、Request Ledger、event pricing context、可恢复 ingest cursor 和 event-observed session-day 物化索引 |
 | `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation、Timeline dirty-session 同步和事件发布 |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
 | `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、按 session/agent/task 稳定 key 增量 reconcile 的任务明细、额度与健康状态 |
@@ -73,24 +73,27 @@ Request Ledger 的 durable identity 是 portable `(source_key, line_number)`，�
 
 ## 美元等值估算
 
-任务的 `model` 和 `effort` 来自同一 turn 的 `turn_context`。美元字段不是从账号 `rate_limits` 推导，而是在 API snapshot 阶段以持久化的 `model + deltaUsage` 套用 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md) 的版本化官方标准 API 价目：
+schema v13 按 [ADR-0019](decisions/0019-request-level-subscription-standard-cost.md) 将费用事实层与 Token Ledger 分离。parser 在每个 `token_count` ordinal 处冻结最小 pricing context：当时有效的 `model`、`service_tier` 与 evidence quality。已有 v12 Request Ledger 升级时不重算 token；原 rollout 存在时只读 enrichment pricing metadata，源文件缺失则保持 unknown。
+
+费用粒度固定为 verified model sampling usage unit：
 
 ```text
-cost = uncached_input × input_rate
-     + cached_input × cached_rate
-     + cache_write × cache_write_rate
-     + output × output_rate
+verified Request Ledger event
+  -> historical rate(model + observedAt)
+  -> request feature policy(long-context / Fast evidence)
+  -> Request Cost
+  -> Σ Task
+  -> Σ Agent own/subtree
+  -> Σ Session / Day / Timeline
 ```
 
-Reasoning tokens 是 output 的明细，不另加一次。GPT-5.6 cache write 按官方说明使用 1.25× input rate；其他已支持模型的 cache write 保留在普通 uncached input 中。未知模型、缺字段或矛盾明细返回 `unavailable`。
+普通 request 只对 `input - cachedInput`、cached input 和 output 计价；reasoning 是 output 明细，不重复收费。subscription-standard policy 不迁入旧 API cache-write 1.25× surcharge。`input >272K` 只在单个 verified usage unit 上判定，并对整个 request 应用 input/cached 2×、output 1.5×；多个普通 request 的 Task aggregate 即使超过 272K 也不能触发。Fast/priority 只在 event-level service tier 可证明时应用，unknown 不猜；当前 Fast + long-context 组合被视为 unsupported evidence，不叠乘。
 
-Snapshot 先为每个任务重算费用，再沿与 token 完全相同的 `parentThreadId` 拓扑自底向上汇总。每个智能体得到自身任务 `ownCostEstimate` 和包含全部后代的 `subtreeCostEstimate`；会话同时得到主智能体加全部后代的 `totalCostEstimate` 与仅非根智能体的 `subagentCostEstimate`。汇总只相加可估算金额，并累计不可估算任务数量；混合覆盖标为 `partial`，其金额是已知下限而非完整总额。
-
-价目表记录抓取日期、复核日期和官方来源；进程运行时不联网。由于任务 delta 聚合多次响应，无法识别单次请求的 272K 长上下文阈值，也不包含服务层级、区域处理和工具调用费。结果必须始终标为标准 API 短上下文等值估算，而不是 Codex 订阅实际扣费。
+Historical Rate Resolver 使用 `model + observedAt` 选择唯一有效期记录。Terra/Luna 2026-07-30 切换历史价；Sol 的临时 API promotion 不改变本 `subscription-standard-equivalent` policy。Task/Agent/Session/Day 只相加 request-cost summary；`partial.amountUsd` 是当前可证明金额，并同时保留 request/task unavailable 数和 historical-rate/request-boundary/service-tier coverage。它不是 Plus 实际账单，也不能由额度百分比反推；regional processing 与收费工具仍排除。
 
 ## 持久化边界
 
-SQLite schema v12 包含 `sessions`、`agents`、`tasks`、`model_usage_events`、`quota_snapshots`、`ingest_cursors`、`session_day_usage` 和 `derived_state`。`tasks` 只保存任务定位与展示元数据；`model_usage_events` 是唯一 token 审计事实；`agents` 保存 full-session request-derived aggregate，`session_day_usage` 保存可由 Request Ledger 重建的 day aggregate，包含 `model_request_count` 和四类 task quality 计数。day snapshot 不读取持久化 Agent usage，而从目标日 Task Slice 重新沿 `parentThreadId` lineage 计算 own/subtree usage/request/cost。
+SQLite schema v13 包含 `sessions`、`agents`、`tasks`、`model_usage_events`、`quota_snapshots`、`ingest_cursors`、`session_day_usage` 和 `derived_state`。`tasks` 只保存任务定位与展示元数据；`model_usage_events` 是唯一 token 审计事实，并额外保存最小 `model/service_tier/pricing_context_quality` 供费用重算；最终 USD 不持久化。`agents` 保存 full-session request-derived aggregate，`session_day_usage` 保存可由 Request Ledger 重建的 day aggregate。day snapshot 不读取持久化 Agent usage，而从目标日 Task Slice 重新沿 `parentThreadId` lineage 计算 own/subtree usage/request/cost。
 
 旧 schema 的 `rollout_path` / `source_path` 只作为迁移兼容列存在：能够确定映射到 `.codex` 内 rollout 的路径会提取相对 key，随后绝对 locator 置空；无法安全映射的 cursor 不被猜测，而是在后续需要时安全 replay。quota JSON 中的绝对 `sourcePath` 同样被移除。`project_path` 不做这种转换，因为它描述的是会话发生时的工程 `cwd`，不是源文件身份。
 

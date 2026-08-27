@@ -161,24 +161,29 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
     "status": "estimated",
     "amountUsd": 0.012345,
     "currency": "USD",
-    "basis": "openai-standard-api-short-context",
-    "catalogVersion": "2026-08-24",
-    "catalogStale": false,
-    "pricedModel": "gpt-5.6-terra",
-    "ratesPerMillion": {},
-    "components": {},
-    "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "basis": "subscription-standard-equivalent",
+    "policyVersion": "2026-08-26",
+    "requestCount": 1,
+    "estimatedRequests": 1,
+    "partialRequests": 0,
+    "unavailableRequests": 0,
+    "rateVersions": ["gpt-5.6-terra@2026-07-30"],
+    "featureCoverage": {
+      "historicalRate": "verified",
+      "requestBoundary": "verified",
+      "serviceTier": "verified"
+    },
     "limitations": [],
-    "reason": null
+    "reasons": []
   }
 }
 ```
 
 若 task 同时包含 verified 与 unverified/anomaly 事件，`deltaUsage` 只保留 verified 部分并以 `partial` 标记；没有可证明 usage 的完成任务保持 `partial`，活跃任务保持 `unknown`。旧 `boundaryDeltaUsage` / `boundaryQuality` API 字段已在 schema v11 删除；需要复核旧实现时使用 Git tag `usage-boundary-ledger-v1`。
 
-`costEstimate.status` 为 `estimated` 或 `unavailable`；不可估算时 `amountUsd=null` 并给出 `reason`。`pricing` 返回本地价目表版本、抓取/复核日期、官方来源、支持模型和是否待复核。金额是当前标准 API 短上下文等值，不是 Codex 订阅扣费，也不包含无法从 rollout 证明的长上下文、服务层级、区域或工具费用。
+`costEstimate` 先逐 verified Request Ledger usage unit 计算，再在 Task 层求和。状态为 `estimated | partial | unavailable`；`partial.amountUsd` 是当前可证明金额，不代表完整 Plus 扣费。`pricing.basis` 固定为 `subscription-standard-equivalent`。Historical Rate Resolver 使用 event `observedAt` 选择历史价；`input >272K` 的 long-context multiplier 与 Fast 只在 request-level evidence 可证明时应用，unknown service tier 不默认 standard。`featureCoverage` 明确披露 historical rate、request boundary 与 service tier 证据状态。
 
-每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。四类摘要均返回 `estimatedTasks` 和 `unavailableTasks`：全部可计算为 `estimated`，混合覆盖为 `partial`，没有可计算任务为 `unavailable`。`partial.amountUsd` 只是已知任务的下限；页面直接显示该已知金额，并通过 coverage 文案/title 披露不可估算任务，不再用 `≥` 改写数值文本。
+每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。摘要同时返回 task 与 request 级 `estimated/partial/unavailable` 数量及 `featureCoverage`。所有金额都来自 request cost 求和，不能重新对 Task aggregate 套 272K/Fast 规则；页面继续直接显示 `$xx.xx`，partial 状态通过 coverage/title 解释，不在主数值前加 `≥`。
 
 页面从 request-derived `summary.totalUsage` 计算完整会话输入、输出和缓存命中率，从 `agents[].ownUsage` 与 `tasks[].deltaUsage` 计算对应层级命中率。统一公式为 `cachedInputTokens / inputTokens`；费用估算也消费同一套 request-derived 六字段 token。`requestCount` / `modelRequestCount` 和 `tokensPerModelRequest` 只由 verified model usage units 派生。
 

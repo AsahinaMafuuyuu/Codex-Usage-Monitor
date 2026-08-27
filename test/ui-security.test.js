@@ -37,6 +37,12 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /formatTimelineUsageCost\(day\.usage, day\.costEstimate\)/u);
   assert.match(script, /formatTokens\(session\.usage\?\.totalTokens\)/u);
   assert.match(script, /formatTimelineSessionCost\(session\.costEstimate\?\.amountUsd\)/u);
+  assert.match(html, /订阅标准价等值/u);
+  assert.match(script, /订阅标准价等值/u);
+  assert.match(script, /featureCoverage/u);
+  assert.match(script, /verified usage unit/u);
+  assert.doesNotMatch(script, /标准 API 短上下文|API 等值/u);
+  assert.doesNotMatch(script, /summary\.status === "partial" \? "≥"/u);
   assert.match(script, /minimumFractionDigits:\s*2,[\s\S]*?maximumFractionDigits:\s*2/iu);
   assert.match(script, /document\.startViewTransition/u);
   assert.match(script, /prefers-reduced-motion: reduce/u);
