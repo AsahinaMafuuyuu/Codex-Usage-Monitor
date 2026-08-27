@@ -914,9 +914,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] 跨午夜 verified usage 按本地 event day 分桶，六字段 `day1 + day2 == full`。
-- [ ] Task 生命周期跨日或当天存在归属 event 时形成 Task Day Slice；usage/request/coverage/quality 按日裁剪，身份/原始时间不伪造。
-- [ ] v11 -> v12 calendar rebuild 对 Request-ready session `replayedFiles=0`，并建立 `(root_session_id, observed_at, classification)` 查询索引。
+- [x] 跨午夜 verified usage 按本地 event day 分桶，六字段 `day1 + day2 == full`。
+- [x] Task 生命周期跨日或当天存在归属 event 时形成 Task Day Slice；usage/request/coverage/quality 按日裁剪，身份/原始时间不伪造。
+- [x] v11 -> v12 calendar rebuild 对 Request-ready session `replayedFiles=0`，并建立 `(root_session_id, observed_at, classification)` 查询索引。
 
 **Verification:** TEST-DAY-SCOPED-SNAPSHOT T-DAY-001~043，`npm test`, `npm run check`, `git diff --check`。
 
@@ -932,9 +932,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] `snapshot(sessionId, session-scope)` 保持现有完整 session 数值。
-- [ ] `snapshot(sessionId, day-scope)` 的 task/agent/summary/request/cost 均只来自当天。
-- [ ] 当日无关 Agent 被省略，必要祖先保留；Timeline 与 day snapshot 对同一 `session + day` 对账一致。
+- [x] `snapshot(sessionId, session-scope)` 保持现有完整 session 数值。
+- [x] `snapshot(sessionId, day-scope)` 的 task/agent/summary/request/cost 均只来自当天。
+- [x] 当日无关 Agent 被省略，必要祖先保留；Timeline 与 day snapshot 对同一 `session + day` 对账一致。
 
 **Verification:** T-DAY-020~054，`npm test`, `npm run check`。
 
@@ -950,9 +950,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] 无 `day` 的 endpoint 行为兼容；合法 day 返回显式 scope metadata；非法 day 返回 400。
-- [ ] 同一 session 的两个日期请求可连续得到独立 snapshot，不发生 cache/scope 串线。
-- [ ] day-scoped SSE 不接收其他日期 usage；full-session listener 继续得到完整总量。
+- [x] 无 `day` 的 endpoint 行为兼容；合法 day 返回显式 scope metadata；非法 day 返回 400。
+- [x] 同一 session 的两个日期请求可连续得到独立 snapshot，不发生 cache/scope 串线。
+- [x] day-scoped SSE 不接收其他日期 usage；full-session snapshot 继续得到完整总量。
 
 **Verification:** T-DAY-050~062，`npm test`, `npm run check`。
 
@@ -968,9 +968,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] 时间按钮携带 id/day；点击同一 session 的另一日期会重新请求对应 day scope。
-- [ ] Project -> Time 和 Time -> Project 都会切换正确 snapshot scope，不出现“时间导航 + 完整详情”。
-- [ ] scoped live updates 不重置 session navigator、task-table horizontal scroll、Agent 展开状态或 visible anchor。
+- [x] 时间按钮携带 id/day；点击同一 session 的另一日期会重新请求对应 day scope。
+- [x] Project -> Time 和 Time -> Project 都会切换正确 snapshot scope，不出现“时间导航 + 完整详情”。
+- [x] scoped live updates 不重置 session navigator、task-table horizontal scroll、Agent 展开状态或 visible anchor。
 
 **Verification:** T-DAY-070~073，静态 UI tests，desktop + narrow browser E2E，`npm test`, `npm run check`, `git diff --check`。
 
@@ -986,9 +986,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] T-DAY-001~082 中适用测试全部通过；未配置真实 fixture 的项明确 skipped。
-- [ ] `npm test`, `npm run check`, `git diff --check` 和 desktop/narrow E2E 全部通过。
-- [ ] `docs/VERIFICATION.md` 记录 day1/day2/full 六字段对账、Timeline/detail 对账、SSE scope、schema v12 no-replay 证据；Delivery 从“设计已批准”改为“已交付”。
+- [x] T-DAY-001~082 中适用测试全部通过；未配置真实 fixture 的项明确 skipped。
+- [x] `npm test`, `npm run check`, `git diff --check` 和 desktop/narrow E2E 全部通过。
+- [x] `docs/VERIFICATION.md` 记录 day1/day2/full 六字段对账、Timeline/detail 对账、SSE scope、schema v12 no-replay 证据；Delivery 从“设计已批准”改为“已交付”。
 
 **Verification:** 按 TEST-DAY-SCOPED-SNAPSHOT 第 13~15 节执行。
 
@@ -998,12 +998,14 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Estimated scope:** Medium.
 
-### Checkpoint: Day-scoped snapshot ready for implementation
+### Checkpoint: Day-scoped snapshot delivered
 
 - [x] 业务需求、数据边界、日期语义和 scope interface 已冻结。
 - [x] ADR-0018 已记录为什么从 task-start day 切换为 event-observed day。
 - [x] 测试方案已规定跨午夜、迁移、API/SSE、前端二元选择和失败回退流程。
-- [ ] 功能实现尚未开始；开始 Task 1 前应再次阅读 DESIGN + TEST + ADR-0018。
+- [x] 开发前已再次阅读 DESIGN + TEST + ADR-0018，并按测试失败回退流程完成实现、迁移与浏览器验收。
+
+**Delivered evidence (2026-08-26):** deterministic T-DAY fixtures validate `full/day1/day2 = 300/100/200`, six-field conservation, DST 23h/25h boundaries, Timeline/detail cost parity, lifecycle-less event-backed task no-double-count, v11→v12 `replayedFiles=0`, invalid-day 400 and scoped SSE isolation. Full `npm test` reports 62 tests / 61 passed / 0 failed / 1 optional real-fixture skip; `npm run check` and `git diff --check` pass. Chrome/CDP verifies a real same-session `2026-08-27 -> 2026-08-26` Time switch, Project full-scope restoration, desktop stable-key/visual-anchor behavior, and 720px narrow horizontal-scroll/focus/Agent-state preservation.
 
 ## Risks and Mitigations
 

@@ -256,6 +256,22 @@ npm test
 - 结构回归在浏览器内复制一条 Task 并临时插入当前可见 Task 之前；原 Task row DOM 继续存活。插入造成布局增加 66px，visual-anchor 逻辑同步将页面滚动补偿 66px，因此该 surviving Task 的 `getBoundingClientRect().top` 从 `0.40625px` 到 `0.40625px`，top delta 为 `0px`。随后回放原 snapshot 清除临时结构。
 - 本轮浏览器结构数据和额外 spacer 都只存在于 QA 页面内存/DOM；未向 `.codex` 写入测试记录，也未把 Chrome profile、运行时 SQLite 或其他 QA 工件纳入仓库。
 
+### Phase 16：Day-scoped Request Ledger snapshots / schema v12
+
+日期：2026-08-26。按 `DESIGN-DAY-SCOPED-SNAPSHOT.md`、`TEST-DAY-SCOPED-SNAPSHOT.md` 与 ADR-0018 实现 Project=full session、Time=`(sessionId, local day)` 两套显式 snapshot scope，并把 Timeline 日期归属切换为 Request Ledger event `observedAt`。
+
+- T-DAY-001~043：严格 `YYYY-MM-DD` 本地日期校验通过；`America/Los_Angeles` 2026-03-08 / 2026-11-01 分别验证 23h / 25h DST 日边界。确定性跨午夜 fixture 的 full/day1/day2 total token 为 `300 / 100 / 200`，六类 usage 字段逐项满足 `day1 + day2 == full`。duplicate 不增量，unverified/anomaly 降低 quality，未归属的 `999` token event 不进入 Task/Agent/Session 主统计。
+- Task Day Slice 保留原 `startedAt` / `completedAt`，按目标日重新计算 `deltaUsage`、request count、coverage、quality 和 cost；生命周期跨日但当日无 usage 的 task 仍可形成 slice，没有时间字段但存在当天归属 event 的 task 也可形成 slice。Agent Day Slice 只保留相关 Agent 与必要祖先，并从当天 task 重建 own/subtree usage、request、task count 和 cost。
+- 审查阶段新增 T-DAY-022 数据库回归：无 lifecycle timestamp、但有合法 `observedAt` 的 25-token task 只计入 2026-08-27 day slice 一次；Timeline 总量为 `325`、`unattributed=0`，避免旧 `started_at IS NULL` 路径重复计数。
+- schema v12：新增 `(root_session_id, observed_at, classification)` 索引；Request Ledger `observed_at` 写入统一规范为 UTC ISO，v11→v12 同样规范化历史值后从已持久化 `tasks + model_usage_events` 重建 `session_day_usage`。迁移回归确认 `PRAGMA user_version=12`、Timeline 恢复正确且 `replayedFiles=0 / tailedFiles=0`，没有因日期语义迁移重放 Request-ready rollout。
+- T-DAY-050~054：`GET /api/sessions/:id` 保持 full scope，总量 `300`；`?day=2026-08-26` / `?day=2026-08-27` 分别返回 `100 / 200`，非法 `2026-02-31` 返回 400。两天的 Timeline session usage、model request count 与 USD cost 均分别和 day snapshot 对账一致。
+- T-DAY-060~062：day-scoped SSE listener 在只增加另一天 `25` token 后仍保持目标日 `100`；再给目标日增加 `10` token 后更新为 `110`；同一持久化状态下 full snapshot 为 `335`。证明 listener 后续更新按建立连接时 scope 重新物化，不把 full-session snapshot 泄漏给 day listener。
+- T-DAY-070~073 静态 UI 契约覆盖 `selectedDay`、`data-session-day`、`?day=` snapshot/SSE、id+day active identity、Project↔Time scope 切换、stale selection version 防护，以及 Time live update 重新拉取 Timeline 时复用导航 interaction capture/restore。
+- 真实 Chrome/CDP 验收通过：1440×900 下 task table `scrollLeft=357` 在 snapshot 后不变，focus 和 Agent 展开状态保持；结构插入造成页面 66px 布局变化时 visual anchor top delta 为 `0px`。实机 selected session 同时存在 `2026-08-27` 与 `2026-08-26`，Time 模式实际完成同 session 跨日切换，版本标签同步变更，随后 Project 模式恢复 full scope。切到 720×900 后 task table 仍保持水平 overflow，`scrollLeft=240`、focus 与 Agent 展开状态均不变。
+- 全量自动化门槛：`npm test` 为 62 tests / 61 passed / 0 failed / 1 skipped；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选真实五任务 fixture，因此 T-DAY-081 源文件哈希门槛本轮按测试计划记为 skipped。`npm run check` 与 `git diff --check` 均通过。
+- 当前真实监控 SQLite（schema v12）热路径抽样：399 个 session-day、2,934 个 cost task-day slice；`getTimeline()` 约 `29ms`，按 event-day 物化 cost slices 约 `354ms`。该路径只读 SQLite，不扫描 rollout 正文；第一版逐 session/逐日重复过滤约 `596ms`，审查阶段已改为单次 event 分组后按 task/day 物化。
+- 浏览器 QA 只读取本机现有 monitor/rollout，并在页面内存中回放/复制 snapshot；没有写 `.codex`。schema/API/privacy 回归继续确认数据库不新增 prompt、response、message 等正文列。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。

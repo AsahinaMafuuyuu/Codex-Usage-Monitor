@@ -4,6 +4,8 @@
 - **Date:** 2026-08-25
 
 > 2026-08-26 更新：本 ADR 的 SQLite 物化索引与 dirty-session/cursor 增量策略继续有效；`session_day_usage` 的 token 来源已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger，并在 schema v11 按 [ADR-0016](0016-retire-boundary-ledger.md) 删除旧 Boundary 专属质量列，只保留 request-derived usage / model usage unit count / 四类 Request task quality。
+>
+> 2026-08-26 后续更新：schema v12 按 [ADR-0018](0018-day-scoped-request-ledger-snapshot.md) 将 `session_day_usage` 的日期语义从 task `startedAt` 更新为已归属 Request Ledger event `observedAt` 的本地自然日；本 ADR 的持久化索引、dirty-session 和 cursor 增量策略继续有效。
 
 ## Context
 

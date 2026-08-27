@@ -112,9 +112,9 @@ Request Ledger 现在是唯一运行时统计路径。已有 v10 数据库升级
 
 Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0`、Request-only task/agent/session/calendar/cost、跨重启与跨 rollout request continuity、verified generation reset、unexplained anomaly 的 partial 下限，以及 API 不再暴露 boundary 字段。最终验证结果记录在 [VERIFICATION.md](VERIFICATION.md)。
 
-## Phase 16 预开发交付基线：时间视图 Day-scoped Snapshot
+## Phase 16 交付：时间视图 Day-scoped Snapshot / schema v12
 
-**状态：设计已批准，尚未进入功能实现。** 当前运行时仍是“Timeline 左侧按日聚合、点击后右侧读取完整 session”的旧行为；本节描述下一阶段必须实现的业务需求、规范和边界，不能把它误写成已经交付的功能。
+**状态：已实现并通过交付门槛。** Project 模式继续读取完整 session；Time 模式以 `(sessionId, local day)` 为选择身份，右侧 Task / Agent / Token / Request / Cost 与左侧 Timeline 使用同一 Request Ledger event-day 语义。
 
 ### 业务需求
 
@@ -135,14 +135,17 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - USD 继续是标准 API 等值估算，不是 Codex 订阅账单或额度换算。
 - `.codex` 继续严格只读；schema v12 的日历语义迁移应直接利用已持久化 Request Ledger，不因迁移重放 Request-ready 历史。
 
-### 实施契约
+### 已交付实现
 
 - 设计事实源：[DESIGN-DAY-SCOPED-SNAPSHOT.md](DESIGN-DAY-SCOPED-SNAPSHOT.md)。
 - 架构决策：[ADR-0018](decisions/0018-day-scoped-request-ledger-snapshot.md)。
-- 开发后测试门槛：[TEST-DAY-SCOPED-SNAPSHOT.md](TEST-DAY-SCOPED-SNAPSHOT.md)。
+- 测试门槛：[TEST-DAY-SCOPED-SNAPSHOT.md](TEST-DAY-SCOPED-SNAPSHOT.md)。
 - 任务拆分：[`tasks/plan.md`](../tasks/plan.md) Phase 16。
-
-开发完成后，如果任何定向或全量测试失败，必须重新对照设计文档和 ADR 判断是实现偏离、测试偏离还是设计歧义；默认修正实现而不是弱化测试。只有定向测试、`npm test`、`npm run check`、`git diff --check` 和必要的浏览器验收全部通过后，才能把本节状态改为“已交付”，并把真实执行证据写入 `docs/VERIFICATION.md`。
+- `src/snapshot-scope.js` 集中实现严格本地日/DST 边界、Task Day Slice、Agent lineage、Session summary 与 Calendar Slice；Timeline 与详情不再维护两套日期规则。
+- schema v12 从已持久化 `tasks + model_usage_events` 重建 event-observed `session_day_usage`，规范化 `observed_at` 为 UTC ISO，并新增 `(root_session_id, observed_at, classification)` 查询索引；Request-ready v11 迁移 `replayedFiles=0`。
+- snapshot/SSE 支持严格 `?day=YYYY-MM-DD`；SSE listener 后续更新按建立连接时 scope 重新物化。
+- Time 前端保存 `selectedDay` 并以 id/day 二元组选择；同一 session 可跨日分别打开。Project↔Time 会重新请求正确 scope；Time live update 重新拉取 SQL Timeline，同时保持导航滚动/展开/焦点与 ADR-0017 的任务表/Agent 交互稳定性。
+- 定向、全量与真实 Chrome/CDP 证据见 [VERIFICATION.md](VERIFICATION.md#phase-16day-scoped-request-ledger-snapshots--schema-v12)。
 
 ## 交付核对
 
@@ -153,4 +156,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] 数据口径、隐私边界和真实样本证据已明确区分。
 - [x] 前端视觉迭代已提供独立接手文档与逐决策版本控制规则。
 - [x] Request Ledger 已在 reconciliation、增量 tail、重启、schema v9→v10 迁移和真实历史回放门槛通过后成为正式主统计事实源；schema v11 已结束迁移期并退役 Boundary Ledger，旧实现由 `usage-boundary-ledger-v1` 保存。
-- [x] Phase 16 的 Day-scoped Snapshot 业务边界、设计、ADR 和测试回退闭环已冻结；功能实现与验证仍待后续开发。
+- [x] Phase 16 Day-scoped Snapshot 已按 ADR-0018 和 schema v12 交付；Timeline/detail、HTTP/SSE、前端二元选择和 live interaction 验证证据已归档。

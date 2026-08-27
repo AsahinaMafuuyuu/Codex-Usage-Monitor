@@ -16,6 +16,7 @@
 - Windows portable source locator：以 `.codex` 相对 source key 持久化 rollout 身份，并在当前用户/自定义 Codex home 下运行时重绑定。
 - Verified model-usage event classifier 与内部 Request Ledger：逐字段用累计快照验证 `last_token_usage`，区分 verified increment、duplicate、generation start、unverified 和 anomaly，并以 portable source identity 幂等持久化。
 - Phase 13 双账本 reconciliation 迁移证据与 verified model usage unit 指标；Task / Agent / Session / Timeline 可报告 request count 与 tokens/request，同时明确这些单元不等价于 HTTP 请求。
+- Day-scoped snapshot domain seam：严格本地自然日/DST 边界、Task Day Slice、Agent lineage、Session summary 与 Calendar Slice 统一复用 Request Ledger event `observedAt` 语义。
 
 ### Changed
 
@@ -40,6 +41,8 @@
 - SQLite 升级到 schema v9：新增 privacy-safe `model_usage_events` 双账本；旧 v8 session 在首次迁移时安全 replay 一次补建事件账本，完成后继续复用 cursor。Request Ledger 在 reconciliation 门槛通过前不替换现有 Task Boundary Ledger 聚合。
 - SQLite 升级到 schema v10：verified Request Ledger 成为 Task / Agent / Session / Timeline、缓存命中率和费用估算的主用量来源；`tasks.delta_usage/quality` 继续保留 Boundary Ledger 审计证据。`session_day_usage` 增加 `model_request_count`，v9→v10 只重建派生 Agent/Calendar aggregate，不因事实源切换重放 rollout。
 - SQLite 升级到 schema v11：结束双账本迁移期，删除 Boundary Ledger parser 计算、`tasks` 中的 baseline/end/delta/quality 与全部 `delta_*` 列、Timeline 的 Boundary 专属质量列、API boundary 审计字段和 `reconcile:request-ledger` CLI；已有 Request Ledger 的 v10 session 迁移时不重读 rollout。旧方案实现固定在 annotated tag `usage-boundary-ledger-v1`（`4a38ba6`），退役完成后的 Request-only 基线标记为 `usage-request-ledger-v1`。
+- SQLite 升级到 schema v12：`session_day_usage` 从已持久化 `tasks + model_usage_events` 按 event `observedAt` 本地日重建，新增 `(root_session_id, observed_at, classification)` 范围索引，并将历史/新增 `observed_at` 统一规范为 UTC ISO。Request-ready v11 session 迁移不重放 rollout。
+- `/api/sessions/:id` 与 `/events` 支持严格 `?day=YYYY-MM-DD` scope；Time 导航以 `(sessionId, day)` 为选择身份，Project 模式保持完整 session。day SSE 后续更新持续使用连接时 scope，Time 模式同时刷新 SQL Timeline 并保留导航交互状态。
 - 默认数据库和相对 `CODEX_MONITOR_DB` 都从工程根解析；工程外绝对 `CODEX_MONITOR_DB` 环境变量会回退项目默认数据库并提示，失效的 `CODEX_MONITOR_HOME` 则回退当前 Windows 用户 `.codex`。任务 preview 通过当前 Codex home 重新绑定 source key，不再依赖数据库中的旧绝对路径。
 
 ## [0.1.0] - 2026-08-24

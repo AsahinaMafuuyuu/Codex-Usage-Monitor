@@ -54,7 +54,7 @@ codex-usage-monitor\
    └─ archived_sessions\...
 ```
 
-从 schema v8 起，数据库不再用 `C:\Users\...\.codex\...` 绝对路径作为 cursor/任务来源身份，而持久化 `sessions/.../rollout-*.jsonl` 形式的 `.codex` 相对 source key。schema v9 新增 `model_usage_events` Request Ledger，schema v10 在历史双账本验证通过后将其提升为主聚合事实源；schema v11 进一步删除旧 Boundary Ledger 的 parser 状态、SQLite task delta/quality 列、API 审计字段和 reconciliation CLI，使 Request Ledger 成为唯一运行时统计方案。v10→v11 只重建任务/日历派生存储，不重读已经具备 Request Ledger 的 rollout。新电脑用户名、工程盘符或 `.codex` 根目录改变后，启动时会把 source key 绑定到当前 Codex home；文件本身未变化时可以继续原 byte cursor，而不是仅因为路径变化重扫历史。首次创建全新数据库仍需要一次性建立历史索引。
+从 schema v8 起，数据库不再用 `C:\Users\...\.codex\...` 绝对路径作为 cursor/任务来源身份，而持久化 `sessions/.../rollout-*.jsonl` 形式的 `.codex` 相对 source key。schema v9 新增 `model_usage_events` Request Ledger，schema v10 将其提升为主聚合事实源，schema v11 删除旧 Boundary Ledger，使 Request Ledger 成为唯一运行时统计方案。schema v12 进一步把日期归属从 task `startedAt` 改为已归属 Request Ledger event `observedAt` 的本地自然日；v11→v12 直接从已持久化 `tasks + model_usage_events` 重建日历，不重读 Request-ready rollout。新电脑用户名、工程盘符或 `.codex` 根目录改变后，启动时会把 source key 绑定到当前 Codex home；文件本身未变化时可以继续原 byte cursor。
 
 旧 Boundary Ledger 实现没有被改写历史：annotated tag `usage-boundary-ledger-v1` 固定在 commit `4a38ba6`，仅用于历史复核或回归比较；完成退役后的 Request-only 基线使用 annotated tag `usage-request-ledger-v1`。主线不再提供旧统计模式开关。
 
@@ -63,7 +63,7 @@ codex-usage-monitor\
 ## 页面能力
 
 - 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话，只完整解析当前选择及其递归子智能体；目录缺失时明确归入“未归类”。
-- 左侧可切换“工程”和“时间”两种导航；时间视图按本地时区从月展开到日，再列出当天 session，并同时展示已审计 total token 与按同一 Request Ledger 即时计算的标准 API USD 等值。历史只在首次导入时建立 task/cursor ledger，之后按变化 session 增量 tail，并直接查询轻量 SQLite session-day 索引。
+- 左侧可切换“工程”和“时间”两种导航；工程模式打开完整 session，时间模式以 `(sessionId, local day)` 为选择身份，右侧 Task / Agent / Token / Request / Cost 只统计当天。时间视图按月→日→session 展开，并展示与右侧同口径的 total token 和标准 API USD 等值。
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
@@ -93,14 +93,14 @@ codex-usage-monitor\
 
 - `history.jsonl` 不用于 token 统计，因为它没有 token 字段。
 - 用量来源是 `.codex/sessions/**/rollout-*.jsonl` 和 `.codex/archived_sessions`。
-- schema v11 中任务 token 只来自经相邻 `total_token_usage` 逐字段验证的 Request Ledger；`last_token_usage` 只作为候选新增量被验证，绝不裸累加。不存在第二套运行时边界差分或 fallback。
+- schema v12 中任务 token 仍只来自经相邻 `total_token_usage` 逐字段验证的 Request Ledger；`last_token_usage` 只作为候选新增量被验证，绝不裸累加。不存在第二套运行时边界差分或 fallback。
 - `modelRequestCount` 表示已验证且归属任务的模型用量单元，`tokensPerModelRequest` 只由这些单元计算；它们不保证与 HTTP 请求或 Codex 服务端计费请求一一对应。
 - 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
 - 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度；页面显示的是剩余比例，底层仍保留 Codex 原始 `used_percent` 语义。只有 `resetsAt + windowMinutes` 能确认处于同一窗口时才做单调收敛，进入新 reset 后允许比例重新降低。
 - 美元值使用版本化官方标准 API 价目计算，不是 Codex 订阅实际扣费；不包含无法从任务汇总证明的长上下文、服务层级、区域或工具费用。部分任务不可估算时，任务数量和 coverage 文案仍被保留，显示金额只是已知部分。
 - Request Ledger task 的 `complete` 表示其已归属事件均可验证且六类字段完整；若同 task 仍有 unverified/anomaly，只累计已验证下限并降为 `partial`，不从其他统计口径补值。
-- 时间以 UTC ISO-8601 存储，页面按浏览器本地时区显示。
-- 按日总量来自所有已发现 rollout 的 request-derived task usage，包含未被用户打开过的 session；日期仍按 task `startedAt` 的本地日期归属，并保留质量覆盖。
+- Request Ledger `observedAt` 以规范化 UTC ISO-8601 持久化；页面按监控器/浏览器本地时区解释自然日。
+- 按日总量来自所有已发现 rollout 的 request-derived task usage，包含未被用户打开过的 session；日期按已归属 event `observedAt` 的本地自然日归属。跨午夜 task 可在多个日期出现，但每个日期只统计该日 verified usage/request/cost；未归属 event 不进入主统计。
 - 按日总量是本机 rollout 审计汇总，不等同 Codex 个人资料中的订阅额度或账单 token；两者可能因日期边界和服务端口径不同而不相等。
 
 实现依据和证据链接记录在 [架构说明](docs/ARCHITECTURE.md) 与 [ADR 索引](docs/decisions/README.md)。
