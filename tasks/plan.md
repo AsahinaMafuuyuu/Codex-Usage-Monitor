@@ -1007,6 +1007,127 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Delivered evidence (2026-08-26):** deterministic T-DAY fixtures validate `full/day1/day2 = 300/100/200`, six-field conservation, DST 23h/25h boundaries, Timeline/detail cost parity, lifecycle-less event-backed task no-double-count, v11→v12 `replayedFiles=0`, invalid-day 400 and scoped SSE isolation. Full `npm test` reports 62 tests / 61 passed / 0 failed / 1 optional real-fixture skip; `npm run check` and `git diff --check` pass. Chrome/CDP verifies a real same-session `2026-08-27 -> 2026-08-26` Time switch, Project full-scope restoration, desktop stable-key/visual-anchor behavior, and 720px narrow horizontal-scroll/focus/Agent-state preservation.
 
+## Phase 17: Subscription Standard-Rate Cost / Request-level Pricing
+
+### Overview
+
+把现有 Task-level “current API short-context equivalent” 重构为 **Subscription Standard-Rate Equivalent**。Request Ledger 的 token classification/usage 保持不变；Pricing 以单个 verified model-usage unit 为基础，按 `model + observedAt + event-level service tier + feature evidence` 选择历史标准价和 multiplier，再向 Task / Agent / Session / Day / Timeline 汇总。
+
+设计事实源：
+
+- [`docs/DESIGN-SUBSCRIPTION-STANDARD-COST.md`](../docs/DESIGN-SUBSCRIPTION-STANDARD-COST.md)
+- [`docs/TEST-SUBSCRIPTION-STANDARD-COST.md`](../docs/TEST-SUBSCRIPTION-STANDARD-COST.md)
+- [ADR-0019](../docs/decisions/0019-request-level-subscription-standard-cost.md)
+
+### Architecture decisions
+
+- Token Ledger 与 Pricing Ledger 分离；费用重构不得改变 verified token 数。
+- Historical Rate Catalog 按有效期选价，禁止今天的价格回算全部历史。
+- Sol 临时 token-based USD 促销不切换 subscription-standard policy；Terra/Luna 2026-07-30 是付费订阅 usage 的历史切价点。
+- Long context 必须逐 usage unit/request evidence 判断 `input >272K`，不能看 Task aggregate。
+- Fast 使用 event 当时有效 `service_tier`；`priority` 与 `fast` 统一为 Fast。
+- 当前官方不支持 Fast + long context，冲突时不得叠乘。
+- subscription-standard policy 不直接沿用 API cache-write 1.25× surcharge。
+
+### Task 1: Freeze pricing policy, historical catalog, and test gate
+
+**Description:** 把用户确认的订阅标准价等值、历史价、历史模型、长上下文、Fast、cache-write 和 coverage 语义写成实现前事实源，并建立失败回退测试门槛。
+
+**Acceptance criteria:**
+
+- [x] DESIGN 明确 Request-level pricing、historical resolver、272K 边界和 service-tier evidence。
+- [x] TEST 定义 `T-COST-001~083` 的单元/迁移/聚合/真实历史验收。
+- [x] ADR-0019 记录为什么不继续使用 Task-level API-equivalent estimator。
+
+**Verification:** `git diff --check`；人工核对 DESIGN / TEST / ADR / Delivery 之间术语、边界和官方来源一致。
+
+**Dependencies:** Phase 16 已交付的 Request Ledger + event-observed day scope。
+
+**Files likely touched:** `docs/DESIGN-SUBSCRIPTION-STANDARD-COST.md`, `docs/TEST-SUBSCRIPTION-STANDARD-COST.md`, `docs/decisions/0019-request-level-subscription-standard-cost.md`, `docs/DELIVERY.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Small.
+
+### Task 2: Implement historical catalog and request-cost engine
+
+**Description:** 用不可变有效期目录替代单张当前 rate card，并建立只消费单个 verified Request Ledger usage unit 的 request-cost engine。先实现普通订阅标准价、历史模型/价格和 coverage，再启用 feature policy。
+
+**Acceptance criteria:**
+
+- [ ] `model + observedAt` 唯一选择历史 rate；gap/overlap/unknown model 显式失败。
+- [ ] Sol promotion exclusion、Terra/Luna 7/30 切价、GPT-5.5/GPT-5.4 历史 fixture 固定通过。
+- [ ] 普通 request cost 正确处理 cached input、reasoning 和 subscription-policy cache-write，不双算。
+
+**Verification:** `T-COST-001~013`；`npm test -- --test-name-pattern="T-COST|cost|pricing"`（实现时按实际测试框架调整精确过滤命令）。
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/pricing.js`, `test/pricing.test.js`，必要时新增只读 catalog module/data file。
+
+**Estimated scope:** Medium.
+
+### Task 3: Prove long-context boundary and persist event pricing context
+
+**Description:** 在不改 Token Ledger 数值的前提下，验证 `last_token_usage`/verified usage unit 是否满足 272K billing-request threshold 的证据门槛；同时按 ordinal 采集 event model/service tier，必要时升级 schema v13 并为已有历史执行只读 metadata enrichment。
+
+**Acceptance criteria:**
+
+- [ ] request-boundary evidence gate 有明确 pass/fail 证据；未通过时只能输出 candidate/partial。
+- [ ] `272000` normal / `272001` long、mixed-request Task、Task aggregate false-positive fixtures 全部通过。
+- [ ] event model/service tier as-of ordinal 可持久化；v12→v13 前后六字段 usage/classification 完全不变。
+
+**Verification:** `T-COST-020~034`, `T-COST-060~065`；真实 rollout enrichment 前后 SHA-256 一致。
+
+**Dependencies:** Task 2.
+
+**Files likely touched:** `src/rollout-parser.js`, `src/database.js`, `src/pricing.js`, `test/parser.test.js`, `test/database-server.test.js`, `test/pricing.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Rebuild cost aggregation and public contract
+
+**Description:** Task/Agent/Session/Day/Timeline 不再从 aggregate usage 直接估价，而只汇总 request-cost summaries；API/UI 同步改成 subscription-standard-equivalent 并保留 historical/feature coverage。
+
+**Acceptance criteria:**
+
+- [ ] Task cost = `Σ requestCost`，Agent/Session lineage 汇总和 unavailable count 守恒。
+- [ ] Full Session / Day / Timeline 在相同 coverage 下逐项对账一致。
+- [ ] 页面仍可简洁显示 `$xx.xx`，但明确不是实际 Plus 扣费，并能解释 partial/unknown feature coverage。
+
+**Verification:** `T-COST-040~052`, `T-COST-070~073`；桌面/窄屏 browser contract（若 UI 有变化）。
+
+**Dependencies:** Tasks 2-3.
+
+**Files likely touched:** `src/pricing.js`, `src/snapshot-scope.js`, `src/monitor.js`, `src/server.js`, `public/**`, `test/database-server.test.js`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 5: Reconcile real history and close delivery
+
+**Description:** 对真实历史生成可审计的新旧 Cost reconciliation，分别量化 historical-rate、subscription-policy、long-context、Fast 和 unavailable coverage 的贡献；执行全量门槛并更新当前行为文档。
+
+**Acceptance criteria:**
+
+- [ ] reconciliation 不只输出总差额，而能拆分每类 policy adjustment。
+- [ ] 真实历史 long-context candidate/request、service-tier coverage 和未知模型均有数量/Token/金额覆盖报告。
+- [ ] `npm test`, `npm run check`, `git diff --check`、只读源哈希和适用浏览器验收全部通过后，Delivery/Verification 才标记 Phase 17 implemented。
+
+**Verification:** `T-COST-080~083` + TEST 文档第 12~13 节全部门槛。
+
+**Dependencies:** Tasks 2-4.
+
+**Files likely touched:** `scripts/` reconciliation tool、`docs/VERIFICATION.md`, `docs/DELIVERY.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `README.md`, `CHANGELOG.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Phase 17 design frozen
+
+- [x] 用户选择 Subscription Standard-Rate Equivalent，而不是当前 API promotional equivalent。
+- [x] 历史模型/历史价格、long context、Fast 与 cache-write 边界已冻结。
+- [x] Request-level pricing 与 Token Ledger 不变量已冻结。
+- [x] 测试失败必须回到 DESIGN/ADR 的闭环已写入测试门槛。
+- [ ] 后续开发智能体在实现前重新阅读 DESIGN + TEST + ADR-0019。
+- [ ] 通过全部 T-COST 门槛后再宣称 Phase 17 已交付。
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
@@ -1016,10 +1137,14 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 | Cumulative counters reset | High | Request classifier accepts only a validated new generation whose request usage is independently proven by cumulative/last invariants; unexplained rollback remains anomaly/health evidence and cannot enter precise totals |
 | Windows file notifications are dropped | Medium | Combine file watching with one-second stat reconciliation |
 | Prompt text leaks into the archive | High | Never persist previews; serve them only after authenticated, explicit expansion |
+| Task aggregate 被误当成 long-context request | High | Long-context 只允许在 event/request boundary evidence 通过后逐 usage unit 判断；测试锁定多 request false positive |
+| 当前价重估导致历史金额漂移 | High | Historical Rate Catalog 使用 immutable effective intervals；gap 不猜最近价 |
+| 历史 Fast metadata 未持久化 | Medium | 原 rollout 存在时只读 enrichment；缺源时保持 unknown/partial，不默认 standard |
+| Pricing 重构污染 Token Ledger | High | v12→v13 migration test 对 classification + 六字段 usage 做逐行不变量验证 |
 
 ## Open Questions
 
-None. The user explicitly requested USD cost; ADR-0007 bounds it to a versioned official standard API short-context equivalent rather than billing-grade Codex subscription cost.
+- Phase 17 实现前必须完成 long-context request-boundary evidence gate：现有 verified model usage unit 是否可以严格作为官方 272K billing-request threshold 的边界；证据不足时设计已经规定降级为 candidate/partial，而不是猜测。
 
 ## Decision Log
 

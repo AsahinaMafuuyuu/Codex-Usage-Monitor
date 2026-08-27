@@ -147,6 +147,36 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - Time 前端保存 `selectedDay` 并以 id/day 二元组选择；同一 session 可跨日分别打开。Project↔Time 会重新请求正确 scope；Time live update 重新拉取 SQL Timeline，同时保持导航滚动/展开/焦点与 ADR-0017 的任务表/Agent 交互稳定性。
 - 定向、全量与真实 Chrome/CDP 证据见 [VERIFICATION.md](VERIFICATION.md#phase-16day-scoped-request-ledger-snapshots--schema-v12)。
 
+## Phase 17 交付规划：Subscription Standard-Rate Cost / Request-level Pricing
+
+**状态：设计与测试门槛已冻结，尚未实现代码。** 本阶段把现有“当前 API 短上下文等值”升级为更适合订阅用户审计的 **Subscription Standard-Rate Equivalent**，同时保持 Request Ledger 的 Token 事实链不变。
+
+### 业务需求
+
+- **按订阅标准价等值比较使用价值。** USD 不再跟随 GPT-5.6 Sol 的临时 API/token-based 促销；Sol 的 included-plan/legacy metering 官方声明未变，因此本 policy 继续使用促销前标准价等值。
+- **历史价格必须按发生时间选择。** Terra/Luna 2026-07-30 降价会反映到付费订阅 usage，因此该日期是历史价目切点；历史 GPT-5.5/GPT-5.4 等模型按其实际 recorded model 和可证明 rate interval 计算。
+- **费用计算下沉到 Request Ledger usage unit。** Task/Agent/Session 只汇总 request cost，不能先把 Task token 合并后再判断 feature surcharge。
+- **长上下文按单次请求判定。** 只有 request-level evidence 可证明且 input `>272K` 才应用 full-request `input 2× / cached 2× / output 1.5×`；Task 累计超过 272K 不构成长上下文。
+- **Fast 按事件当时 service tier 判定。** `fast`/`priority` 使用模型对应 multiplier；缺 evidence 不猜。当前官方 Fast FAQ 不支持 long context，因此两者同时出现不做倍率叠乘。
+- **API cache-write surcharge 不直接迁入订阅口径。** `cacheWriteInputTokens` 保留审计，但第一版 subscription-standard policy 按非 cached input 处理，直到出现明确的订阅/legacy metering cache-write 规则。
+
+### 证据与边界
+
+- Token Ledger 仍只接受 verified `generation_start` / `verified_increment`，本阶段不得改变六字段 usage、classification 或 day-scope 归属。
+- 现有 model usage unit 不自动宣称等于 HTTP/billing request；启用 272K multiplier 前必须完成 request-boundary evidence gate。证据不足时只能报告 candidate/partial。
+- 历史 service tier 目前没有持久化。原 rollout 存在时允许只读 metadata enrichment；原文件不存在时保持 unknown，不能默认 `default`。
+- USD 始终只是订阅标准价等值，不是 Plus 实际扣费，也不能用于反推 5 小时/周额度。
+- Regional processing、web search、image/voice/tool fee 不在本阶段范围，后续必须作为独立 feature policy 且有可证明本地 evidence 后再加入。
+
+### 交付事实源
+
+- 方案设计：[DESIGN-SUBSCRIPTION-STANDARD-COST.md](DESIGN-SUBSCRIPTION-STANDARD-COST.md)。
+- 测试门槛：[TEST-SUBSCRIPTION-STANDARD-COST.md](TEST-SUBSCRIPTION-STANDARD-COST.md)。
+- 架构决策：[ADR-0019](decisions/0019-request-level-subscription-standard-cost.md)。
+- 实施任务：[`tasks/plan.md`](../tasks/plan.md) Phase 17。
+
+后续智能体开发前必须重新阅读上述 DESIGN + TEST + ADR。测试失败时先回到设计核对，不允许通过放宽 historical-rate、272K、service-tier 或 coverage 断言绕过失败。
+
 ## 交付核对
 
 - [x] 源码、静态页面和测试在独立项目目录中。
@@ -157,3 +187,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] 前端视觉迭代已提供独立接手文档与逐决策版本控制规则。
 - [x] Request Ledger 已在 reconciliation、增量 tail、重启、schema v9→v10 迁移和真实历史回放门槛通过后成为正式主统计事实源；schema v11 已结束迁移期并退役 Boundary Ledger，旧实现由 `usage-boundary-ledger-v1` 保存。
 - [x] Phase 16 Day-scoped Snapshot 已按 ADR-0018 和 schema v12 交付；Timeline/detail、HTTP/SSE、前端二元选择和 live interaction 验证证据已归档。
+- [x] Phase 17 Subscription Standard-Rate Cost 的设计、ADR、测试门槛和交付边界已冻结；实现尚未开始。
