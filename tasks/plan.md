@@ -1107,9 +1107,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] reconciliation 不只输出总差额，而能拆分每类 policy adjustment。
-- [ ] 真实历史 long-context candidate/request、service-tier coverage 和未知模型均有数量/Token/金额覆盖报告。
-- [ ] `npm test`, `npm run check`, `git diff --check`、只读源哈希和适用浏览器验收全部通过后，Delivery/Verification 才标记 Phase 17 implemented。
+- [x] reconciliation 不只输出总差额，而能拆分每类 policy adjustment。
+- [x] 真实历史 long-context candidate/request、service-tier coverage 和未知模型均有数量/Token/金额覆盖报告。
+- [x] `npm test`, `npm run check`, `git diff --check`、只读源哈希和适用浏览器验收全部通过后，Delivery/Verification 才标记 Phase 17 implemented。
 
 **Verification:** `T-COST-080~083` + TEST 文档第 12~13 节全部门槛。
 
@@ -1125,8 +1125,8 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 - [x] 历史模型/历史价格、long context、Fast 与 cache-write 边界已冻结。
 - [x] Request-level pricing 与 Token Ledger 不变量已冻结。
 - [x] 测试失败必须回到 DESIGN/ADR 的闭环已写入测试门槛。
-- [ ] 后续开发智能体在实现前重新阅读 DESIGN + TEST + ADR-0019。
-- [ ] 通过全部 T-COST 门槛后再宣称 Phase 17 已交付。
+- [x] 开发前已重新阅读 DESIGN + TEST + ADR-0019，并按失败闭环实施。
+- [x] 全部 T-COST 门槛通过后才将 Phase 17 标记为已交付。
 
 ## Risks and Mitigations
 
@@ -1144,7 +1144,7 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 ## Open Questions
 
-- Phase 17 实现前必须完成 long-context request-boundary evidence gate：现有 verified model usage unit 是否可以严格作为官方 272K billing-request threshold 的边界；证据不足时设计已经规定降级为 candidate/partial，而不是猜测。
+- 无。long-context request-boundary gate 已按 bounded semantics 关闭：verified usage unit 可作为 model sampling usage boundary 使用 272K threshold，但不宣称 HTTP invoice identity；重复广播继续依赖 cumulative advancement 验证。
 
 ## Decision Log
 

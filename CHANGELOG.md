@@ -6,6 +6,7 @@
 
 ### Added
 
+- Phase 17 Subscription Standard-Rate Equivalent：历史模型/价格有效期、逐 Request Ledger usage unit 定价、272K long-context、Fast/service-tier evidence、coverage 与只读 reconciliation CLI。
 - 逐任务模型和 reasoning effort 展示。
 - 基于版本化官方标准 API 价目的 USD 短上下文等值估算、分项、覆盖状态与价目复核提示。
 - 每个智能体自身/含后代费用，以及完整会话/仅子智能体费用汇总；部分覆盖显示已知下限。
@@ -20,6 +21,8 @@
 
 ### Changed
 
+- SQLite 升级到 schema v13：`model_usage_events` 新增最小 `model / service_tier / pricing_context_quality`，`ingest_cursors` 保存当前 pricing context 以支持增量 tail；v12→v13 保持 classification 与六字段 usage 不变，原 rollout 存在时只读 enrichment，缺源则保留 unknown。
+- Snapshot/Timeline USD 从旧 Task-level 当前 API 短上下文 estimator 切换为 `Σ requestCost(event)`。历史价按 `model + observedAt` 选择；Sol 临时 API promotion 不进入订阅标准价 policy；Terra/Luna 7/30 历史切价、长上下文与 Fast 只在 event evidence 可证明时应用。partial 金额不再用 `≥` 改写主数值。
 - 额度刷新按钮的手写 SVG 替换为本地安装的 Lucide `refresh-cw` 图标；Lucide UMD 资源由 loopback 服务固定映射并受现有 `script-src 'self'` CSP 约束，不引入 CDN 或外部运行时请求。
 - 额度卡右上角不再显示“最新/可能过期”文字，改为可点击的刷新图标；点击时调用本地 `GET /api/quota?refresh=1` 重新发现并扫描最近 rollout，按钮在请求期间旋转并禁用重复点击，完成后直接更新 5 小时/1 周剩余额度。该操作不会调用模型或远端服务；Codex 尚未产生新 `rate_limits` 时会明确提示没有新快照。
 - 账号额度 current state 对同一 reset 窗口的并发 `rate_limits` 回退做保守 reconciliation：窗口内 `usedPercent` 只向最大已观测值收敛，reset 变化后重新开始；解决并发快照中 `100%` 被更晚的 `97%` 覆盖的问题。额度卡同时从“已使用”改为“剩余”，显示 `100 - usedPercent`，因此满额耗尽显示 `剩余 0%`。

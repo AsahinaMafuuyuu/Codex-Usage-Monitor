@@ -1,6 +1,6 @@
 # ADR-0019：以 Request Ledger usage unit 计算订阅标准价等值费用
 
-- **Status:** Accepted / implementation pending
+- **Status:** Accepted
 - **Date:** 2026-08-26
 
 ## Context
@@ -49,11 +49,11 @@ Request Ledger 已保存逐 verified model-usage unit 的六字段 usage 和 `ob
 
 ## Consequences
 
-- `src/pricing.js` 将从 Task-level current rate card 演化为 historical catalog + request-cost engine + feature policy。
-- `model_usage_events` 预计需要保存 event-level model/service-tier/evidence metadata，schema 预计升级为 v13。
-- v12 历史 service tier 未持久化，若原 rollout 仍存在，需要一次只读 metadata enrichment；rollout 不存在时该 feature coverage 保持 unknown。
-- Task/Agent/Session/Timeline 的 token 数不应因本 ADR 变化；变化只发生在 cost basis、coverage 和金额。
-- ADR-0007 的“API-equivalent”费用方向在 Phase 17 实现完成后将被本 ADR 替代；实现前仍可作为当前代码行为的历史说明。
+- `src/pricing.js` 已拆为 historical catalog + request-cost engine + feature policy；旧 Task-level current rate card 仅保留 reconciliation 用途。
+- `model_usage_events` 已保存 event-level model/service-tier/evidence metadata，schema 升级为 v13。
+- v12 历史 service tier 通过原 rollout 的只读 metadata enrichment 补齐；rollout 不存在时该 feature coverage 保持 unknown。
+- Task/Agent/Session/Timeline 的 token 数不因本 ADR 变化；变化只发生在 cost basis、coverage 和金额。
+- ADR-0007 的“API-equivalent”费用方向已被本 ADR 替代；旧 estimator 仅作为 reconciliation 基线保留，不再进入 Snapshot/Timeline 运行时费用路径。
 
 ## Official references
 

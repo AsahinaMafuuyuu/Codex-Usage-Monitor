@@ -10,7 +10,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0004](0004-loopback-session-security.md) | Accepted | 采用 loopback 和启动会话安全边界 |
 | [0005](0005-file-observer-and-sse.md) | Accepted | 使用文件观察、轮询与 SSE 实时更新 |
 | [0006](0006-node-builtins-and-vanilla-ui.md) | Accepted | 使用 Node 内置模块和无框架页面 |
-| [0007](0007-versioned-api-equivalent-cost.md) | Accepted | 用版本化官方 API 价目估算任务、智能体和会话美元等值 |
+| [0007](0007-versioned-api-equivalent-cost.md) | Superseded by ADR-0019 | 历史标准 API 短上下文等值 estimator |
 | [0008](0008-project-directory-session-grouping.md) | Accepted | 按根会话工程目录分组并统一缓存命中率口径 |
 | [0009](0009-editorial-lineage-interface.md) | Accepted | 使用编辑式账页、连续谱系轨和显式角色标签 |
 | [0010](0010-typography-hierarchy.md) | Accepted | 建立实体、正文、辅助与机器数据分离的字体职责和可读字号层级 |
@@ -22,7 +22,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0016](0016-retire-boundary-ledger.md) | Accepted | 退役 Boundary Ledger 运行时/存储/API，以 Request Ledger 作为唯一统计事实源 |
 | [0017](0017-live-interaction-stable-rendering.md) | Accepted | 用稳定 DOM key、局部 reconcile 与视觉锚点保护实时更新期间的滚动、展开和焦点状态 |
 | [0018](0018-day-scoped-request-ledger-snapshot.md) | Accepted | 时间视图按 Request Ledger `observedAt` 构造 `session + day` slice，工程视图保留完整 session |
-| [0019](0019-request-level-subscription-standard-cost.md) | Accepted / implementation pending | 逐 Request Ledger usage unit 按历史订阅标准价、长上下文与 Fast evidence 计算 USD 等值 |
+| [0019](0019-request-level-subscription-standard-cost.md) | Accepted | 逐 Request Ledger usage unit 按历史订阅标准价、长上下文与 Fast evidence 计算 USD 等值 |
 
 ## 新增 ADR
 

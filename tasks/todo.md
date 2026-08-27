@@ -87,5 +87,5 @@
 - [x] Add schema v13 pricing-context enrichment with read-only historical rollout handling
 - [x] Rebuild Task/Agent/Session/Day/Timeline cost from request-cost summaries
 - [x] Replace API-equivalent wording with subscription-standard-equivalent plus explicit coverage
-- [ ] Run real-history cost reconciliation separating historical-rate, long-context, Fast, and unknown coverage effects
-- [ ] Execute all T-COST gates and close Phase 17 delivery only after full verification
+- [x] Run real-history cost reconciliation separating historical-rate, long-context, Fast, and unknown coverage effects
+- [x] Execute all T-COST gates and close Phase 17 delivery only after full verification

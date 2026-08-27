@@ -1,6 +1,6 @@
 # Subscription Standard-Rate Cost 测试方案
 
-**状态：** Planned / implementation gate
+**状态：** Implemented / passed
 
 **设计依据：** [DESIGN-SUBSCRIPTION-STANDARD-COST.md](DESIGN-SUBSCRIPTION-STANDARD-COST.md)
 
@@ -354,15 +354,15 @@ new subscription-standard-equivalent
 
 Phase 17 测试验收至少要求：
 
-- [ ] Historical rate boundary 全部通过。
-- [ ] Sol promotion 不污染 subscription-standard policy。
-- [ ] Request-level long-context 边界和 full-request multiplier 通过。
-- [ ] Task-level 272K false positive 被回归测试锁死。
-- [ ] Fast as-of-ordinal attribution 通过。
-- [ ] Fast + long-context 不发生未证明的倍率叠乘。
-- [ ] cache-write 不按 API surcharge 双重收费。
-- [ ] Token Ledger migration invariant 逐字段通过。
-- [ ] Full/Day/Timeline cost 守恒。
-- [ ] 真实历史报告能解释新旧费用差异来源。
-- [ ] `.codex` 源文件哈希不变。
-- [ ] 全量测试、语法检查、diff check 通过。
+- [x] Historical rate boundary 全部通过。
+- [x] Sol promotion 不污染 subscription-standard policy。
+- [x] Request-level long-context 边界和 full-request multiplier 通过。
+- [x] Task-level 272K false positive 被回归测试锁死。
+- [x] Fast as-of-ordinal attribution 通过。
+- [x] Fast + long-context 不发生未证明的倍率叠乘。
+- [x] cache-write 不按 API surcharge 双重收费。
+- [x] Token Ledger migration invariant 逐字段通过。
+- [x] Full/Day/Timeline cost 守恒。
+- [x] 真实历史报告能解释新旧费用差异来源。
+- [x] `.codex` 源文件哈希不变。
+- [x] 全量测试、语法检查、diff check 通过。

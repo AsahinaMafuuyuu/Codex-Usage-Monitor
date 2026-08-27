@@ -147,9 +147,9 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - Time 前端保存 `selectedDay` 并以 id/day 二元组选择；同一 session 可跨日分别打开。Project↔Time 会重新请求正确 scope；Time live update 重新拉取 SQL Timeline，同时保持导航滚动/展开/焦点与 ADR-0017 的任务表/Agent 交互稳定性。
 - 定向、全量与真实 Chrome/CDP 证据见 [VERIFICATION.md](VERIFICATION.md#phase-16day-scoped-request-ledger-snapshots--schema-v12)。
 
-## Phase 17 交付规划：Subscription Standard-Rate Cost / Request-level Pricing
+## Phase 17 交付：Subscription Standard-Rate Cost / Request-level Pricing
 
-**状态：实施中；Tasks 1-3 已完成，公共聚合/API/UI 与真实历史 reconciliation 尚未闭环。** 本阶段把现有“当前 API 短上下文等值”升级为更适合订阅用户审计的 **Subscription Standard-Rate Equivalent**，同时保持 Request Ledger 的 Token 事实链不变。
+**状态：已实现并通过交付门槛。** 本阶段把现有“当前 API 短上下文等值”升级为更适合订阅用户审计的 **Subscription Standard-Rate Equivalent**，同时保持 Request Ledger 的 Token 事实链不变。
 
 ### 业务需求
 
@@ -177,6 +177,16 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 
 后续智能体开发前必须重新阅读上述 DESIGN + TEST + ADR。测试失败时先回到设计核对，不允许通过放宽 historical-rate、272K、service-tier 或 coverage 断言绕过失败。
 
+### 已交付实现与真实历史证据
+
+- Historical Rate Catalog 按 `model + observedAt` 唯一选价；Terra/Luna 2026-07-30 切价、Sol promotion exclusion、GPT-5.4/5.5 历史边界均有 fixture。
+- Snapshot / Agent / Session / Day / Timeline USD 全部改为 `Σ requestCost(event)`，不再从 Task aggregate 重跑 threshold/multiplier；partial 金额直接显示 `$xx.xx`，coverage/title 解释证据缺口，不恢复 `≥`。
+- schema v13 为 `model_usage_events` 增加 `model / service_tier / pricing_context_quality`，cursor 保存 pricing context；v12→v13 migration 逐字段证明 classification + 六类 usage 不变。原 rollout 存在时只读 enrichment，缺源时保持 unknown。
+- 真实历史 reconciliation 扫描 `425` 个 rollout / `242` 个 root session / `2,368` 个 task / `41,089` 个 verified usage unit，总 verified token `5,223,166,739`；源文件 `hashChangedFiles=0`。
+- 真实 service-tier evidence：`default=23,743`、`fast=0`、`priority=0`、`unknown=17,346`。因此真实历史 Fast adjustment 为 `$0`，不是缺失实现；unknown 继续降低 coverage，不并入 default。
+- `input >272K` 的 verified usage unit 共 `571` 个，input token `166,551,689`。真实可比较的 `1,792` 个 task 上，旧 current API equivalent `$2703.97106036` 经 subscription-policy `+$155.09507810`、historical-rate `+$50.84818823`、long-context `+$106.61941600`、Fast `+$0` 后得到 `$3016.53374269`；重建 delta 为 `$0`。所有可定价 usage unit 的已知新金额合计 `$3087.22782329`，其中部分 task 因旧 estimator 或历史证据不可比较而不进入 additive subset。
+- 真实 Chrome/CDP 桌面与 720px 验收通过；snapshot 更新保持任务表横向滚动、focus、Agent 展开和 visual anchor，Project↔Time scope 仍正常。
+
 ## 交付核对
 
 - [x] 源码、静态页面和测试在独立项目目录中。
@@ -187,4 +197,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] 前端视觉迭代已提供独立接手文档与逐决策版本控制规则。
 - [x] Request Ledger 已在 reconciliation、增量 tail、重启、schema v9→v10 迁移和真实历史回放门槛通过后成为正式主统计事实源；schema v11 已结束迁移期并退役 Boundary Ledger，旧实现由 `usage-boundary-ledger-v1` 保存。
 - [x] Phase 16 Day-scoped Snapshot 已按 ADR-0018 和 schema v12 交付；Timeline/detail、HTTP/SSE、前端二元选择和 live interaction 验证证据已归档。
-- [ ] Phase 17 Subscription Standard-Rate Cost：Tasks 1-3 已完成（historical catalog、request-cost engine、long/Fast policy、schema v13、event pricing context 与只读 enrichment）；Tasks 4-5 尚待完成后才能标记交付。
+- [x] Phase 17 Subscription Standard-Rate Cost 已按 ADR-0019 完成交付：historical catalog、request-cost engine、long/Fast policy、schema v13、event pricing context、只读 enrichment、request-derived aggregation、API/UI coverage 与真实历史 reconciliation 均已闭环。

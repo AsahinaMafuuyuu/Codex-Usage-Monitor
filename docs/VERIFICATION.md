@@ -272,6 +272,25 @@ npm test
 - 当前真实监控 SQLite（schema v12）热路径抽样：399 个 session-day、2,934 个 cost task-day slice；`getTimeline()` 约 `29ms`，按 event-day 物化 cost slices 约 `354ms`。该路径只读 SQLite，不扫描 rollout 正文；第一版逐 session/逐日重复过滤约 `596ms`，审查阶段已改为单次 event 分组后按 task/day 物化。
 - 浏览器 QA 只读取本机现有 monitor/rollout，并在页面内存中回放/复制 snapshot；没有写 `.codex`。schema/API/privacy 回归继续确认数据库不新增 prompt、response、message 等正文列。
 
+### Phase 17：Subscription Standard-Rate Cost / schema v13
+
+日期：2026-08-26。按 `DESIGN-SUBSCRIPTION-STANDARD-COST.md`、`TEST-SUBSCRIPTION-STANDARD-COST.md` 与 ADR-0019 将旧 Task-level current API estimator 替换为逐 verified Request Ledger usage unit 的 Subscription Standard-Rate Equivalent。
+
+- T-COST-001~013：Historical Rate Catalog、Terra/Luna 2026-07-30 切价、Sol 2026-08-21 promotion exclusion、GPT-5.4/5.5 历史有效期、cached input、reasoning 与 subscription-policy cache-write 语义通过。gap/unknown 不选择最近价。
+- T-COST-020~034：`272000` 为 normal、`272001` 为 long；full-request input/cached 2×、output 1.5×；两个 200K request 的 Task aggregate=400K 不误触发 long。Fast multiplier 按模型族，missing tier 保持 partial，Fast+long-context 不叠乘。
+- request-boundary evidence gate 以 bounded semantics 通过：verified Request Ledger usage unit 可作为 Codex model sampling usage boundary 使用 272K threshold；不宣称等于 HTTP invoice identity。duplicate `token_count` 仍必须由 cumulative advancement 去重。
+- T-COST-033/060/061：同一 thread 内 `turn_context` model 与 `thread_settings_applied.service_tier` 按 event ordinal as-of 绑定，后续设置不会回写旧 request。schema v13 只持久化最小 `model/service_tier/pricing_context_quality`。
+- T-COST-062~065：v12→v13 migration 前后 `classification + input/cached/cache-write/output/reasoning/total` 逐字段完全一致。原 rollout 存在时只读 enrichment pricing metadata，测试 SHA-256 前后相同；原文件不存在时 service tier/model pricing context 保持 unknown；新 schema 不保存正文或完整 settings payload。
+- T-COST-040~052：Task cost 只等于 `Σ requestCost`；Agent own/subtree、Session total/subagent-only、Full/Day/Timeline 只汇总 request-derived summary。跨 2026-07-29/07-30 的 Terra fixture 分别得到 `$0.25 / $0.20`，完整 session `$0.45`，Timeline 与 day detail 一致。
+- T-COST-070~073：API `basis=subscription-standard-equivalent`；Task/summary 暴露 request/task counts 与 historical-rate/request-boundary/service-tier coverage；UI 主数值不恢复 `≥`，title 明确 partial 为可证明部分而非 Plus 实际扣费；历史 recorded model 不被改写成当前模型。
+- T-COST-080~083：新增 `npm run reconcile:subscription-cost` 只读 reconciliation CLI。脱敏 fixture 证明 subscription-policy、historical-rate、long-context、Fast adjustment 可分离且加总 delta=0，源 rollout 哈希不变。
+- 真实历史 reconciliation：`425` rollout、`242` root session、`2,368` task、`41,089` verified usage unit、`5,223,166,739` verified token。`571` 个 usage unit 的 input `>272K`，合计 input `166,551,689`。
+- 真实 service-tier inventory：`default=23,743`、`fast=0`、`priority=0`、`unknown=17,346`。因此真实 Fast adjustment 为 `$0`；unknown 不并入 default。未知/无历史价格 usage unit `301` 个，其中 `missing_model=92`、`historical_rate_unavailable=209`；`service_tier_unknown=17,289` 个 request 保留已知基础金额但降低 coverage。
+- additive reconciliation subset 覆盖 `1,792` 个可比较 task：旧 current API equivalent `$2703.97106036`；subscription-policy adjustment `+$155.09507810`；historical-rate `+$50.84818823`；long-context `+$106.61941600`；Fast `$0`；新 subscription-standard equivalent `$3016.53374269`，`additivityDeltaUsd=0`。所有存在可证明新金额的 usage unit 合计 `$3087.22782329`。
+- 真实 `.codex` 只读门槛：reconciliation 前后 425 个 rollout 全部 SHA-256 相同，`hashChangedFiles=0 / sourceReadOnly=true`。
+- 真实 Chrome/CDP：1440px 常规 snapshot 前后 task wrap/Agent details DOM identity、`scrollLeft=357`、focus、展开状态保持；结构变化 visual-anchor top delta `0px`。720px 下横向 overflow 保持，`scrollLeft=240`、focus 与展开状态不变；同 session Time 跨日和 Project full-scope 恢复通过。
+- 最终全量门槛：`npm test` 为 `86 tests / 85 passed / 0 failed / 1 skipped`；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选五任务样本。`npm run check` 与 `git diff --check` 均通过；真实历史只读证据由上面的 425-file reconciliation 独立满足。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。
@@ -286,4 +305,4 @@ npm test
 
 ## 证据解释
 
-自动化测试证明 parser 对已覆盖结构的行为、数据库内容边界、定价公式和 HTTP 安全控制。它不证明 rollout 是长期稳定公共格式，也不证明客户端 token 差分或 API 等值等于服务端/Codex 订阅账单。页面的数据质量标签、USD 限制和 [架构证据边界](ARCHITECTURE.md#官方证据边界) 必须保留。
+自动化测试证明 parser 对已覆盖结构的行为、数据库内容边界、定价公式和 HTTP 安全控制。它不证明 rollout 是长期稳定公共格式，也不证明本地 Request Ledger / Subscription Standard-Rate Equivalent 等于服务端实际 Plus 账单。页面的数据质量标签、USD 限制和 [架构证据边界](ARCHITECTURE.md#官方证据边界) 必须保留。

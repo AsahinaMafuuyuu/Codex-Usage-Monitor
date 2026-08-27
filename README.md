@@ -30,6 +30,7 @@ npm run start:no-open
 | `npm run start:no-open` | 启动但不自动打开浏览器 |
 | `npm test` | 运行 parser、SQLite、HTTP 和文档契约测试 |
 | `npm run check` | 检查关键 JavaScript 文件语法 |
+| `npm run reconcile:subscription-cost` | 只读扫描本机 rollout，输出旧 API→订阅标准价的可审计费用差异与 coverage |
 | `npm run verify:live-ui -- "<authenticated URL>"` | 对已启动页面执行 Chrome/CDP 实时交互回归 |
 
 前端保持无框架实现。额度刷新按钮使用本地安装的 `lucide@1.34.0` 图标库，并由本地 HTTP 服务从 `/vendor/lucide.min.js` 提供，不依赖 CDN，也不需要放宽现有 `script-src 'self'` CSP。

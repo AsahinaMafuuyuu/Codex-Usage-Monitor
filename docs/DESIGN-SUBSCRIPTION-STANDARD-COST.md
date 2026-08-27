@@ -1,6 +1,6 @@
 # Subscription Standard-Rate Cost 设计说明
 
-**状态：** Approved for implementation
+**状态：** Implemented
 
 **设计日期：** 2026-08-26
 
