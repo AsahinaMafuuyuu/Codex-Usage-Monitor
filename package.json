@@ -8,11 +8,13 @@
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
     "start:no-open": "node --disable-warning=ExperimentalWarning src/server.js --no-open",
     "test": "node --disable-warning=ExperimentalWarning --test",
-    "check": "node --check src/source-locator.js && node --check src/database.js && node --check src/repository.js && node --check src/server.js && node --check src/monitor.js && node --check src/rollout-parser.js && node --check src/pricing.js && node --check src/request-ledger.js && node --check src/snapshot-scope.js && node --check scripts/audit-request-ledger.js && node --check scripts/benchmark-request-ledger.js && node --check scripts/reconcile-subscription-cost.js && node --check scripts/verify-live-ui.js && node --check public/app.js",
+    "check": "node --check src/source-locator.js && node --check src/database.js && node --check src/repository.js && node --check src/server.js && node --check src/monitor.js && node --check src/rollout-parser.js && node --check src/pricing.js && node --check src/request-ledger.js && node --check src/request-identity.js && node --check src/request-ownership.js && node --check src/snapshot-scope.js && node --check scripts/audit-request-ledger.js && node --check scripts/audit-unknown-records.js && node --check scripts/benchmark-request-ledger.js && node --check scripts/reconcile-subscription-cost.js && node --check scripts/reconcile-phase18.js && node --check scripts/verify-live-ui.js && node --check public/app.js",
     "verify:live-ui": "node scripts/verify-live-ui.js",
     "audit:request-ledger": "node --disable-warning=ExperimentalWarning scripts/audit-request-ledger.js",
+    "audit:unknown-records": "node --disable-warning=ExperimentalWarning scripts/audit-unknown-records.js",
     "benchmark:request-ledger": "node --disable-warning=ExperimentalWarning scripts/benchmark-request-ledger.js",
-    "reconcile:subscription-cost": "node --disable-warning=ExperimentalWarning scripts/reconcile-subscription-cost.js"
+    "reconcile:subscription-cost": "node --disable-warning=ExperimentalWarning scripts/reconcile-subscription-cost.js",
+    "reconcile:phase18": "node --disable-warning=ExperimentalWarning scripts/reconcile-phase18.js"
   },
   "engines": {
     "node": ">=24.0.0"

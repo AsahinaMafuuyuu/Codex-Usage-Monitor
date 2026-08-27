@@ -4,6 +4,7 @@ import {
   summarizeTaskCosts,
 } from "./pricing.js";
 import { materializeRequestLedgerTasks } from "./request-ledger.js";
+import { resolveCanonicalRequestOwnership } from "./request-ownership.js";
 import { addUsage, sumTaskUsage, zeroUsage } from "./usage.js";
 
 const QUALITY_KEYS = ["complete", "provisional", "partial", "unknown"];
@@ -31,8 +32,13 @@ export function resolveLocalDayRange(day) {
 
 export function materializeScopedSnapshot(stored, scope = { type: "session" }) {
   const normalized = normalizeScope(scope);
-  const sourceTasks = stored?.tasks ?? [];
-  const sourceEvents = stored?.modelUsageEvents ?? [];
+  const ownership = resolveCanonicalRequestOwnership({
+    agents: stored?.agents ?? [],
+    tasks: stored?.tasks ?? [],
+    events: stored?.modelUsageEvents ?? [],
+  });
+  const sourceTasks = ownership.tasks;
+  const sourceEvents = ownership.events;
   const tasks = normalized.type === "day"
     ? materializeTaskDaySlices(sourceTasks, sourceEvents, normalized.range)
     : priceTasksByRequestEvents(
@@ -81,13 +87,19 @@ export function materializeScopedSnapshot(stored, scope = { type: "session" }) {
       qualityCounts,
       totalCostEstimate: summarizeTaskCosts(tasks),
       subagentCostEstimate: summarizeTaskCosts(subagentTasks),
+      ownershipReconciliation: ownership.reconciliation,
     },
   };
 }
 
 export function materializeCalendarSlices(stored, { now = Date.now() } = {}) {
-  const sourceTasks = stored?.tasks ?? [];
-  const sourceEvents = stored?.modelUsageEvents ?? [];
+  const ownership = resolveCanonicalRequestOwnership({
+    agents: stored?.agents ?? [],
+    tasks: stored?.tasks ?? [],
+    events: stored?.modelUsageEvents ?? [],
+  });
+  const sourceTasks = ownership.tasks;
+  const sourceEvents = ownership.events;
   const tasksByDay = materializeCalendarTaskSlices(sourceTasks, sourceEvents, now);
   return [...tasksByDay.entries()]
     .sort(([left], [right]) => left.localeCompare(right))
@@ -121,7 +133,7 @@ function materializeTaskDaySlices(tasks, events, range) {
     if (knownTasks.has(key)) eventBackedTaskKeys.add(key);
   }
   const scopedTasks = tasks.filter((task) =>
-    taskLifecycleIntersects(task, range) || eventBackedTaskKeys.has(taskKey(task.threadId, task.turnId)),
+    eventBackedTaskKeys.has(taskKey(task.threadId, task.turnId))
   );
   return priceTasksByRequestEvents(
     materializeRequestLedgerTasks(scopedTasks, scopedEvents),
@@ -225,27 +237,6 @@ function materializeCalendarTaskSlices(tasks, events, now) {
     const day = localDayForInstant(event.observedAt);
     if (!day) continue;
     ensureSlice(day, task).events.push(event);
-  }
-
-  const nowMs = now instanceof Date ? now.getTime() : Number(now);
-  const effectiveNow = Number.isFinite(nowMs) ? nowMs : Date.now();
-  for (const task of tasks) {
-    const startMs = timestampMs(task.startedAt);
-    if (!Number.isFinite(startMs)) continue;
-    const completedMs = timestampMs(task.completedAt);
-    const endMs = Number.isFinite(completedMs) ? completedMs : effectiveNow;
-    if (endMs < startMs) continue;
-    const startDay = localDayForInstant(startMs);
-    const endDay = localDayForInstant(endMs);
-    if (!startDay || !endDay) continue;
-    let cursor = rangeFor(startDay);
-    while (cursor.day <= endDay) {
-      if (taskLifecycleIntersects(task, cursor)) ensureSlice(cursor.day, task);
-      const next = new Date(cursor.endMs);
-      const nextDay = formatLocalDay(next);
-      if (nextDay <= cursor.day) break;
-      cursor = rangeFor(nextDay);
-    }
   }
 
   const result = new Map();

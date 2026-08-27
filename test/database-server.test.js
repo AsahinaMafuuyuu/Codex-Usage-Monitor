@@ -70,9 +70,12 @@ test("calendar aggregate includes unselected sessions and local-day quality", as
 
   const hotTimeline = await monitor.timeline();
   assert.equal(hotTimeline.usage.totalTokens, timeline.usage.totalTokens);
-  assert.equal(monitor.health().timeline.sessionsSynced, 0);
-  assert.equal(monitor.health().timeline.replayedFiles, 0);
+  assert.equal(monitor.health().timeline.sessionsSynced, 2);
+  assert.equal(monitor.health().timeline.replayedFiles, 2);
   assert.equal(monitor.health().timeline.tailedFiles, 0);
+  assert.equal(monitor.health().timeline.projectionDirtySessions, 0);
+  assert.equal(monitor.health().timeline.indexQueueLength, 0);
+  assert.equal(monitor.health().timeline.activeIndexJobs, 0);
 });
 
 test("incremental timeline survives restart without replaying unchanged rollout history", async (t) => {
@@ -112,6 +115,45 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   assert.equal(second.database.getModelUsageEvents(ROOT).length, 1);
 });
 
+test("parser semantics version reindexes stale cursor diagnostics without changing schema version", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-parser-version-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `rollout-parser-version-${ROOT}.jsonl`),
+    makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"),
+  );
+  let second = null;
+  t.after(async () => {
+    await second?.monitor.close();
+    second?.database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const first = await bootMonitor(codexHome, databasePath);
+  await first.monitor.timeline();
+  await first.monitor.close();
+  first.database.close();
+
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    UPDATE sessions SET parser_version=14 WHERE id='${ROOT}';
+    UPDATE ingest_cursors SET unknown_records=1978 WHERE root_session_id='${ROOT}';
+  `);
+  legacy.close();
+
+  second = await bootMonitor(codexHome, databasePath);
+  await second.monitor.runBackgroundIndexer();
+  const state = second.database.getSessionIndexState(ROOT);
+  assert.equal(second.database.getHealthStats().schemaVersion, 14);
+  assert.equal(state.parserVersion, 15);
+  assert.equal(state.parserCurrent, true);
+  assert.equal(second.database.getHealthStats().unknownRecords, 0);
+  assert.equal(second.monitor.health().timeline.replayedFiles, 1);
+});
+
 test("portable source keys survive Codex home relocation without path-only replay", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-portable-"));
   const oldCodexHome = join(directory, "old-profile", ".codex");
@@ -146,8 +188,9 @@ test("portable source keys survive Codex home relocation without path-only repla
   assert.equal(second.monitor.health().timeline.dirtySessions, 0);
 
   const selected = await second.monitor.selectSession(ROOT);
-  assert.equal(selected.health.parser.restoredFiles, 1);
-  assert.equal(selected.health.parser.replayedFiles, 0);
+  assert.equal(selected.health.parser, null);
+  assert.equal(second.monitor.health().timeline.sessionsSynced, 0);
+  assert.equal(second.monitor.health().timeline.replayedFiles, 0);
   assert.equal(second.database.getModelUsageEvents(ROOT).length, 1);
   const preview = await second.monitor.taskPreview(CHILD, TURN);
   assert.equal(preview.available, true);
@@ -248,7 +291,8 @@ test("incremental timeline tails only the changed session after rollout append",
   );
   monitor.pendingPaths.add(firstPath);
   await monitor.processPendingPaths();
-  assert.equal(monitor.health().timeline.dirtySessions, 1);
+  await monitor.runBackgroundIndexer();
+  assert.equal(monitor.health().timeline.dirtySessions, 0);
 
   const updated = await monitor.timeline();
   assert.equal(updated.usage.totalTokens, 400);
@@ -314,7 +358,7 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(calendar.months[0].days[0].sessions[0].tokensPerModelRequest, 42);
   assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
   assert.equal(reopened.getHealthStats().calendarRows, 1);
-  assert.equal(reopened.getHealthStats().schemaVersion, 13);
+  assert.equal(reopened.getHealthStats().schemaVersion, 14);
   assert.equal(reopened.getHealthStats().modelUsageEventRows, 1);
   assert.equal(reopened.getHealthStats().cacheSize, -2000);
   assert.equal(reopened.getHealthStats().mmapSize, 0);
@@ -352,11 +396,49 @@ test("T-COST-062 v12 to v13 preserves classification and all six usage fields", 
   database = new MonitorDatabase(path);
   const after = database.db.prepare(evidenceSql).all();
   assert.deepEqual(after, before);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 13);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 14);
   const event = database.getModelUsageEvents(ROOT)[0];
   assert.equal(event.model, null);
   assert.equal(event.serviceTier, null);
   assert.equal(event.pricingContextQuality, null);
+});
+
+test("T-ID-007 schema v13 to v14 backfills durable request identity from persisted ledger evidence", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v13-v14-identity-"));
+  const path = join(directory, "usage.sqlite");
+  let database = new MonitorDatabase(path);
+  t.after(async () => {
+    database?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  database.replaceSession(snapshot(), { persistQuotas: false });
+  database.close();
+  database = null;
+
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    DROP TABLE canonical_requests;
+    ALTER TABLE event_ownership DROP COLUMN canonical_request_id;
+    ALTER TABLE model_usage_events DROP COLUMN request_native_field;
+    ALTER TABLE model_usage_events DROP COLUMN request_identity_reason;
+    ALTER TABLE model_usage_events DROP COLUMN request_identity_kind;
+    ALTER TABLE model_usage_events DROP COLUMN request_identity;
+    PRAGMA user_version=13;
+  `);
+  legacy.close();
+
+  database = new MonitorDatabase(path);
+  const row = database.db.prepare(`
+    SELECT request_identity, request_identity_kind, request_identity_reason
+    FROM model_usage_events
+    WHERE root_session_id=?
+    LIMIT 1
+  `).get(ROOT);
+  assert.match(row.request_identity, /^reqr_[0-9a-f]{64}$/u);
+  assert.equal(row.request_identity_kind, "reconstructed");
+  assert.equal(row.request_identity_reason, "deterministic_request_reconstruction");
+  assert.equal(database.getHealthStats().canonicalRequestRows, 1);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 14);
 });
 
 test("request ledger exclusively drives snapshot, agent, cost, and calendar usage", async (t) => {
@@ -404,7 +486,7 @@ test("request ledger exclusively drives snapshot, agent, cost, and calendar usag
   assert.equal(calendar.tokensPerModelRequest, 42);
 });
 
-test("T-DAY-040/042/043 schema v13 preserves v12 observedAt day slices and restart parity", async (t) => {
+test("T-DAY-040/042/043 schema v14 preserves v12 observedAt day slices and restart parity", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-v12-"));
   const path = join(directory, "usage.sqlite");
   let database = new MonitorDatabase(path);
@@ -426,7 +508,7 @@ test("T-DAY-040/042/043 schema v13 preserves v12 observedAt day slices and resta
   const restarted = database.getTimeline();
   assertDayTimeline(restarted, "2026-08-26", 100, 1, 1);
   assertDayTimeline(restarted, "2026-08-27", 200, 2, 2);
-  assert.equal(database.getHealthStats().schemaVersion, 13);
+  assert.equal(database.getHealthStats().schemaVersion, 14);
 });
 
 test("T-DAY-022 event-backed task without lifecycle timestamps is day-attributed only once", async (t) => {
@@ -500,7 +582,7 @@ test("T-DAY-041 v11 through v13 rebuilds calendar from persisted ledger without 
   legacy.close();
 
   booted = await bootMonitor(codexHome, databasePath);
-  assert.equal(booted.database.db.prepare("PRAGMA user_version").get().user_version, 13);
+  assert.equal(booted.database.db.prepare("PRAGMA user_version").get().user_version, 14);
   assert.equal(booted.monitor.health().timeline.dirtySessions, 0);
   const timeline = await booted.monitor.timeline();
   assert.equal(timeline.usage.totalTokens, 100);
@@ -606,7 +688,7 @@ test("manual quota refresh re-stats existing rollout files and reads the newest 
   assert.equal(refreshed.secondary.usedPercent, 31);
 });
 
-test("schema v1 ingest cursors migrate to portable resumable schema v13", async (t) => {
+test("schema v1 ingest cursors migrate to portable resumable schema v14", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -644,7 +726,7 @@ test("schema v1 ingest cursors migrate to portable resumable schema v13", async 
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
   assert.equal(columns.some((column) => column.name === "source_key"), true);
   assert.equal(columns.some((column) => column.name === "path"), false);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 13);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 14);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].sourceKey, "sessions/2026/08/24/rollout-fixture.jsonl");
@@ -693,7 +775,7 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 13);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 14);
 });
 
 test("schema v8 sessions replay once to backfill the request ledger", async (t) => {
@@ -785,7 +867,7 @@ test("schema v10 retires boundary storage and reaches v13 without replaying roll
 
   ({ monitor, database } = await bootMonitor(codexHome, databasePath));
   assert.equal(database.getSessionIndexState(ROOT).requestLedgerReady, true);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 13);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 14);
   const taskColumns = database.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(taskColumns.includes("quality"), false);
   assert.equal(taskColumns.includes("baseline_usage"), false);

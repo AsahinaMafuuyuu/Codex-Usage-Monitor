@@ -196,11 +196,37 @@ export function priceTasksByRequestEvents(tasks, events, options = {}) {
       if (event?.classification === "duplicate") continue;
       requestCosts.push(estimateRequestCost(event, options));
     }
+    const costEstimate = task.zeroUsageVerified && requestCosts.length === 0
+      ? zeroUsageCostSummary()
+      : summarizeRequestCosts(requestCosts);
     return {
       ...task,
-      costEstimate: summarizeRequestCosts(requestCosts),
+      costEstimate,
     };
   });
+}
+
+function zeroUsageCostSummary() {
+  return {
+    status: "estimated",
+    amountUsd: 0,
+    currency: SUBSCRIPTION_PRICING_CATALOG.currency,
+    basis: SUBSCRIPTION_PRICING_CATALOG.basis,
+    policyVersion: SUBSCRIPTION_PRICING_CATALOG.policyVersion,
+    requestCount: 0,
+    estimatedRequests: 0,
+    partialRequests: 0,
+    unavailableRequests: 0,
+    featureCoverage: {
+      historicalRate: "verified",
+      requestBoundary: "verified",
+      serviceTier: "verified",
+    },
+    rateVersions: [],
+    limitations: [...SUBSCRIPTION_PRICING_CATALOG.limitations],
+    reasons: [],
+    reason: "verified_zero_usage",
+  };
 }
 
 export function summarizeRequestCosts(costs) {

@@ -2,12 +2,16 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { materializeRequestLedgerTasks } from "./request-ledger.js";
+import { resolveCanonicalRequestOwnership } from "./request-ownership.js";
+import { combineCostSummaries } from "./pricing.js";
 import { materializeCalendarSlices } from "./snapshot-scope.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import { addUsage, normalizeTimestamp, sumTaskUsage, USAGE_FIELDS, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 13;
+const SCHEMA_VERSION = 14;
 const REQUEST_LEDGER_SCHEMA_VERSION = 9;
+const PARSER_VERSION = 15;
+const PROJECTION_VERSION = 1;
 const QUALITY_KEYS = ["complete", "provisional", "partial", "unknown"];
 
 export class MonitorDatabase {
@@ -45,7 +49,7 @@ export class MonitorDatabase {
         imported_at TEXT,
         agent_count INTEGER NOT NULL DEFAULT 0,
         task_count INTEGER NOT NULL DEFAULT 0,
-        parser_version INTEGER NOT NULL DEFAULT ${SCHEMA_VERSION}
+        parser_version INTEGER NOT NULL DEFAULT ${PARSER_VERSION}
       );
 
       CREATE TABLE IF NOT EXISTS agents (
@@ -88,6 +92,7 @@ export class MonitorDatabase {
         end_line INTEGER,
         start_byte INTEGER,
         end_byte INTEGER,
+        zero_usage_verified INTEGER NOT NULL DEFAULT 0,
         PRIMARY KEY (thread_id, turn_id),
         FOREIGN KEY (root_session_id, thread_id)
           REFERENCES agents(root_session_id, thread_id) ON DELETE CASCADE
@@ -138,6 +143,17 @@ export class MonitorDatabase {
         provisional_count INTEGER NOT NULL DEFAULT 0,
         partial_count INTEGER NOT NULL DEFAULT 0,
         unknown_count INTEGER NOT NULL DEFAULT 0,
+        cost_amount_usd REAL,
+        cost_status TEXT,
+        estimated_tasks INTEGER NOT NULL DEFAULT 0,
+        partial_tasks INTEGER NOT NULL DEFAULT 0,
+        unavailable_tasks INTEGER NOT NULL DEFAULT 0,
+        estimated_requests INTEGER NOT NULL DEFAULT 0,
+        partial_requests INTEGER NOT NULL DEFAULT 0,
+        unavailable_requests INTEGER NOT NULL DEFAULT 0,
+        cost_feature_coverage TEXT,
+        pricing_policy_version TEXT,
+        projection_version INTEGER NOT NULL DEFAULT 1,
         PRIMARY KEY (day, root_session_id),
         FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
@@ -163,7 +179,60 @@ export class MonitorDatabase {
         model TEXT,
         service_tier TEXT,
         pricing_context_quality TEXT,
+        request_identity TEXT,
+        request_identity_kind TEXT,
+        request_identity_reason TEXT,
+        request_native_field TEXT,
         PRIMARY KEY (source_key, line_number),
+        FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS task_ownership (
+        root_session_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        owner_thread_id TEXT,
+        status TEXT NOT NULL,
+        duplicate_count INTEGER NOT NULL DEFAULT 0,
+        reason TEXT,
+        PRIMARY KEY (root_session_id, turn_id),
+        FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS event_ownership (
+        source_key TEXT NOT NULL,
+        line_number INTEGER NOT NULL,
+        root_session_id TEXT NOT NULL,
+        owner_thread_id TEXT,
+        status TEXT NOT NULL,
+        canonical_request_id TEXT,
+        PRIMARY KEY (source_key, line_number),
+        FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
+      CREATE TABLE IF NOT EXISTS canonical_requests (
+        request_id TEXT PRIMARY KEY,
+        root_session_id TEXT NOT NULL,
+        thread_id TEXT NOT NULL,
+        turn_id TEXT NOT NULL,
+        event_ordinal INTEGER,
+        observed_at TEXT,
+        generation INTEGER NOT NULL DEFAULT 0,
+        classification TEXT NOT NULL,
+        quality TEXT NOT NULL,
+        reason TEXT,
+        input_tokens INTEGER,
+        cached_input_tokens INTEGER,
+        cache_write_input_tokens INTEGER,
+        output_tokens INTEGER,
+        reasoning_output_tokens INTEGER,
+        total_tokens INTEGER,
+        model TEXT,
+        service_tier TEXT,
+        pricing_context_quality TEXT,
+        identity_kind TEXT NOT NULL,
+        native_field TEXT,
+        origin_source_key TEXT NOT NULL,
+        origin_line_number INTEGER NOT NULL,
         FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
 
@@ -185,6 +254,12 @@ export class MonitorDatabase {
         ON model_usage_events(root_session_id, observed_at, classification);
       CREATE INDEX IF NOT EXISTS idx_model_usage_events_observed
         ON model_usage_events(observed_at, classification);
+      CREATE INDEX IF NOT EXISTS idx_task_ownership_root_status
+        ON task_ownership(root_session_id, status, owner_thread_id, turn_id);
+      CREATE INDEX IF NOT EXISTS idx_event_ownership_root_status
+        ON event_ownership(root_session_id, status, owner_thread_id);
+      CREATE INDEX IF NOT EXISTS idx_canonical_requests_root_day
+        ON canonical_requests(root_session_id, observed_at, turn_id);
       CREATE INDEX IF NOT EXISTS idx_quota_observed ON quota_snapshots(observed_at DESC);
     `);
     const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
@@ -224,6 +299,29 @@ export class MonitorDatabase {
     if (!calendarColumns.some((column) => column.name === "model_request_count")) {
       this.db.exec("ALTER TABLE session_day_usage ADD COLUMN model_request_count INTEGER NOT NULL DEFAULT 0;");
     }
+    const calendarProjectionColumns = [
+      ["cost_amount_usd", "REAL"],
+      ["cost_status", "TEXT"],
+      ["estimated_tasks", "INTEGER NOT NULL DEFAULT 0"],
+      ["partial_tasks", "INTEGER NOT NULL DEFAULT 0"],
+      ["unavailable_tasks", "INTEGER NOT NULL DEFAULT 0"],
+      ["estimated_requests", "INTEGER NOT NULL DEFAULT 0"],
+      ["partial_requests", "INTEGER NOT NULL DEFAULT 0"],
+      ["unavailable_requests", "INTEGER NOT NULL DEFAULT 0"],
+      ["cost_feature_coverage", "TEXT"],
+      ["pricing_policy_version", "TEXT"],
+      ["projection_version", "INTEGER NOT NULL DEFAULT 1"],
+    ];
+    for (const [name, definition] of calendarProjectionColumns) {
+      if (!calendarColumns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE session_day_usage ADD COLUMN ${name} ${definition};`);
+      }
+    }
+
+    const taskColumns = this.db.prepare("PRAGMA table_info(tasks)").all();
+    if (!taskColumns.some((column) => column.name === "zero_usage_verified")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN zero_usage_verified INTEGER NOT NULL DEFAULT 0;");
+    }
 
     const usageEventColumns = this.db.prepare("PRAGMA table_info(model_usage_events)").all();
     if (!usageEventColumns.some((column) => column.name === "model")) {
@@ -235,15 +333,31 @@ export class MonitorDatabase {
     if (!usageEventColumns.some((column) => column.name === "pricing_context_quality")) {
       this.db.exec("ALTER TABLE model_usage_events ADD COLUMN pricing_context_quality TEXT;");
     }
+    for (const [name, definition] of [
+      ["request_identity", "TEXT"],
+      ["request_identity_kind", "TEXT"],
+      ["request_identity_reason", "TEXT"],
+      ["request_native_field", "TEXT"],
+    ]) {
+      if (!usageEventColumns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE model_usage_events ADD COLUMN ${name} ${definition};`);
+      }
+    }
+
+    const eventOwnershipColumns = this.db.prepare("PRAGMA table_info(event_ownership)").all();
+    if (!eventOwnershipColumns.some((column) => column.name === "canonical_request_id")) {
+      this.db.exec("ALTER TABLE event_ownership ADD COLUMN canonical_request_id TEXT;");
+    }
 
     if (previousVersion < 8) this.migratePortableSourceLocators();
     if (previousVersion < 11) this.retireBoundaryLedgerStorage();
+    this.ensurePhase18ProjectionColumns();
     if (previousVersion < 12) this.normalizeStoredUsageEventTimestamps();
 
     const timezone = localTimezone();
     const storedTimezone = this.db.prepare("SELECT value FROM derived_state WHERE key='calendar_timezone'").get()?.value;
-    if (previousVersion < 12 || storedTimezone !== timezone) {
-      this.rebuildAllCalendarIndex();
+    if (previousVersion < 14 || storedTimezone !== timezone) {
+      this.rebuildAllCanonicalProjections();
     }
     if (previousVersion < 11) {
       const roots = this.db.prepare("SELECT id FROM sessions").all();
@@ -297,8 +411,9 @@ export class MonitorDatabase {
         INSERT INTO tasks (
           root_session_id, thread_id, turn_id, sequence, status,
           started_at, completed_at, duration_ms, model, effort, source_key,
-          start_ordinal, end_ordinal, start_line, end_line, start_byte, end_byte
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          start_ordinal, end_ordinal, start_line, end_line, start_byte, end_byte,
+          zero_usage_verified
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(thread_id, turn_id) DO UPDATE SET
           root_session_id=excluded.root_session_id,
           sequence=excluded.sequence,
@@ -318,7 +433,8 @@ export class MonitorDatabase {
           start_line=COALESCE(excluded.start_line, tasks.start_line),
           end_line=COALESCE(excluded.end_line, tasks.end_line),
           start_byte=COALESCE(excluded.start_byte, tasks.start_byte),
-          end_byte=COALESCE(excluded.end_byte, tasks.end_byte)
+          end_byte=COALESCE(excluded.end_byte, tasks.end_byte),
+          zero_usage_verified=excluded.zero_usage_verified
       `),
       upsertCursor: this.db.prepare(`
         INSERT INTO ingest_cursors (
@@ -357,8 +473,9 @@ export class MonitorDatabase {
           event_ordinal, observed_at, generation, classification, quality, reason,
           input_tokens, cached_input_tokens, cache_write_input_tokens,
           output_tokens, reasoning_output_tokens, total_tokens,
-          model, service_tier, pricing_context_quality
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          model, service_tier, pricing_context_quality,
+          request_identity, request_identity_kind, request_identity_reason, request_native_field
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_key, line_number) DO UPDATE SET
           root_session_id=excluded.root_session_id,
           thread_id=excluded.thread_id,
@@ -377,9 +494,39 @@ export class MonitorDatabase {
           total_tokens=excluded.total_tokens,
           model=excluded.model,
           service_tier=excluded.service_tier,
-          pricing_context_quality=excluded.pricing_context_quality
+          pricing_context_quality=excluded.pricing_context_quality,
+          request_identity=excluded.request_identity,
+          request_identity_kind=excluded.request_identity_kind,
+          request_identity_reason=excluded.request_identity_reason,
+          request_native_field=excluded.request_native_field
       `),
     };
+  }
+
+  ensurePhase18ProjectionColumns() {
+    const taskColumns = this.db.prepare("PRAGMA table_info(tasks)").all();
+    if (!taskColumns.some((column) => column.name === "zero_usage_verified")) {
+      this.db.exec("ALTER TABLE tasks ADD COLUMN zero_usage_verified INTEGER NOT NULL DEFAULT 0;");
+    }
+    const calendarColumns = this.db.prepare("PRAGMA table_info(session_day_usage)").all();
+    const definitions = [
+      ["cost_amount_usd", "REAL"],
+      ["cost_status", "TEXT"],
+      ["estimated_tasks", "INTEGER NOT NULL DEFAULT 0"],
+      ["partial_tasks", "INTEGER NOT NULL DEFAULT 0"],
+      ["unavailable_tasks", "INTEGER NOT NULL DEFAULT 0"],
+      ["estimated_requests", "INTEGER NOT NULL DEFAULT 0"],
+      ["partial_requests", "INTEGER NOT NULL DEFAULT 0"],
+      ["unavailable_requests", "INTEGER NOT NULL DEFAULT 0"],
+      ["cost_feature_coverage", "TEXT"],
+      ["pricing_policy_version", "TEXT"],
+      ["projection_version", "INTEGER NOT NULL DEFAULT 1"],
+    ];
+    for (const [name, definition] of definitions) {
+      if (!calendarColumns.some((column) => column.name === name)) {
+        this.db.exec(`ALTER TABLE session_day_usage ADD COLUMN ${name} ${definition};`);
+      }
+    }
   }
 
   migratePortableSourceLocators() {
@@ -639,6 +786,12 @@ export class MonitorDatabase {
 
   replaceSession(snapshot, { persistQuotas = true } = {}) {
     const rootId = snapshot.session.id;
+    const authoritativeSourceKeys = [...new Set([
+      ...(snapshot.cursors ?? [])
+        .map((cursor) => cursor.sourceKey ?? recoverLegacySourceKey(cursor.path)),
+      ...(snapshot.modelUsageEvents ?? [])
+        .map((event) => event?.sourceKey ?? recoverLegacySourceKey(event?.sourcePath)),
+    ].filter(Boolean))];
     this.transaction(() => {
       this.statements.upsertSession.run(
         rootId,
@@ -672,6 +825,20 @@ export class MonitorDatabase {
         );
       }
 
+      // A source that is present in the current parser snapshot is authoritative:
+      // remove its previous derived Task/Event rows before writing the new parse.
+      // Rows whose source is absent are deliberately preserved as historical evidence.
+      const deleteTasksForSource = this.db.prepare(`
+        DELETE FROM tasks WHERE root_session_id=? AND source_key=?
+      `);
+      const deleteEventsForSource = this.db.prepare(`
+        DELETE FROM model_usage_events WHERE root_session_id=? AND source_key=?
+      `);
+      for (const sourceKey of authoritativeSourceKeys) {
+        deleteTasksForSource.run(rootId, sourceKey);
+        deleteEventsForSource.run(rootId, sourceKey);
+      }
+
       for (const task of snapshot.tasks) {
         this.statements.insertTask.run(
           rootId,
@@ -691,6 +858,7 @@ export class MonitorDatabase {
           task.endLine ?? null,
           task.startByte ?? null,
           task.endByte ?? null,
+          task.zeroUsageVerified ? 1 : 0,
         );
       }
 
@@ -717,7 +885,6 @@ export class MonitorDatabase {
         );
       }
 
-      this.db.prepare("DELETE FROM model_usage_events WHERE root_session_id=?").run(rootId);
       for (const event of snapshot.modelUsageEvents ?? []) {
         if (!event?.sourceKey || event.lineNumber == null) continue;
         const usage = event.usage ?? null;
@@ -742,6 +909,10 @@ export class MonitorDatabase {
           event.model ?? null,
           event.serviceTier ?? null,
           event.pricingContextQuality ?? null,
+          event.requestIdentity ?? null,
+          event.requestIdentityKind ?? null,
+          event.requestIdentityReason ?? null,
+          event.requestNativeField ?? null,
         );
       }
 
@@ -757,7 +928,7 @@ export class MonitorDatabase {
         new Date().toISOString(),
         counts.agents,
         counts.tasks,
-        SCHEMA_VERSION,
+        PARSER_VERSION,
         rootId,
       );
     });
@@ -794,10 +965,35 @@ export class MonitorDatabase {
       SELECT * FROM agents WHERE root_session_id=? ORDER BY depth, first_seen_at, thread_id
     `).all(id).map(mapAgent);
     const tasks = this.db.prepare(`
+      SELECT t.*
+      FROM tasks t
+      INNER JOIN task_ownership o
+        ON o.root_session_id=t.root_session_id
+       AND o.turn_id=t.turn_id
+       AND o.status='canonical'
+       AND o.owner_thread_id=t.thread_id
+      WHERE t.root_session_id=?
+      ORDER BY t.thread_id, t.sequence
+    `).all(id).map(mapTask);
+    const modelUsageEvents = this.getCanonicalModelUsageEvents(id);
+    return { session: mapSession(sessionRow), agents, tasks, modelUsageEvents };
+  }
+
+  getRawSession(id) {
+    const sessionRow = this.db.prepare("SELECT * FROM sessions WHERE id=?").get(id);
+    if (!sessionRow) return null;
+    const agents = this.db.prepare(`
+      SELECT * FROM agents WHERE root_session_id=? ORDER BY depth, first_seen_at, thread_id
+    `).all(id).map(mapAgent);
+    const tasks = this.db.prepare(`
       SELECT * FROM tasks WHERE root_session_id=? ORDER BY thread_id, sequence
     `).all(id).map(mapTask);
-    const modelUsageEvents = this.getModelUsageEvents(id);
-    return { session: mapSession(sessionRow), agents, tasks, modelUsageEvents };
+    return {
+      session: mapSession(sessionRow),
+      agents,
+      tasks,
+      modelUsageEvents: this.getModelUsageEvents(id),
+    };
   }
 
   getSessionDay(id, range) {
@@ -809,36 +1005,38 @@ export class MonitorDatabase {
       SELECT * FROM agents WHERE root_session_id=? ORDER BY depth, first_seen_at, thread_id
     `).all(id).map(mapAgent);
     const tasks = this.db.prepare(`
-      SELECT t.*
+      SELECT DISTINCT t.*
       FROM tasks t
+      INNER JOIN task_ownership o
+        ON o.root_session_id=t.root_session_id
+       AND o.turn_id=t.turn_id
+       AND o.status='canonical'
+       AND o.owner_thread_id=t.thread_id
+      INNER JOIN canonical_requests r
+        ON r.root_session_id=t.root_session_id
+       AND r.thread_id=t.thread_id
+       AND r.turn_id=t.turn_id
       WHERE t.root_session_id=?
-        AND (
-          (
-            t.started_at IS NOT NULL
-            AND julianday(t.started_at) < julianday(?)
-            AND (t.completed_at IS NULL OR julianday(t.completed_at) > julianday(?))
-          )
-          OR EXISTS (
-            SELECT 1
-            FROM model_usage_events m
-            WHERE m.root_session_id=t.root_session_id
-              AND m.thread_id=t.thread_id
-              AND m.turn_id=t.turn_id
-              AND m.observed_at>=?
-              AND m.observed_at<?
-          )
-        )
+        AND r.observed_at>=?
+        AND r.observed_at<?
       ORDER BY t.thread_id, t.sequence
-    `).all(id, endAt, startAt, startAt, endAt).map(mapTask);
+    `).all(id, startAt, endAt).map(mapTask);
     const modelUsageEvents = this.db.prepare(`
-      SELECT source_key, line_number, root_session_id, thread_id, turn_id,
-             event_ordinal, observed_at, generation, classification, quality, reason,
-             input_tokens, cached_input_tokens, cache_write_input_tokens,
-             output_tokens, reasoning_output_tokens, total_tokens,
-             model, service_tier, pricing_context_quality
-      FROM model_usage_events
+      SELECT
+        origin_source_key AS source_key,
+        origin_line_number AS line_number,
+        root_session_id, thread_id, turn_id, event_ordinal, observed_at,
+        generation, classification, quality, reason,
+        input_tokens, cached_input_tokens, cache_write_input_tokens,
+        output_tokens, reasoning_output_tokens, total_tokens,
+        model, service_tier, pricing_context_quality,
+        request_id AS request_identity,
+        identity_kind AS request_identity_kind,
+        'canonical_projection' AS request_identity_reason,
+        native_field AS request_native_field
+      FROM canonical_requests
       WHERE root_session_id=? AND observed_at>=? AND observed_at<?
-      ORDER BY observed_at, source_key, line_number
+      ORDER BY observed_at, request_id
     `).all(id, startAt, endAt).map(mapModelUsageEvent);
     return { session: mapSession(sessionRow), agents, tasks, modelUsageEvents };
   }
@@ -876,14 +1074,30 @@ export class MonitorDatabase {
 
   getModelUsageEvents(rootSessionId) {
     return this.db.prepare(`
-      SELECT source_key, line_number, root_session_id, thread_id, turn_id,
-             event_ordinal, observed_at, generation, classification, quality, reason,
-             input_tokens, cached_input_tokens, cache_write_input_tokens,
-             output_tokens, reasoning_output_tokens, total_tokens,
-             model, service_tier, pricing_context_quality
+      SELECT *
       FROM model_usage_events
       WHERE root_session_id=?
       ORDER BY source_key, line_number
+    `).all(rootSessionId).map(mapModelUsageEvent);
+  }
+
+  getCanonicalModelUsageEvents(rootSessionId) {
+    return this.db.prepare(`
+      SELECT
+        origin_source_key AS source_key,
+        origin_line_number AS line_number,
+        root_session_id, thread_id, turn_id, event_ordinal, observed_at,
+        generation, classification, quality, reason,
+        input_tokens, cached_input_tokens, cache_write_input_tokens,
+        output_tokens, reasoning_output_tokens, total_tokens,
+        model, service_tier, pricing_context_quality,
+        request_id AS request_identity,
+        identity_kind AS request_identity_kind,
+        'canonical_projection' AS request_identity_reason,
+        native_field AS request_native_field
+      FROM canonical_requests
+      WHERE root_session_id=?
+      ORDER BY observed_at, request_id
     `).all(rootSessionId).map(mapModelUsageEvent);
   }
 
@@ -907,6 +1121,7 @@ export class MonitorDatabase {
       parseStatus: session.parse_status ?? "not_imported",
       parserVersion,
       requestLedgerReady: parserVersion >= REQUEST_LEDGER_SCHEMA_VERSION,
+      parserCurrent: parserVersion >= PARSER_VERSION,
       importedAt: session.imported_at ?? null,
       cursorCount,
     };
@@ -919,17 +1134,30 @@ export class MonitorDatabase {
              output_tokens, reasoning_output_tokens, total_tokens,
              model_request_count,
              task_count, active_task_count,
-             complete_count, provisional_count, partial_count, unknown_count
+             complete_count, provisional_count, partial_count, unknown_count,
+             cost_amount_usd, cost_status,
+             estimated_tasks, partial_tasks, unavailable_tasks,
+             estimated_requests, partial_requests, unavailable_requests,
+             cost_feature_coverage, pricing_policy_version, projection_version
       FROM session_day_usage
       ORDER BY day DESC, total_tokens DESC, root_session_id
     `).all();
     const unattributedTasks = this.db.prepare(`
       SELECT t.*
       FROM tasks t
+      INNER JOIN task_ownership o
+        ON o.root_session_id=t.root_session_id
+       AND o.turn_id=t.turn_id
+       AND o.status='canonical'
+       AND o.owner_thread_id=t.thread_id
       WHERE t.started_at IS NULL
         AND NOT EXISTS (
           SELECT 1
           FROM model_usage_events attributed
+          INNER JOIN event_ownership attributed_owner
+            ON attributed_owner.source_key=attributed.source_key
+           AND attributed_owner.line_number=attributed.line_number
+           AND attributed_owner.status='canonical'
           WHERE attributed.root_session_id=t.root_session_id
             AND attributed.thread_id=t.thread_id
             AND attributed.turn_id=t.turn_id
@@ -944,14 +1172,27 @@ export class MonitorDatabase {
              m.output_tokens, m.reasoning_output_tokens, m.total_tokens,
              m.model, m.service_tier, m.pricing_context_quality
       FROM model_usage_events m
+      INNER JOIN event_ownership eo
+        ON eo.source_key=m.source_key
+       AND eo.line_number=m.line_number
+       AND eo.status='canonical'
       INNER JOIN tasks t
         ON t.root_session_id=m.root_session_id
        AND t.thread_id=m.thread_id
        AND t.turn_id=m.turn_id
+      INNER JOIN task_ownership o
+        ON o.root_session_id=t.root_session_id
+       AND o.turn_id=t.turn_id
+       AND o.status='canonical'
+       AND o.owner_thread_id=t.thread_id
       WHERE t.started_at IS NULL
         AND NOT EXISTS (
           SELECT 1
           FROM model_usage_events attributed
+          INNER JOIN event_ownership attributed_owner
+            ON attributed_owner.source_key=attributed.source_key
+           AND attributed_owner.line_number=attributed.line_number
+           AND attributed_owner.status='canonical'
           WHERE attributed.root_session_id=t.root_session_id
             AND attributed.thread_id=t.thread_id
             AND attributed.turn_id=t.turn_id
@@ -967,6 +1208,7 @@ export class MonitorDatabase {
     const months = new Map();
     const overallUsage = zeroUsage();
     const qualityCounts = emptyQualityCounts();
+    let overallCostEstimate = null;
     for (const row of rows) {
       const usage = usageFromCalendarRow(row);
       const rowQuality = qualityFromCalendarRow(row);
@@ -986,19 +1228,41 @@ export class MonitorDatabase {
         taskCount: Number(row.task_count ?? 0),
         activeTaskCount: Number(row.active_task_count ?? 0),
         qualityCounts: rowQuality,
+        costEstimate: row.cost_status ? {
+          status: row.cost_status,
+          amountUsd: row.cost_amount_usd == null ? null : Number(row.cost_amount_usd),
+          currency: "USD",
+          basis: "subscription-standard-equivalent",
+          policyVersion: row.pricing_policy_version ?? null,
+          estimatedTasks: Number(row.estimated_tasks ?? 0),
+          partialTasks: Number(row.partial_tasks ?? 0),
+          unavailableTasks: Number(row.unavailable_tasks ?? 0),
+          estimatedRequests: Number(row.estimated_requests ?? 0),
+          partialRequests: Number(row.partial_requests ?? 0),
+          unavailableRequests: Number(row.unavailable_requests ?? 0),
+          featureCoverage: parseJson(row.cost_feature_coverage) ?? {
+            historicalRate: "unknown",
+            requestBoundary: "unknown",
+            serviceTier: "unknown",
+          },
+          projectionVersion: Number(row.projection_version ?? 1),
+        } : null,
       };
       day.sessions.push(session);
+      mergeCalendarCost(day, session.costEstimate);
       day.usage = addUsage(day.usage, usage);
       day.modelRequestCount += session.modelRequestCount;
       day.taskCount += session.taskCount;
       day.activeTaskCount += session.activeTaskCount;
       addQualityCounts(day.qualityCounts, rowQuality);
       month.usage = addUsage(month.usage, usage);
+      mergeCalendarCost(month, session.costEstimate);
       month.modelRequestCount += session.modelRequestCount;
       month.taskCount += session.taskCount;
       month.activeTaskCount += session.activeTaskCount;
       addQualityCounts(month.qualityCounts, rowQuality);
       overallUsageFrom(overallUsage, usage);
+      overallCostEstimate = mergeCostEstimate(overallCostEstimate, session.costEstimate);
       addQualityCounts(qualityCounts, rowQuality);
       month.days.set(row.day, day);
       months.set(monthKey, month);
@@ -1026,6 +1290,7 @@ export class MonitorDatabase {
     return {
       generatedAt: new Date().toISOString(),
       timezone: localTimezone(),
+      projection: this.getProjectionState(),
       usage: overallUsage,
       modelRequestCount: [...months.values()].reduce(
         (sum, month) => sum + month.modelRequestCount,
@@ -1037,6 +1302,7 @@ export class MonitorDatabase {
           unattributed.modelRequestCount,
       ),
       qualityCounts,
+      costEstimate: overallCostEstimate,
       unattributed,
       months: [...months.values()]
         .sort((left, right) => right.key.localeCompare(left.key))
@@ -1094,6 +1360,32 @@ export class MonitorDatabase {
     const modelUsageEventRows = Number(
       this.db.prepare("SELECT COUNT(*) AS count FROM model_usage_events").get().count ?? 0,
     );
+    const canonicalRequestRows = Number(
+      this.db.prepare("SELECT COUNT(*) AS count FROM canonical_requests").get().count ?? 0,
+    );
+    const ownershipRows = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status='canonical' THEN 1 ELSE 0 END) AS canonical_events,
+        SUM(CASE WHEN status='inherited_copy' THEN 1 ELSE 0 END) AS inherited_events,
+        SUM(CASE WHEN status='unresolved' THEN 1 ELSE 0 END) AS unresolved_events
+      FROM event_ownership
+    `).get();
+    const requestOwnershipRows = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN eo.status='inherited_copy' THEN 1 ELSE 0 END) AS inherited_requests,
+        SUM(CASE WHEN eo.status='unresolved' THEN 1 ELSE 0 END) AS unresolved_requests
+      FROM event_ownership eo
+      INNER JOIN model_usage_events m
+        ON m.source_key=eo.source_key AND m.line_number=eo.line_number
+      WHERE m.classification IN ('verified_increment', 'generation_start')
+    `).get();
+    const taskOwnershipRows = this.db.prepare(`
+      SELECT
+        SUM(CASE WHEN status='canonical' THEN 1 ELSE 0 END) AS canonical_tasks,
+        SUM(CASE WHEN status='canonical' THEN duplicate_count ELSE 0 END) AS inherited_tasks,
+        SUM(CASE WHEN status='unresolved' THEN duplicate_count + 1 ELSE 0 END) AS unresolved_tasks
+      FROM task_ownership
+    `).get();
     return {
       databasePath: this.path,
       schemaVersion: SCHEMA_VERSION,
@@ -1106,6 +1398,19 @@ export class MonitorDatabase {
       lastParsedAt: cursors.last_parsed_at ?? null,
       calendarRows,
       modelUsageEventRows,
+      canonicalRequestRows,
+      projection: this.getProjectionState(),
+      ownership: {
+        canonicalEvents: Number(ownershipRows.canonical_events ?? 0),
+        inheritedEvents: Number(ownershipRows.inherited_events ?? 0),
+        unresolvedEvents: Number(ownershipRows.unresolved_events ?? 0),
+        canonicalRequests: canonicalRequestRows,
+        inheritedRequestCopies: Number(requestOwnershipRows.inherited_requests ?? 0),
+        unresolvedRequests: Number(requestOwnershipRows.unresolved_requests ?? 0),
+        canonicalTasks: Number(taskOwnershipRows.canonical_tasks ?? 0),
+        inheritedTaskCopies: Number(taskOwnershipRows.inherited_tasks ?? 0),
+        unresolvedTasks: Number(taskOwnershipRows.unresolved_tasks ?? 0),
+      },
       pageSize,
       pageCount,
       freelistCount,
@@ -1116,9 +1421,124 @@ export class MonitorDatabase {
   }
 
   rebuildAllCalendarIndex() {
-    this.db.exec("DELETE FROM session_day_usage;");
-    const roots = this.db.prepare("SELECT id FROM sessions").all();
-    for (const row of roots) this.rebuildCalendarForSession(row.id);
+    this.rebuildAllCanonicalProjections();
+  }
+
+  rebuildAllCanonicalProjections() {
+    this.transaction(() => {
+      this.db.exec(`
+        DELETE FROM session_day_usage;
+        DELETE FROM task_ownership;
+        DELETE FROM event_ownership;
+        DELETE FROM canonical_requests;
+      `);
+      const roots = this.db.prepare("SELECT id FROM sessions").all();
+      for (const row of roots) this.rebuildCalendarForSession(row.id);
+    });
+  }
+
+  rebuildOwnershipForSession(rootId) {
+    const agents = this.db.prepare(`
+      SELECT * FROM agents WHERE root_session_id=? ORDER BY depth, first_seen_at, thread_id
+    `).all(rootId).map(mapAgent);
+    const tasks = this.db.prepare(`
+      SELECT * FROM tasks WHERE root_session_id=? ORDER BY thread_id, sequence
+    `).all(rootId).map(mapTask);
+    const events = this.getModelUsageEvents(rootId);
+    const resolved = resolveCanonicalRequestOwnership({ agents, tasks, events });
+
+    this.db.prepare("DELETE FROM task_ownership WHERE root_session_id=?").run(rootId);
+    this.db.prepare("DELETE FROM event_ownership WHERE root_session_id=?").run(rootId);
+    this.db.prepare("DELETE FROM canonical_requests WHERE root_session_id=?").run(rootId);
+    const insertTaskOwnership = this.db.prepare(`
+      INSERT INTO task_ownership (
+        root_session_id, turn_id, owner_thread_id, status, duplicate_count, reason
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const insertEventOwnership = this.db.prepare(`
+      INSERT INTO event_ownership (
+        source_key, line_number, root_session_id, owner_thread_id, status, canonical_request_id
+      ) VALUES (?, ?, ?, ?, ?, ?)
+    `);
+    const updateEventIdentity = this.db.prepare(`
+      UPDATE model_usage_events
+      SET request_identity=?, request_identity_kind=?, request_identity_reason=?, request_native_field=?
+      WHERE source_key=? AND line_number=? AND root_session_id=?
+    `);
+    const insertCanonicalRequest = this.db.prepare(`
+      INSERT INTO canonical_requests (
+        request_id, root_session_id, thread_id, turn_id, event_ordinal, observed_at, generation,
+        classification, quality, reason,
+        input_tokens, cached_input_tokens, cache_write_input_tokens,
+        output_tokens, reasoning_output_tokens, total_tokens,
+        model, service_tier, pricing_context_quality,
+        identity_kind, native_field, origin_source_key, origin_line_number
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+    `);
+    for (const row of resolved.ownership) {
+      insertTaskOwnership.run(
+        rootId,
+        row.turnId,
+        row.ownerThreadId ?? null,
+        row.status,
+        row.duplicateCount ?? 0,
+        row.reason ?? null,
+      );
+    }
+    for (const row of resolved.provenance) {
+      if (!row.sourceKey || row.lineNumber == null) continue;
+      updateEventIdentity.run(
+        row.requestIdentity ?? null,
+        row.requestIdentityKind ?? null,
+        row.requestIdentityReason ?? null,
+        row.requestNativeField ?? null,
+        row.sourceKey,
+        row.lineNumber,
+        rootId,
+      );
+      insertEventOwnership.run(
+        row.sourceKey,
+        row.lineNumber,
+        rootId,
+        row.ownerThreadId ?? null,
+        row.status,
+        row.canonicalRequestId ?? null,
+      );
+    }
+    for (const event of resolved.requests) {
+      if (!event.requestIdentity || !event.threadId || !event.turnId || !event.sourceKey || event.lineNumber == null) continue;
+      const usage = event.usage ?? null;
+      insertCanonicalRequest.run(
+        event.requestIdentity,
+        rootId,
+        event.threadId,
+        event.turnId,
+        event.eventOrdinal ?? null,
+        event.observedAt ?? null,
+        event.generation ?? 0,
+        event.classification,
+        event.quality,
+        event.reason ?? null,
+        usage?.inputTokens ?? null,
+        usage?.cachedInputTokens ?? null,
+        usage?.cacheWriteInputTokens ?? null,
+        usage?.outputTokens ?? null,
+        usage?.reasoningOutputTokens ?? null,
+        usage?.totalTokens ?? null,
+        event.model ?? null,
+        event.serviceTier ?? null,
+        event.pricingContextQuality ?? null,
+        event.requestIdentityKind ?? "reconstructed",
+        event.requestNativeField ?? null,
+        event.sourceKey,
+        event.lineNumber,
+      );
+    }
+    this.db.prepare(`
+      INSERT INTO derived_state (key, value) VALUES (?, ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(`ownership_reconciliation:${rootId}`, JSON.stringify(resolved.reconciliation));
+    return resolved;
   }
 
   normalizeStoredUsageEventTimestamps() {
@@ -1142,15 +1562,12 @@ export class MonitorDatabase {
 
   rebuildCalendarForSession(rootId) {
     this.db.prepare("DELETE FROM session_day_usage WHERE root_session_id=?").run(rootId);
-    const storedTasks = this.db.prepare(`
-      SELECT * FROM tasks WHERE root_session_id=?
-      ORDER BY thread_id, sequence
-    `).all(rootId).map(mapTask);
+    const ownership = this.rebuildOwnershipForSession(rootId);
     const stored = {
       session: this.db.prepare("SELECT * FROM sessions WHERE id=?").get(rootId),
       agents: this.db.prepare("SELECT * FROM agents WHERE root_session_id=?").all(rootId).map(mapAgent),
-      tasks: storedTasks,
-      modelUsageEvents: this.getModelUsageEvents(rootId),
+      tasks: ownership.tasks,
+      modelUsageEvents: ownership.events,
     };
     const slices = materializeCalendarSlices(stored);
     const insert = this.db.prepare(`
@@ -1160,10 +1577,15 @@ export class MonitorDatabase {
         output_tokens, reasoning_output_tokens, total_tokens,
         model_request_count,
         task_count, active_task_count,
-        complete_count, provisional_count, partial_count, unknown_count
-      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+        complete_count, provisional_count, partial_count, unknown_count,
+        cost_amount_usd, cost_status,
+        estimated_tasks, partial_tasks, unavailable_tasks,
+        estimated_requests, partial_requests, unavailable_requests,
+        cost_feature_coverage, pricing_policy_version, projection_version
+      ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
     for (const aggregate of slices) {
+      const cost = aggregate.costEstimate;
       insert.run(
         aggregate.day,
         rootId,
@@ -1180,8 +1602,42 @@ export class MonitorDatabase {
         aggregate.qualityCounts.provisional,
         aggregate.qualityCounts.partial,
         aggregate.qualityCounts.unknown,
+        cost?.amountUsd ?? null,
+        cost?.status ?? null,
+        cost?.estimatedTasks ?? 0,
+        cost?.partialTasks ?? 0,
+        cost?.unavailableTasks ?? 0,
+        cost?.estimatedRequests ?? 0,
+        cost?.partialRequests ?? 0,
+        cost?.unavailableRequests ?? 0,
+        jsonOrNull(cost?.featureCoverage),
+        cost?.policyVersion ?? null,
+        PROJECTION_VERSION,
       );
     }
+    this.advanceProjectionGeneration();
+  }
+
+  advanceProjectionGeneration() {
+    const current = Number(
+      this.db.prepare("SELECT value FROM derived_state WHERE key='projection_generation'").get()?.value ?? 0,
+    );
+    const next = Number.isSafeInteger(current) ? current + 1 : 1;
+    this.db.prepare(`
+      INSERT INTO derived_state (key, value) VALUES ('projection_generation', ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(String(next));
+    return next;
+  }
+
+  getProjectionState() {
+    const generation = Number(
+      this.db.prepare("SELECT value FROM derived_state WHERE key='projection_generation'").get()?.value ?? 0,
+    );
+    return {
+      version: PROJECTION_VERSION,
+      generation: Number.isSafeInteger(generation) ? generation : 0,
+    };
   }
 
   refreshAggregates(rootId) {
@@ -1189,11 +1645,19 @@ export class MonitorDatabase {
       SELECT thread_id, parent_thread_id, depth FROM agents WHERE root_session_id=?
     `).all(rootId);
     const storedTaskRows = this.db.prepare(`
-      SELECT * FROM tasks WHERE root_session_id=? ORDER BY thread_id, sequence
+      SELECT t.*
+      FROM tasks t
+      INNER JOIN task_ownership o
+        ON o.root_session_id=t.root_session_id
+       AND o.turn_id=t.turn_id
+       AND o.status='canonical'
+       AND o.owner_thread_id=t.thread_id
+      WHERE t.root_session_id=?
+      ORDER BY t.thread_id, t.sequence
     `).all(rootId).map(mapTask);
     const taskRows = materializeRequestLedgerTasks(
       storedTaskRows,
-      this.getModelUsageEvents(rootId),
+      this.getCanonicalModelUsageEvents(rootId),
     );
     const tasksByThread = new Map();
     for (const task of taskRows) {
@@ -1311,6 +1775,7 @@ function mapTask(row) {
     endLine: row.end_line == null ? null : Number(row.end_line),
     startByte: row.start_byte == null ? null : Number(row.start_byte),
     endByte: row.end_byte == null ? null : Number(row.end_byte),
+    zeroUsageVerified: Boolean(row.zero_usage_verified),
   };
 }
 
@@ -1331,6 +1796,10 @@ function mapModelUsageEvent(row) {
     model: row.model ?? null,
     serviceTier: row.service_tier ?? null,
     pricingContextQuality: row.pricing_context_quality ?? null,
+    requestIdentity: row.request_identity ?? null,
+    requestIdentityKind: row.request_identity_kind ?? null,
+    requestIdentityReason: row.request_identity_reason ?? null,
+    requestNativeField: row.request_native_field ?? null,
   };
 }
 
@@ -1379,6 +1848,7 @@ function createCalendarAggregate() {
     taskCount: 0,
     activeTaskCount: 0,
     qualityCounts: emptyQualityCounts(),
+    costEstimate: null,
   };
 }
 
@@ -1408,6 +1878,16 @@ function groupByRootSession(rows) {
 
 function addQualityCounts(target, source) {
   for (const key of QUALITY_KEYS) target[key] += Number(source?.[key] ?? 0);
+}
+
+function mergeCalendarCost(target, source) {
+  target.costEstimate = mergeCostEstimate(target.costEstimate, source);
+}
+
+function mergeCostEstimate(left, right) {
+  if (!right) return left;
+  if (!left) return structuredClone(right);
+  return combineCostSummaries([left, right]);
 }
 
 function usageFromCalendarRow(row) {
@@ -1443,6 +1923,7 @@ function materializeCalendarMonth(month) {
     taskCount: month.taskCount,
     activeTaskCount: month.activeTaskCount,
     qualityCounts: month.qualityCounts,
+    costEstimate: month.costEstimate,
     days: [...month.days.values()]
       .sort((left, right) => right.key.localeCompare(left.key))
       .map((day) => ({
@@ -1453,6 +1934,7 @@ function materializeCalendarMonth(month) {
         taskCount: day.taskCount,
         activeTaskCount: day.activeTaskCount,
         qualityCounts: day.qualityCounts,
+        costEstimate: day.costEstimate,
         sessions: day.sessions.sort(compareCalendarSessions),
       })),
   };

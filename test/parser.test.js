@@ -87,6 +87,28 @@ test("paginated copied history is skipped and cumulative snapshots are differenc
   assert.equal(preview.text, "Review the cumulative usage boundary carefully.");
 });
 
+test("T-ZERO-001 parser proves zero usage only after an unchanged post-task cumulative snapshot", async (t) => {
+  const fixture = await createFixture([
+    line(0, "session_meta", childMeta()),
+    token(1, usage(100)),
+    event(2, "task_started", { turn_id: TURN, started_at: 1_700_000_002 }),
+    line(3, "turn_context", { turn_id: TURN, model: "gpt-5.6-terra", effort: "high" }),
+    event(4, "task_complete", {
+      turn_id: TURN,
+      started_at: 1_700_000_002,
+      completed_at: 1_700_000_004,
+    }),
+    token(5, usage(100), null, usage(100)),
+  ]);
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+
+  const parser = await parserFor(fixture.path);
+  const [parsedTask] = parser.snapshot().tasks;
+  assert.equal(parsedTask.zeroUsageVerified, true);
+  assert.equal(parsedTask.deltaUsage.totalTokens, 0);
+  assert.equal(parsedTask.quality, "complete");
+});
+
 test("T-COST-033/060/061 pricing context is attributed as-of each usage event ordinal", async (t) => {
   const fixture = await createFixture([
     line(0, "session_meta", childMeta()),
@@ -434,6 +456,28 @@ test("unknown formats and malformed task boundaries surface in parser health", a
   assert.equal(restoredHealth.unknownRecords, 2);
   assert.equal(restoredHealth.skippedRecords, 1);
   assert.equal(restoredHealth.status, "warning");
+});
+
+test("known non-accounting legacy events do not become parser warnings or alter usage", async (t) => {
+  const fixture = await createFixture([
+    line(0, "session_meta", childMeta()),
+    event(1, "task_started", { turn_id: TURN }),
+    event(2, "user_message", { message: "content is intentionally ignored by usage accounting" }),
+    event(3, "patch_apply_end", { call_id: "patch-1", turn_id: TURN, success: true }),
+    event(4, "web_search_end", { call_id: "search-1", query: "ignored", results: [] }),
+    token(5, usage(80), null, usage(80)),
+    event(6, "task_complete", { turn_id: TURN }),
+    event(7, "thread_rolled_back", { num_turns: 1 }),
+  ]);
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+
+  const parser = await parserFor(fixture.path);
+  const snapshot = parser.snapshot();
+  assert.equal(snapshot.health.unknownRecords, 0);
+  assert.equal(snapshot.health.skippedRecords, 0);
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].deltaUsage.totalTokens, 80);
+  assert.equal(snapshot.tasks[0].requestCount, 1);
 });
 
 test("restored cursors tail active and subsequent tasks without losing request continuity", async (t) => {

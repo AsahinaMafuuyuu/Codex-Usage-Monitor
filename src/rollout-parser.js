@@ -1,6 +1,11 @@
 import { createReadStream } from "node:fs";
 import { open, stat } from "node:fs/promises";
 import { materializeRequestLedgerTasks } from "./request-ledger.js";
+import {
+  attachRequestIdentities,
+  extractNativeRequestIdentity,
+  resolveRequestIdentity,
+} from "./request-identity.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import {
   addUsage,
@@ -37,7 +42,11 @@ const IGNORED_EVENT_TYPES = new Set([
   "context_compacted",
   "item_completed",
   "mcp_tool_call_end",
+  "patch_apply_end",
   "sub_agent_activity",
+  "thread_rolled_back",
+  "user_message",
+  "web_search_end",
 ]);
 
 export class SessionRolloutParser {
@@ -514,6 +523,7 @@ export class SessionRolloutParser {
       usageGeneration: 0,
       currentModel: null,
       serviceTier: null,
+      pendingZeroProofTaskId: null,
     };
     this.threads.set(threadId, thread);
     return thread;
@@ -525,6 +535,7 @@ export class SessionRolloutParser {
       this.countSkipped(context);
       return;
     }
+    if (thread.pendingZeroProofTaskId) thread.pendingZeroProofTaskId = null;
 
     const previous = thread.currentTaskId ? thread.tasks.get(thread.currentTaskId) : null;
     if (previous && previous.turnId !== turnId && previous.status === "in_progress") {
@@ -556,6 +567,8 @@ export class SessionRolloutParser {
         endLine: null,
         startByte: position.lineStartOffset,
         endByte: null,
+        requestEventCount: 0,
+        zeroUsageVerified: false,
       };
       thread.tasks.set(turnId, task);
     } else {
@@ -601,9 +614,26 @@ export class SessionRolloutParser {
     const lastUsage = normalizeUsage(payload.info?.last_token_usage);
     const usageEvent = classifyModelUsageEvent(thread.lastUsage, usage, lastUsage);
     const task = thread.currentTaskId ? thread.tasks.get(thread.currentTaskId) : null;
+    if (task) task.requestEventCount = (task.requestEventCount ?? 0) + 1;
+    if (!task && thread.pendingZeroProofTaskId) {
+      const pending = thread.tasks.get(thread.pendingZeroProofTaskId);
+      if (pending) {
+        pending.zeroUsageVerified =
+          usageEvent.classification === "duplicate" && usageEvent.reason === "unchanged_total";
+      }
+      thread.pendingZeroProofTaskId = null;
+    }
     if (usageEvent.classification === "generation_start") {
       thread.usageGeneration += 1;
     }
+    const nativeRequestIdentity = extractNativeRequestIdentity(record);
+    const requestIdentity = resolveRequestIdentity({
+      nativeRequestIdentity,
+      turnId: task?.turnId ?? null,
+      generation: thread.usageGeneration,
+      cumulativeUsage: usage,
+      lastUsage,
+    });
     const modelUsageEvent = {
       rootSessionId: this.rootSessionId,
       sourceKey,
@@ -623,6 +653,10 @@ export class SessionRolloutParser {
         thread.currentModel ?? task?.model ?? null,
         thread.serviceTier ?? null,
       ),
+      requestIdentity: requestIdentity.id,
+      requestIdentityKind: requestIdentity.kind,
+      requestIdentityReason: requestIdentity.reason,
+      requestNativeField: requestIdentity.nativeField,
     };
     this.modelUsageEvents.set(
       modelUsageEventKey(modelUsageEvent.sourceKey, modelUsageEvent.lineNumber),
@@ -675,6 +709,8 @@ export class SessionRolloutParser {
         endLine: position.lineNumber,
         startByte: position.lineStartOffset,
         endByte: position.lineEndOffset,
+        requestEventCount: 0,
+        zeroUsageVerified: false,
       };
       thread.tasks.set(turnId, task);
     }
@@ -688,6 +724,11 @@ export class SessionRolloutParser {
     task.endOrdinal = ordinal ?? task.endOrdinal;
     task.endLine = position.lineNumber;
     task.endByte = position.lineEndOffset;
+    if ((task.requestEventCount ?? 0) === 0 && thread.lastUsage) {
+      thread.pendingZeroProofTaskId = turnId;
+    } else if (thread.pendingZeroProofTaskId === turnId) {
+      thread.pendingZeroProofTaskId = null;
+    }
     if (thread.currentTaskId === turnId) thread.currentTaskId = null;
   }
 
@@ -705,7 +746,7 @@ export class SessionRolloutParser {
   snapshot() {
     const tasks = [];
     const agents = [];
-    const modelUsageEvents = [...this.modelUsageEvents.values()]
+    const modelUsageEvents = attachRequestIdentities([...this.modelUsageEvents.values()])
       .sort((left, right) =>
         compareText(left.sourceKey, right.sourceKey) || left.lineNumber - right.lineNumber
       )
@@ -1020,6 +1061,7 @@ function materializeTask(task) {
     endLine: task.endLine,
     startByte: task.startByte,
     endByte: task.endByte,
+    zeroUsageVerified: Boolean(task.zeroUsageVerified),
   };
 }
 
@@ -1046,6 +1088,8 @@ function restoreTask(storedTask, entry = null) {
     endLine: numberOrNull(storedTask.endLine),
     startByte: numberOrNull(storedTask.startByte),
     endByte: numberOrNull(storedTask.endByte),
+    requestEventCount: 0,
+    zeroUsageVerified: Boolean(storedTask.zeroUsageVerified),
   };
 }
 
@@ -1066,6 +1110,10 @@ function restoreModelUsageEvent(storedEvent) {
     model: storedEvent.model ?? null,
     serviceTier: normalizeObservedServiceTier(storedEvent.serviceTier),
     pricingContextQuality: storedEvent.pricingContextQuality ?? null,
+    requestIdentity: storedEvent.requestIdentity ?? null,
+    requestIdentityKind: storedEvent.requestIdentityKind ?? "unresolved",
+    requestIdentityReason: storedEvent.requestIdentityReason ?? null,
+    requestNativeField: storedEvent.requestNativeField ?? null,
   };
 }
 

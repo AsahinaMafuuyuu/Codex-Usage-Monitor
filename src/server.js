@@ -90,7 +90,7 @@ export async function startApplication(options = {}) {
   if (options.openBrowser !== false) openBrowser(accessUrl);
 
   const close = async () => {
-    monitor.close();
+    await monitor.close();
     await new Promise((done) => server.close(done));
     database.close();
   };

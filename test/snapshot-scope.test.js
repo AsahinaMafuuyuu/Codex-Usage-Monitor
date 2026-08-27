@@ -109,7 +109,7 @@ test("T-DAY-010..033 materializes request-ledger task and agent day slices", () 
   assert.equal(full.summary.totalCostEstimate.amountUsd, 0.0006);
 });
 
-test("T-DAY-021/022 keeps lifecycle slices without usage and event-backed slices without timestamps", () => {
+test("T-DAY2-002 keeps only request-backed day slices and still supports event-backed tasks without timestamps", () => {
   const stored = crossMidnightStoredSession();
   stored.tasks.push({
     rootSessionId: ROOT,
@@ -143,8 +143,7 @@ test("T-DAY-021/022 keeps lifecycle slices without usage and event-backed slices
   const tasks = day2.agents.flatMap((agent) => agent.tasks);
   const lifecycleOnly = tasks.find((task) => task.turnId === "dddddddd-dddd-4ddd-8ddd-dddddddddddd");
   const eventBacked = tasks.find((task) => task.turnId === "eeeeeeee-eeee-4eee-8eee-eeeeeeeeeeee");
-  assert.equal(lifecycleOnly.deltaUsage, null);
-  assert.equal(["partial", "unknown"].includes(lifecycleOnly.quality), true);
+  assert.equal(lifecycleOnly, undefined);
   assert.equal(eventBacked.deltaUsage.totalTokens, 25);
 });
 

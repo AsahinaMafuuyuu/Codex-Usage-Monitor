@@ -2,11 +2,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
-import {
-  combineCostSummaries,
-  pricingCatalogSummary,
-  summarizeTaskCosts,
-} from "./pricing.js";
+import { pricingCatalogSummary } from "./pricing.js";
 import {
   readTaskPreview,
   scanLatestQuota,
@@ -32,6 +28,9 @@ export class UsageMonitor extends EventEmitter {
     this.lastUpdateAt = null;
     this.lastErrors = [];
     this.timelinePromise = null;
+    this.indexerPromise = null;
+    this.pendingProcessPromise = null;
+    this.closePromise = null;
     this.timelineDirtySessions = new Set();
     this.timelineStats = {
       dirtySessions: 0,
@@ -55,6 +54,7 @@ export class UsageMonitor extends EventEmitter {
     this.pollTimer.unref();
     this.reconcileTimer = setInterval(() => void this.reconcile(), 10_000);
     this.reconcileTimer.unref();
+    void this.runBackgroundIndexer();
     return this.health();
   }
 
@@ -76,33 +76,52 @@ export class UsageMonitor extends EventEmitter {
   }
 
   async timeline() {
-    if (this.timelinePromise) return this.timelinePromise;
-    this.timelinePromise = this.buildSqlTimeline();
-    try {
-      return await this.timelinePromise;
-    } finally {
-      this.timelinePromise = null;
+    let timeline = this.database.getTimeline(this.repository.sessions);
+    if (
+      (timeline.months?.length ?? 0) === 0 &&
+      (this.timelineDirtySessions.size > 0 || this.indexerPromise)
+    ) {
+      await this.runBackgroundIndexer();
+      timeline = this.database.getTimeline(this.repository.sessions);
+      return timeline;
     }
+    void this.runBackgroundIndexer();
+    return timeline;
   }
 
   async buildSqlTimeline() {
-    const started = Date.now();
-    const dirtySessions = [...this.timelineDirtySessions];
+    void this.runBackgroundIndexer();
+    return this.database.getTimeline(this.repository.sessions);
+  }
+
+  async runBackgroundIndexer() {
+    if (this.closed) return null;
+    if (this.indexerPromise) return this.indexerPromise;
+    if (this.timelineDirtySessions.size === 0) return this.timelineStats;
+    this.indexerPromise = (async () => {
+      const started = Date.now();
     let replayedFiles = 0;
     let tailedFiles = 0;
     let sessionsSynced = 0;
-    for (const sessionId of dirtySessions) {
+      while (!this.closed && this.timelineDirtySessions.size > 0) {
+        const sessionId =
+          this.selectedSessionId && this.timelineDirtySessions.has(this.selectedSessionId)
+            ? this.selectedSessionId
+            : this.timelineDirtySessions.values().next().value;
+        if (!sessionId) break;
       this.timelineDirtySessions.delete(sessionId);
       try {
         const result = await this.syncTimelineSession(sessionId);
         replayedFiles += result.replayedFiles;
         tailedFiles += result.tailedFiles;
         sessionsSynced += 1;
+          if (sessionId === this.selectedSessionId) this.emit("update", { sessionId });
       } catch (error) {
         this.timelineDirtySessions.add(sessionId);
-        this.recordError(`日期索引增量同步失败：${sessionId}`, error);
-        throw error;
+          this.recordError(`后台索引同步失败：${sessionId}`, error);
+          break;
       }
+        await new Promise((resolve) => setImmediate(resolve));
     }
     this.timelineStats = {
       dirtySessions: this.timelineDirtySessions.size,
@@ -112,8 +131,16 @@ export class UsageMonitor extends EventEmitter {
       lastSyncMs: Date.now() - started,
       lastSyncAt: new Date().toISOString(),
     };
-    const timeline = this.database.getTimeline(this.repository.sessions);
-    return attachTimelineCosts(timeline, this.database.getTimelineCostTasks());
+      return this.timelineStats;
+    })();
+    try {
+      return await this.indexerPromise;
+    } finally {
+      this.indexerPromise = null;
+      if (!this.closed && this.timelineDirtySessions.size > 0) {
+        queueMicrotask(() => void this.runBackgroundIndexer());
+      }
+    }
   }
 
   refreshTimelineDirtySessions() {
@@ -130,6 +157,7 @@ export class UsageMonitor extends EventEmitter {
     const indexState = this.database.getSessionIndexState(sessionId);
     if (!indexState || indexState.parseStatus === "not_imported") return false;
     if (!indexState.requestLedgerReady) return false;
+    if (!indexState.parserCurrent) return false;
     const cursors = new Map(
       this.database.getCursors(sessionId).map((cursor) => [cursor.sourceKey, cursor]),
     );
@@ -145,6 +173,7 @@ export class UsageMonitor extends EventEmitter {
     if (!sessionId) return;
     this.timelineDirtySessions.add(sessionId);
     this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
+    queueMicrotask(() => void this.runBackgroundIndexer());
   }
 
   async syncTimelineSession(sessionId) {
@@ -171,13 +200,18 @@ export class UsageMonitor extends EventEmitter {
     }
 
     const parser = new SessionRolloutParser(sessionId, session);
-    const storedSnapshot = this.database.getSession(sessionId);
+    const storedSnapshot = this.database.getRawSession(sessionId);
     const cursors = this.database.getCursors(sessionId);
     const indexState = this.database.getSessionIndexState(sessionId);
     let parsed;
     let replayedFiles = 0;
     let tailedFiles = 0;
-    if (storedSnapshot && cursors.length && indexState?.requestLedgerReady) {
+    if (
+      storedSnapshot &&
+      cursors.length &&
+      indexState?.requestLedgerReady &&
+      indexState?.parserCurrent
+    ) {
       const recovery = await parser.restore(storedSnapshot, cursors, files);
       const restoredPaths = new Set(recovery.restoredPaths);
       const replayPaths = new Set(recovery.replayPaths);
@@ -195,6 +229,7 @@ export class UsageMonitor extends EventEmitter {
       parsed = await parser.parseFiles(files);
       replayedFiles = files.length;
     }
+    if (this.closed) return { replayedFiles, tailedFiles };
     this.database.replaceSession(parsed, { persistQuotas: false });
     return { replayedFiles, tailedFiles };
   }
@@ -202,6 +237,21 @@ export class UsageMonitor extends EventEmitter {
   async selectSession(sessionId, scope = { type: "session" }) {
     if (this.selectionPromise) await this.selectionPromise;
     if (this.selectedSessionId === sessionId && this.parser) return this.snapshot(sessionId, scope);
+    let indexState = this.database.getSessionIndexState(sessionId);
+    let cached = hasImportedRequestProjection(indexState) ? this.snapshot(sessionId, scope) : null;
+    if (!cached && (this.timelineDirtySessions.has(sessionId) || this.indexerPromise)) {
+      this.markTimelineDirty(sessionId);
+      await this.runBackgroundIndexer();
+      indexState = this.database.getSessionIndexState(sessionId);
+      cached = hasImportedRequestProjection(indexState) ? this.snapshot(sessionId, scope) : null;
+    }
+    if (cached) {
+      this.selectedSessionId = sessionId;
+      this.parser = null;
+      this.selectedEntries = this.repository.getFilesForRoot(sessionId);
+      if (!this.isTimelineSessionCurrent(sessionId)) this.markTimelineDirty(sessionId);
+      return cached;
+    }
     const session = this.repository.getSession(sessionId) ?? this.database.getSession(sessionId)?.session;
     if (!session) return null;
     const files = this.repository.getFilesForRoot(sessionId);
@@ -214,11 +264,16 @@ export class UsageMonitor extends EventEmitter {
 
     this.selectionPromise = (async () => {
       const parser = new SessionRolloutParser(sessionId, session);
-      const storedSnapshot = this.database.getSession(sessionId);
+      const storedSnapshot = this.database.getRawSession(sessionId);
       const cursors = this.database.getCursors(sessionId);
       const indexState = this.database.getSessionIndexState(sessionId);
       let parsed;
-      if (storedSnapshot?.tasks.length && cursors.length && indexState?.requestLedgerReady) {
+      if (
+        storedSnapshot?.tasks.length &&
+        cursors.length &&
+        indexState?.requestLedgerReady &&
+        indexState?.parserCurrent
+      ) {
         const recovery = await parser.restore(storedSnapshot, cursors, files);
         const restoredPaths = new Set(recovery.restoredPaths);
         const replayPaths = new Set(recovery.replayPaths);
@@ -233,6 +288,7 @@ export class UsageMonitor extends EventEmitter {
       } else {
         parsed = await parser.parseFiles(files);
       }
+      if (this.closed) return;
       this.database.replaceSession(parsed);
       this.timelineDirtySessions.delete(sessionId);
       this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
@@ -301,17 +357,34 @@ export class UsageMonitor extends EventEmitter {
 
   health() {
     const parserHealth = this.parser?.snapshot().health ?? null;
+    const storage = this.database.getHealthStats();
+    const ownership = storage.ownership ?? {};
+    const degradedOwnership = Number(ownership.unresolvedRequests ?? 0) > 0;
     return {
-      status: this.lastErrors.length || parserHealth?.status === "warning" ? "warning" : "healthy",
+      status: this.lastErrors.length || parserHealth?.status === "warning" || degradedOwnership
+        ? "warning"
+        : "healthy",
       observerMode: "rollout-file-observer",
       selectedSessionId: this.selectedSessionId,
       liveWatching: this.watchers.length > 0 || Boolean(this.pollTimer),
       lastUpdateAt: this.lastUpdateAt,
       repository: this.repository.summary(),
-      storage: this.database.getHealthStats(),
+      projectionVersion: storage.projection?.version ?? null,
+      projectionGeneration: storage.projection?.generation ?? 0,
+      canonicalRequests: ownership.canonicalRequests ?? 0,
+      inheritedRequestCopies: ownership.inheritedRequestCopies ?? 0,
+      unresolvedRequests: ownership.unresolvedRequests ?? 0,
+      canonicalTasks: ownership.canonicalTasks ?? 0,
+      inheritedTaskCopies: ownership.inheritedTaskCopies ?? 0,
+      unresolvedTasks: ownership.unresolvedTasks ?? 0,
+      pricingProjectionVersion: pricingCatalogSummary().policyVersion ?? null,
+      storage,
       timeline: {
         ...this.timelineStats,
         dirtySessions: this.timelineDirtySessions.size,
+        projectionDirtySessions: this.timelineDirtySessions.size,
+        indexQueueLength: this.timelineDirtySessions.size,
+        activeIndexJobs: this.indexerPromise ? 1 : 0,
       },
       parser: parserHealth,
       recentErrors: this.lastErrors.slice(-5),
@@ -345,6 +418,17 @@ export class UsageMonitor extends EventEmitter {
   }
 
   async processPendingPaths() {
+    if (this.pendingProcessPromise) return this.pendingProcessPromise;
+    this.pendingProcessPromise = this.processPendingPathsInternal();
+    try {
+      return await this.pendingProcessPromise;
+    } finally {
+      this.pendingProcessPromise = null;
+    }
+  }
+
+  async processPendingPathsInternal() {
+    if (this.closed) return;
     const paths = [...this.pendingPaths];
     this.pendingPaths.clear();
     this.pendingTimer = null;
@@ -400,7 +484,7 @@ export class UsageMonitor extends EventEmitter {
   }
 
   persistAndBroadcast() {
-    if (!this.parser || !this.selectedSessionId) return;
+    if (this.closed || !this.parser || !this.selectedSessionId) return;
     const parsed = this.parser.snapshot();
     this.database.replaceSession(parsed);
     this.timelineDirtySessions.delete(this.selectedSessionId);
@@ -417,6 +501,21 @@ export class UsageMonitor extends EventEmitter {
       for (const entry of additions) {
         this.markTimelineDirty(entry.rootSessionId);
         if (entry.rootSessionId === this.selectedSessionId) this.schedulePath(entry.path);
+      }
+      for (const entry of this.repository.allFiles()) {
+        try {
+          const fileStat = await stat(entry.path);
+          if (
+            fileStat.size !== entry.fileSize ||
+            entry.modifiedAtMs == null ||
+            Math.abs(fileStat.mtimeMs - entry.modifiedAtMs) >= 1
+          ) {
+            const refreshed = await this.repository.refreshFile(entry.path);
+            if (refreshed) this.markTimelineDirty(refreshed.rootSessionId);
+          }
+        } catch (error) {
+          if (error?.code !== "ENOENT") this.recordError(`后台 stat 校验失败：${entry.path}`, error);
+        }
       }
       await this.refreshGlobalQuota();
     } catch (error) {
@@ -512,38 +611,22 @@ export class UsageMonitor extends EventEmitter {
   }
 
   close() {
+    if (this.closePromise) return this.closePromise;
     this.closed = true;
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];
+    this.pendingPaths.clear();
+    this.timelineDirtySessions.clear();
+    this.timelineStats.dirtySessions = 0;
+    const active = [this.pendingProcessPromise, this.selectionPromise, this.indexerPromise].filter(Boolean);
+    this.closePromise = Promise.allSettled(active).then(() => undefined);
+    return this.closePromise;
   }
 }
 
-function attachTimelineCosts(timeline, tasks) {
-  const taskCostsBySessionDay = new Map();
-  for (const task of tasks ?? []) {
-    const day = task.day;
-    if (!day) continue;
-    const key = `${task.rootSessionId}\u0000${day}`;
-    if (!taskCostsBySessionDay.has(key)) taskCostsBySessionDay.set(key, []);
-    taskCostsBySessionDay.get(key).push(task);
-  }
-
-  for (const month of timeline.months ?? []) {
-    for (const day of month.days ?? []) {
-      for (const session of day.sessions ?? []) {
-        const key = `${session.id}\u0000${day.key}`;
-        session.costEstimate = summarizeTaskCosts(taskCostsBySessionDay.get(key) ?? []);
-      }
-      day.costEstimate = combineCostSummaries(
-        (day.sessions ?? []).map((session) => session.costEstimate),
-      );
-    }
-    month.costEstimate = combineCostSummaries(
-      (month.days ?? []).map((day) => day.costEstimate),
-    );
-  }
-  return timeline;
+function hasImportedRequestProjection(indexState) {
+  return Boolean(indexState?.requestLedgerReady && indexState.parseStatus !== "not_imported");
 }
