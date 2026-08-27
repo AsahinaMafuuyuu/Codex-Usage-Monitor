@@ -897,6 +897,114 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Delivered evidence (2026-08-26):** `npm test` reports 52 tests / 51 passed / 0 failed / 1 skipped; the skipped test is the optional real five-task fixture because `CODEX_MONITOR_REAL_FIXTURE` was not configured. `npm run check` and `git diff --check` pass. The Chrome/CDP `verify:live-ui` harness replays the page's real snapshot callback without writing rollout data: an existing task table remains the same DOM with `scrollLeft=354`, focus remains on `.task-table-wrap`, manually collapsed Agent state remains collapsed, and a synthetic task insertion above the visible row causes a 66px scroll compensation while the surviving row's viewport top delta remains exactly 0px.
 
+## Phase 16: Day-scoped Request Ledger snapshots
+
+### Goal
+
+把“工程”与“时间”两种导航正式定义为不同 snapshot scope：工程模式继续展示完整 session；时间模式以 `(sessionId, local day)` 为选择身份，Task / Agent / Session / Cost 全部只统计该本地自然日。token 日归属从 task `startedAt` 更新为 verified Request Ledger event `observedAt`。
+
+**设计事实源：** [`docs/DESIGN-DAY-SCOPED-SNAPSHOT.md`](../docs/DESIGN-DAY-SCOPED-SNAPSHOT.md)
+
+**测试门槛：** [`docs/TEST-DAY-SCOPED-SNAPSHOT.md`](../docs/TEST-DAY-SCOPED-SNAPSHOT.md)
+**ADR：** [`ADR-0018`](../docs/decisions/0018-day-scoped-request-ledger-snapshot.md)
+
+### Task 1: Build the day-slice domain seam and schema v12 calendar semantics
+
+**Description:** 建立唯一的本地日期边界与 Task Day Slice 物化语义；`session_day_usage` 改为按 Request Ledger `observedAt` 分日，并通过 schema v12 从已持久化 Request Ledger 重建，避免为语义迁移重放 rollout。
+
+**Acceptance criteria:**
+
+- [ ] 跨午夜 verified usage 按本地 event day 分桶，六字段 `day1 + day2 == full`。
+- [ ] Task 生命周期跨日或当天存在归属 event 时形成 Task Day Slice；usage/request/coverage/quality 按日裁剪，身份/原始时间不伪造。
+- [ ] v11 -> v12 calendar rebuild 对 Request-ready session `replayedFiles=0`，并建立 `(root_session_id, observed_at, classification)` 查询索引。
+
+**Verification:** TEST-DAY-SCOPED-SNAPSHOT T-DAY-001~043，`npm test`, `npm run check`, `git diff --check`。
+
+**Dependencies:** ADR-0016 Request-only architecture, ADR-0018.
+
+**Files likely touched:** `src/request-ledger.js`, `src/database.js`, `test/request-ledger.test.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Materialize scoped Agent and Session snapshots
+
+**Description:** 让 monitor 通过统一 scope interface 生成 full-session 或 day-scoped snapshot。day scope 从 Task Day Slice 重建 Agent own/subtree usage、request、cost 和 Session summary，不复用完整 session aggregate。
+
+**Acceptance criteria:**
+
+- [ ] `snapshot(sessionId, session-scope)` 保持现有完整 session 数值。
+- [ ] `snapshot(sessionId, day-scope)` 的 task/agent/summary/request/cost 均只来自当天。
+- [ ] 当日无关 Agent 被省略，必要祖先保留；Timeline 与 day snapshot 对同一 `session + day` 对账一致。
+
+**Verification:** T-DAY-020~054，`npm test`, `npm run check`。
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/request-ledger.js`, `src/database.js`, `src/monitor.js`, `test/database-server.test.js`, `test/pricing.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 3: Expose day-scoped HTTP and SSE contracts
+
+**Description:** 在现有 session snapshot / SSE endpoint 上增加严格校验的 `?day=YYYY-MM-DD` scope，并确保每个 SSE listener 后续更新持续使用其原始 scope。
+
+**Acceptance criteria:**
+
+- [ ] 无 `day` 的 endpoint 行为兼容；合法 day 返回显式 scope metadata；非法 day 返回 400。
+- [ ] 同一 session 的两个日期请求可连续得到独立 snapshot，不发生 cache/scope 串线。
+- [ ] day-scoped SSE 不接收其他日期 usage；full-session listener 继续得到完整总量。
+
+**Verification:** T-DAY-050~062，`npm test`, `npm run check`。
+
+**Dependencies:** Task 2.
+
+**Files likely touched:** `src/server.js`, `src/monitor.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Make time-view selection identity `(sessionId, day)`
+
+**Description:** 前端为时间模式保存 `selectedDay`，按二元组标记 active、发起 snapshot/SSE 请求并处理模式切换；同一 session 在多个日期可分别选择，同时继续遵守 ADR-0017 的稳定交互契约。
+
+**Acceptance criteria:**
+
+- [ ] 时间按钮携带 id/day；点击同一 session 的另一日期会重新请求对应 day scope。
+- [ ] Project -> Time 和 Time -> Project 都会切换正确 snapshot scope，不出现“时间导航 + 完整详情”。
+- [ ] scoped live updates 不重置 session navigator、task-table horizontal scroll、Agent 展开状态或 visible anchor。
+
+**Verification:** T-DAY-070~073，静态 UI tests，desktop + narrow browser E2E，`npm test`, `npm run check`, `git diff --check`。
+
+**Dependencies:** Task 3, ADR-0017.
+
+**Files likely touched:** `public/app.js`, `public/index.html`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 5: Execute the implementation gate and close delivery
+
+**Description:** 严格执行 `docs/TEST-DAY-SCOPED-SNAPSHOT.md`。任何失败都先回到设计/ADR 分类原因；默认修实现，不通过削弱断言来掩盖设计偏差。最终把实际证据写入 Verification/Delivery/API/Architecture 等当前行为文档。
+
+**Acceptance criteria:**
+
+- [ ] T-DAY-001~082 中适用测试全部通过；未配置真实 fixture 的项明确 skipped。
+- [ ] `npm test`, `npm run check`, `git diff --check` 和 desktop/narrow E2E 全部通过。
+- [ ] `docs/VERIFICATION.md` 记录 day1/day2/full 六字段对账、Timeline/detail 对账、SSE scope、schema v12 no-replay 证据；Delivery 从“设计已批准”改为“已交付”。
+
+**Verification:** 按 TEST-DAY-SCOPED-SNAPSHOT 第 13~15 节执行。
+
+**Dependencies:** Tasks 1-4.
+
+**Files likely touched:** `docs/VERIFICATION.md`, `docs/DELIVERY.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `README.md`, `CHANGELOG.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Day-scoped snapshot ready for implementation
+
+- [x] 业务需求、数据边界、日期语义和 scope interface 已冻结。
+- [x] ADR-0018 已记录为什么从 task-start day 切换为 event-observed day。
+- [x] 测试方案已规定跨午夜、迁移、API/SSE、前端二元选择和失败回退流程。
+- [ ] 功能实现尚未开始；开始 Task 1 前应再次阅读 DESIGN + TEST + ADR-0018。
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |

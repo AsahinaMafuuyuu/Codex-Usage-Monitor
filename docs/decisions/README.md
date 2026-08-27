@@ -21,6 +21,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0015](0015-request-ledger-primary-aggregation.md) | Accepted | 以累计快照验证后的 Request Ledger 作为 Task / Agent / Session / Timeline 主聚合事实源 |
 | [0016](0016-retire-boundary-ledger.md) | Accepted | 退役 Boundary Ledger 运行时/存储/API，以 Request Ledger 作为唯一统计事实源 |
 | [0017](0017-live-interaction-stable-rendering.md) | Accepted | 用稳定 DOM key、局部 reconcile 与视觉锚点保护实时更新期间的滚动、展开和焦点状态 |
+| [0018](0018-day-scoped-request-ledger-snapshot.md) | Accepted | 时间视图按 Request Ledger `observedAt` 构造 `session + day` slice，工程视图保留完整 session |
 
 ## 新增 ADR
 

@@ -73,3 +73,10 @@
 - [x] Preserve the visible vertical anchor across structural live updates
 - [x] Stop selected-session snapshots from destructively rebuilding the session navigator
 - [x] Record ADR-0017 live-interaction rendering contract and verification evidence
+- [x] Freeze Phase 16 day-scoped snapshot design, ADR, delivery boundary, and test gate
+- [ ] Implement schema v12 event-observed calendar materialization without rollout replay
+- [ ] Implement scoped Task / Agent / Session aggregation for `session + day`
+- [ ] Add `?day=` snapshot/SSE contracts and `(sessionId, day)` frontend selection identity
+- [ ] Reconcile Timeline live values with day-scoped detail without breaking interaction stability
+- [ ] Execute the Phase 16 test plan and fix any failures by returning to the approved design
+- [ ] Record Phase 16 verification evidence and mark the delivery baseline as implemented

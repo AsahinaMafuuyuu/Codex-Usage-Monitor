@@ -4,6 +4,7 @@
 - **Date:** 2026-08-26
 - **Supersedes:** ADR-0002 中“任务边界差分作为正式聚合来源”的部分。
 - **Updated by:** [ADR-0016](0016-retire-boundary-ledger.md) 已在 schema v11 结束迁移期并删除 Boundary Ledger 运行时/存储/API；本 ADR 的 Request Ledger 主事实源、验证规则、日期和 request-unit 语义继续有效。
+- **Date semantics updated by:** [ADR-0018](0018-day-scoped-request-ledger-snapshot.md) 将时间视图从 task `startedAt` 日归属更新为 verified Request Ledger event `observedAt` 的本地自然日切片；Request Ledger 主事实源和 request-unit 语义不变。
 
 ## Context
 

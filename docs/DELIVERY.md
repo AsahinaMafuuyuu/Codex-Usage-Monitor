@@ -112,6 +112,38 @@ Request Ledger 现在是唯一运行时统计路径。已有 v10 数据库升级
 
 Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0`、Request-only task/agent/session/calendar/cost、跨重启与跨 rollout request continuity、verified generation reset、unexplained anomaly 的 partial 下限，以及 API 不再暴露 boundary 字段。最终验证结果记录在 [VERIFICATION.md](VERIFICATION.md)。
 
+## Phase 16 预开发交付基线：时间视图 Day-scoped Snapshot
+
+**状态：设计已批准，尚未进入功能实现。** 当前运行时仍是“Timeline 左侧按日聚合、点击后右侧读取完整 session”的旧行为；本节描述下一阶段必须实现的业务需求、规范和边界，不能把它误写成已经交付的功能。
+
+### 业务需求
+
+- **工程筛选 = 完整 session。** 用户从工程目录下选择 session 时，Task、Agent、Token、Request Ledger coverage、缓存命中率和 USD 等值估算都覆盖完整 session 生命周期。
+- **时间筛选 = session + 本地自然日。** 用户从某一天选择 session 时，右侧所有统计只包含该 session 在该日的记录；同一 session 可在多个日期分别打开。
+- **跨午夜按真实 usage event 分日。** token 不再把整个 task 粗放地归到 `task.startedAt` 当天，而按 verified Request Ledger event `observedAt` 的本地自然日分桶。
+- **智能体统计同 scope。** 时间模式 Agent own/subtree token、request count、task count 和 cost 必须由当天 Task Day Slice 重新聚合，不能读取完整 session 的持久化 Agent aggregate。
+- **Timeline 与详情同口径。** 左侧某日 session 数值与右侧该 `session + day` snapshot 必须一致。
+- **实时更新保持 scope。** day-scoped SSE 只能更新该日数据，同时继续保护滚动、展开、焦点和可见锚点。
+
+### 规范与事实边界
+
+- Request Ledger 仍是唯一 token 事实源，只接受 `verified_increment` / `generation_start` usage。
+- duplicate 不增量；unverified/anomaly 不补数，只降低 coverage/quality。
+- 未归属到已知 task 的 event 不进入 Task/Agent/Session 主统计。
+- 本地日期必须按监控器时区的日历午夜处理并兼容 DST，不能固定加 24 小时。
+- task 可以跨日形成多个**查询 slice**，但 SQLite 不复制 task 身份，也不伪造按日 duration。
+- USD 继续是标准 API 等值估算，不是 Codex 订阅账单或额度换算。
+- `.codex` 继续严格只读；schema v12 的日历语义迁移应直接利用已持久化 Request Ledger，不因迁移重放 Request-ready 历史。
+
+### 实施契约
+
+- 设计事实源：[DESIGN-DAY-SCOPED-SNAPSHOT.md](DESIGN-DAY-SCOPED-SNAPSHOT.md)。
+- 架构决策：[ADR-0018](decisions/0018-day-scoped-request-ledger-snapshot.md)。
+- 开发后测试门槛：[TEST-DAY-SCOPED-SNAPSHOT.md](TEST-DAY-SCOPED-SNAPSHOT.md)。
+- 任务拆分：[`tasks/plan.md`](../tasks/plan.md) Phase 16。
+
+开发完成后，如果任何定向或全量测试失败，必须重新对照设计文档和 ADR 判断是实现偏离、测试偏离还是设计歧义；默认修正实现而不是弱化测试。只有定向测试、`npm test`、`npm run check`、`git diff --check` 和必要的浏览器验收全部通过后，才能把本节状态改为“已交付”，并把真实执行证据写入 `docs/VERIFICATION.md`。
+
 ## 交付核对
 
 - [x] 源码、静态页面和测试在独立项目目录中。
@@ -121,3 +153,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] 数据口径、隐私边界和真实样本证据已明确区分。
 - [x] 前端视觉迭代已提供独立接手文档与逐决策版本控制规则。
 - [x] Request Ledger 已在 reconciliation、增量 tail、重启、schema v9→v10 迁移和真实历史回放门槛通过后成为正式主统计事实源；schema v11 已结束迁移期并退役 Boundary Ledger，旧实现由 `usage-boundary-ledger-v1` 保存。
+- [x] Phase 16 的 Day-scoped Snapshot 业务边界、设计、ADR 和测试回退闭环已冻结；功能实现与验证仍待后续开发。
