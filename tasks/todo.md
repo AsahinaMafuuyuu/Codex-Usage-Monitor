@@ -89,3 +89,12 @@
 - [x] Replace API-equivalent wording with subscription-standard-equivalent plus explicit coverage
 - [x] Run real-history cost reconciliation separating historical-rate, long-context, Fast, and unknown coverage effects
 - [x] Execute all T-COST gates and close Phase 17 delivery only after full verification
+- [ ] Freeze Phase 18 canonical ownership / request-day / projection design and ADR-0020
+- [ ] Resolve legacy fork-history ownership without losing verified evidence
+- [ ] Replace lifecycle-day slices with canonical Request-day Task grouping
+- [ ] Add verified-zero proof for no-request tasks
+- [ ] Add versioned SQL cost/day projections and remove Timeline full-history repricing
+- [ ] Move dirty-session parsing to a background indexer; cached clicks must not parse
+- [ ] Shadow-rebuild polluted history and reconcile canonical/inherited/unresolved evidence
+- [ ] Execute Phase 18 tests, real-history hashes, performance gates and browser QA
+- [ ] Publish Phase 18 delivery/verification documentation

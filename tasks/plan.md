@@ -1149,3 +1149,47 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 ## Decision Log
 
 Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisions/README.md). This plan remains the implementation history; ADRs are the source of truth for architectural rationale and consequences.
+
+## Phase 18: Canonical Request Ownership / Request-Day / Projection Cache
+
+### Overview
+
+修复新版 `history_mode=legacy` fork history 被重复归属的问题，并把运行时模型收敛为：Rollout=证据、Canonical Request=计量事实、Task/Agent/Session/Day=不同投影。Time 模式只按 canonical Request `observedAt` 切片；后台 Indexer 维护 versioned SQL projection，页面点击不再承担 parse/reprice。
+
+设计事实源：`docs/DESIGN-CANONICAL-REQUEST-PROJECTION.md`、`docs/TEST-CANONICAL-REQUEST-PROJECTION.md`、ADR-0020。
+
+### Task 1: Ownership resolver + evidence reconciliation
+
+- [ ] 用 turn identity + lineage 选 canonical Task owner；nested descendants 的 copied turns 不形成新 Task/Request。
+- [ ] ownership 冲突显式 unresolved，raw verified evidence 必须满足 canonical + inherited + unresolved 守恒。
+- [ ] 覆盖无 ordinal / 无 history-start 的真实 legacy fork fixture。
+
+### Task 2: Request-day projection + verified-zero
+
+- [ ] Time 只按 canonical Request observed day 聚合并按 Task 分组；Project 保留完整 Task。
+- [ ] lifecycle-only Task 不污染另一天；fork copy 的重写 timestamp 不污染 day ledger。
+- [ ] 无 Request Task 仅在严格 cumulative equality proof 下显示 `0 token / $0.00`。
+
+### Task 3: Versioned SQL projection
+
+- [ ] schema 持久化 ownership/projection version 与 day cost/coverage，旧 raw rows 保留审计但退出 runtime aggregate。
+- [ ] Timeline 直接查询 day projection，不再加载全部 Task/Event 后现场定价。
+- [ ] projection/pricing version 变化可重建，且重建不修改 rollout。
+
+### Task 4: Background indexer
+
+- [ ] 初始化/文件变化只把 stale session 入队，低并发后台同步 parse→ownership→projection。
+- [ ] cached session 点击只读 DB snapshot；dirty 状态通过 health/SSE 披露，不阻塞 UI。
+- [ ] watcher/tail/restart 仍保持增量正确性。
+
+### Task 5: Shadow rebuild / delivery
+
+- [ ] 对真实污染历史执行 canonical/inherited/unresolved reconciliation，禁止 verified evidence 无归宿。
+- [ ] 真实 warm Timeline <200ms、day detail <300ms（开发机目标）；源 `.codex` hash 不变。
+- [ ] 全量 tests/check/diff/browser QA 通过后更新 DELIVERY/VERIFICATION/API/ARCHITECTURE/OPERATIONS/README/CHANGELOG。
+
+### Checkpoint
+
+- [ ] Task/Request/Day 语义与 ADR-0020 一致。
+- [ ] 任何“Token 下降”都能由 inherited-copy 去重解释，不能来自静默删除。
+- [ ] 页面点击不再是索引器入口。
