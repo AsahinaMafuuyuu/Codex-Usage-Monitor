@@ -87,6 +87,132 @@ test("paginated copied history is skipped and cumulative snapshots are differenc
   assert.equal(preview.text, "Review the cumulative usage boundary carefully.");
 });
 
+test("T-ZERO-001 parser proves zero usage only after an unchanged post-task cumulative snapshot", async (t) => {
+  const fixture = await createFixture([
+    line(0, "session_meta", childMeta()),
+    token(1, usage(100)),
+    event(2, "task_started", { turn_id: TURN, started_at: 1_700_000_002 }),
+    line(3, "turn_context", { turn_id: TURN, model: "gpt-5.6-terra", effort: "high" }),
+    event(4, "task_complete", {
+      turn_id: TURN,
+      started_at: 1_700_000_002,
+      completed_at: 1_700_000_004,
+    }),
+    token(5, usage(100), null, usage(100)),
+  ]);
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+
+  const parser = await parserFor(fixture.path);
+  const [parsedTask] = parser.snapshot().tasks;
+  assert.equal(parsedTask.zeroUsageVerified, true);
+  assert.equal(parsedTask.deltaUsage.totalTokens, 0);
+  assert.equal(parsedTask.quality, "complete");
+});
+
+test("T-COST-033/060/061 pricing context is attributed as-of each usage event ordinal", async (t) => {
+  const fixture = await createFixture([
+    line(0, "session_meta", childMeta()),
+    event(1, "task_started", { turn_id: TURN }),
+    line(2, "turn_context", { turn_id: TURN, model: "gpt-5.6-terra", effort: "high" }),
+    event(3, "thread_settings_applied", { thread_settings: { service_tier: "default" } }),
+    token(4, usage(100)),
+    line(5, "turn_context", { turn_id: TURN, model: "gpt-5.6-luna", effort: "high" }),
+    event(6, "thread_settings_applied", { thread_settings: { service_tier: "fast" } }),
+    token(7, usage(150), null, usageDelta(100, 150)),
+    event(8, "task_complete", { turn_id: TURN }),
+  ]);
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+
+  const parser = await parserFor(fixture.path);
+  const snapshot = parser.snapshot();
+  const pricedEvents = snapshot.modelUsageEvents.filter((event) =>
+    event.classification === "generation_start" || event.classification === "verified_increment"
+  );
+  assert.equal(pricedEvents.length, 2);
+  assert.deepEqual(
+    pricedEvents.map((event) => [event.eventOrdinal, event.model, event.serviceTier]),
+    [
+      [4, "gpt-5.6-terra", "default"],
+      [7, "gpt-5.6-luna", "fast"],
+    ],
+  );
+  assert.deepEqual(pricedEvents.map((event) => event.pricingContextQuality), ["verified", "verified"]);
+  assert.equal(snapshot.tasks[0].model, "gpt-5.6-luna");
+  assert.deepEqual(snapshot.cursors[0].pricingContext, {
+    model: "gpt-5.6-luna",
+    serviceTier: "fast",
+  });
+});
+
+test("T-COST-063 restored v12 usage is enriched read-only without reclassifying tokens", async (t) => {
+  const fixture = await createFixture([
+    line(0, "session_meta", childMeta()),
+    event(1, "task_started", { turn_id: TURN }),
+    line(2, "turn_context", { turn_id: TURN, model: "gpt-5.6-terra", effort: "high" }),
+    event(3, "thread_settings_applied", { thread_settings: { service_tier: "priority" } }),
+    token(4, usage(100)),
+    token(5, usage(150), null, usageDelta(100, 150)),
+    event(6, "task_complete", { turn_id: TURN }),
+  ]);
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+  const beforeHash = await fileHash(fixture.path);
+  const metadata = await scanRolloutMetadata(fixture.path);
+  const entry = makeEntry(fixture.path, metadata.meta, metadata.envelopeTimestamp);
+  const initial = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
+  await initial.parseFiles([entry]);
+  const v12 = structuredClone(initial.snapshot());
+  const tokenEvidence = v12.modelUsageEvents.map(({ classification, usage }) => ({ classification, usage }));
+  for (const event of v12.modelUsageEvents) {
+    delete event.model;
+    delete event.serviceTier;
+    delete event.pricingContextQuality;
+  }
+  for (const cursor of v12.cursors) delete cursor.pricingContext;
+
+  const restored = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
+  const result = await restored.restore(v12, v12.cursors, [entry]);
+  const snapshot = restored.snapshot();
+  assert.equal(result.replayPaths.length, 0);
+  assert.deepEqual(
+    snapshot.modelUsageEvents.map(({ classification, usage }) => ({ classification, usage })),
+    tokenEvidence,
+  );
+  assert.deepEqual(
+    snapshot.modelUsageEvents.map((event) => [event.model, event.serviceTier, event.pricingContextQuality]),
+    [
+      ["gpt-5.6-terra", "priority", "verified"],
+      ["gpt-5.6-terra", "priority", "verified"],
+    ],
+  );
+  assert.equal(await fileHash(fixture.path), beforeHash);
+});
+
+test("T-COST-064 missing rollout leaves historical pricing context unknown", async (t) => {
+  const fixture = await createFixture([
+    line(0, "session_meta", childMeta()),
+    event(1, "task_started", { turn_id: TURN }),
+    line(2, "turn_context", { turn_id: TURN, model: "gpt-5.6-terra" }),
+    event(3, "thread_settings_applied", { thread_settings: { service_tier: "default" } }),
+    token(4, usage(100)),
+  ]);
+  const initial = await parserFor(fixture.path);
+  const v12 = structuredClone(initial.snapshot());
+  for (const event of v12.modelUsageEvents) {
+    delete event.model;
+    delete event.serviceTier;
+    delete event.pricingContextQuality;
+  }
+  for (const cursor of v12.cursors) delete cursor.pricingContext;
+  await rm(fixture.directory, { recursive: true, force: true });
+
+  const restored = new SessionRolloutParser(ROOT, { id: ROOT, title: "Fixture" });
+  await restored.restore(v12, v12.cursors, []);
+  const storedEvent = restored.snapshot().modelUsageEvents[0];
+  assert.equal(storedEvent.model, null);
+  assert.equal(storedEvent.serviceTier, null);
+  assert.equal(storedEvent.pricingContextQuality, "partial");
+});
+
 test("task preview accepts only a routed parent instruction and never a child reply", async (t) => {
   const parentPath = "/root/test-parent";
   const childPath = `${parentPath}/test-agent`;
@@ -330,6 +456,28 @@ test("unknown formats and malformed task boundaries surface in parser health", a
   assert.equal(restoredHealth.unknownRecords, 2);
   assert.equal(restoredHealth.skippedRecords, 1);
   assert.equal(restoredHealth.status, "warning");
+});
+
+test("known non-accounting legacy events do not become parser warnings or alter usage", async (t) => {
+  const fixture = await createFixture([
+    line(0, "session_meta", childMeta()),
+    event(1, "task_started", { turn_id: TURN }),
+    event(2, "user_message", { message: "content is intentionally ignored by usage accounting" }),
+    event(3, "patch_apply_end", { call_id: "patch-1", turn_id: TURN, success: true }),
+    event(4, "web_search_end", { call_id: "search-1", query: "ignored", results: [] }),
+    token(5, usage(80), null, usage(80)),
+    event(6, "task_complete", { turn_id: TURN }),
+    event(7, "thread_rolled_back", { num_turns: 1 }),
+  ]);
+  t.after(() => rm(fixture.directory, { recursive: true, force: true }));
+
+  const parser = await parserFor(fixture.path);
+  const snapshot = parser.snapshot();
+  assert.equal(snapshot.health.unknownRecords, 0);
+  assert.equal(snapshot.health.skippedRecords, 0);
+  assert.equal(snapshot.tasks.length, 1);
+  assert.equal(snapshot.tasks[0].deltaUsage.totalTokens, 80);
+  assert.equal(snapshot.tasks[0].requestCount, 1);
 });
 
 test("restored cursors tail active and subsequent tasks without losing request continuity", async (t) => {

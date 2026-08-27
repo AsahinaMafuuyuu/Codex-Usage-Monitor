@@ -2,8 +2,10 @@ const state = {
   sessions: [],
   timeline: null,
   selectedId: null,
+  selectedDay: null,
   snapshot: null,
   eventSource: null,
+  selectionVersion: 0,
   search: "",
   sessionView: localStorage.getItem("codex-monitor-session-view") === "time" ? "time" : "project",
   connected: false,
@@ -41,25 +43,28 @@ elements["session-search"].addEventListener("input", (event) => {
 });
 document.querySelectorAll("[data-session-view]").forEach((button) => {
   button.addEventListener("click", async () => {
-    await withViewTransition(() => {
-      state.sessionView = button.dataset.sessionView === "time" ? "time" : "project";
-      localStorage.setItem("codex-monitor-session-view", state.sessionView);
-      renderSessions();
-    });
-    if (state.sessionView === "time" && !state.timeline) {
+    const nextView = button.dataset.sessionView === "time" ? "time" : "project";
+    if (nextView === state.sessionView) return;
+    if (nextView === "time") {
       try {
         await ensureTimeline();
-        await withViewTransition(() => renderSessions());
       } catch (error) {
         toast(`日期汇总失败：${error.message}`);
+        return;
       }
     }
+    state.sessionView = nextView;
+    localStorage.setItem("codex-monitor-session-view", state.sessionView);
+    const day = nextView === "time" ? preferredTimelineDay(state.selectedId) : null;
+    state.selectedDay = day;
+    await withViewTransition(() => renderSessions());
+    if (state.selectedId) await selectSession(state.selectedId, day);
   });
 });
 elements["mobile-session-toggle"].addEventListener("click", () => document.body.classList.toggle("sessions-open"));
 elements["session-list"].addEventListener("click", (event) => {
   const button = event.target.closest("[data-session-id]");
-  if (button) void selectSession(button.dataset.sessionId);
+  if (button) void selectSession(button.dataset.sessionId, button.dataset.sessionDay ?? null);
 });
 elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
 
@@ -76,7 +81,10 @@ async function initialize() {
     }
     const remembered = localStorage.getItem("codex-monitor-session");
     const initial = state.sessions.find((item) => item.id === remembered)?.id ?? state.sessions[0]?.id;
-    if (initial) await selectSession(initial);
+    if (initial) {
+      const day = state.sessionView === "time" ? preferredTimelineDay(initial) : null;
+      await selectSession(initial, day);
+    }
     else setEmpty("还没有可读取的 Codex 会话", "确认 .codex/sessions 中存在 rollout 文件后刷新页面。");
   } catch (error) {
     setHealth({ status: "warning", recentErrors: [{ message: error.message }] });
@@ -90,42 +98,62 @@ async function ensureTimeline() {
   return state.timeline;
 }
 
-async function selectSession(sessionId) {
+async function selectSession(sessionId, requestedDay = null) {
   if (!sessionId) return;
+  const day = state.sessionView === "time"
+    ? requestedDay ?? preferredTimelineDay(sessionId)
+    : null;
+  if (state.sessionView === "time" && !day) {
+    toast("该会话没有可用的日期记录");
+    return;
+  }
+  const selectionVersion = ++state.selectionVersion;
   state.selectedId = sessionId;
+  state.selectedDay = day;
   localStorage.setItem("codex-monitor-session", sessionId);
+  if (day) rememberTimelineDay(sessionId, day);
   await withViewTransition(() => {
     document.body.classList.remove("sessions-open");
-    renderSessions();
+    syncSessionSelection();
     setLoading(true);
   });
   closeEvents();
   try {
-    state.snapshot = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    const query = day ? `?day=${encodeURIComponent(day)}` : "";
+    const snapshot = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}${query}`);
+    if (selectionVersion !== state.selectionVersion) return;
+    state.snapshot = snapshot;
     await withViewTransition(() => {
       setLoading(false);
       renderDashboard();
     });
-    connectEvents(sessionId);
+    connectEvents(sessionId, day, selectionVersion);
   } catch (error) {
+    if (selectionVersion !== state.selectionVersion) return;
     toast(error.message);
     await withViewTransition(() => setEmpty("会话解析失败", "健康状态中保留了具体错误；原始 .codex 文件未被修改。"));
   }
 }
 
-function connectEvents(sessionId) {
+function connectEvents(sessionId, day, selectionVersion) {
   state.connected = false;
   setConnection("正在连接实时观察…", false);
-  const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
+  const query = day ? `?day=${encodeURIComponent(day)}` : "";
+  const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events${query}`);
   state.eventSource = source;
   source.addEventListener("open", () => {
     state.connected = true;
     setConnection("实时观察中", true);
   });
   source.addEventListener("snapshot", (event) => {
-    if (sessionId !== state.selectedId) return;
+    if (
+      selectionVersion !== state.selectionVersion ||
+      sessionId !== state.selectedId ||
+      day !== state.selectedDay
+    ) return;
     state.snapshot = JSON.parse(event.data);
     renderDashboard();
+    if (state.sessionView === "time") void refreshTimelineNavigation(selectionVersion);
   });
   source.addEventListener("quota", (event) => {
     if (!state.snapshot) return;
@@ -144,7 +172,19 @@ function closeEvents() {
   state.eventSource = null;
 }
 
+async function refreshTimelineNavigation(selectionVersion) {
+  try {
+    const timeline = await fetchJson("/api/timeline");
+    if (selectionVersion !== state.selectionVersion || state.sessionView !== "time") return;
+    state.timeline = timeline;
+    renderSessions();
+  } catch (error) {
+    if (selectionVersion === state.selectionVersion) toast(`日期汇总刷新失败：${error.message}`);
+  }
+}
+
 function renderSessions() {
+  const interaction = captureSessionListInteraction();
   const query = state.search.trim().toLocaleLowerCase();
   const sessions = state.sessions.filter((session) =>
     `${session.title} ${session.id} ${session.projectPath ?? ""}`.toLocaleLowerCase().includes(query),
@@ -157,14 +197,16 @@ function renderSessions() {
   });
   if (!sessions.length) {
     elements["session-list"].innerHTML = '<p class="empty-agent">没有匹配的会话</p>';
+    restoreSessionListInteraction(interaction);
     return;
   }
   if (state.sessionView === "time") {
     elements["session-list"].innerHTML = renderSessionsByTime(sessions);
+    restoreSessionListInteraction(interaction);
     return;
   }
   elements["session-list"].innerHTML = groupSessionsByProject(sessions).map((group) => `
-    <details class="session-group" ${query || group.sessions.some((session) => session.id === state.selectedId) ? "open" : ""}>
+    <details class="session-group" data-session-group-key="${escapeHtml(projectGroupKey(group.projectPath))}" ${query || group.sessions.some((session) => session.id === state.selectedId) ? "open" : ""}>
       <summary class="project-heading">
         <span><strong>${escapeHtml(projectName(group.projectPath))}</strong><code title="${escapeHtml(group.projectPath || "未记录工程目录")}">${escapeHtml(group.projectPath || "未记录工程目录")}</code></span>
         <span class="project-meta"><b>${group.sessions.length}</b><i aria-hidden="true">›</i></span>
@@ -178,6 +220,80 @@ function renderSessions() {
         `).join("")}</div>
     </details>
   `).join("");
+  restoreSessionListInteraction(interaction);
+}
+
+function captureSessionListInteraction() {
+  const list = elements["session-list"];
+  const detailsState = new Map();
+  for (const details of list.querySelectorAll("details")) {
+    const key = sessionDetailsKey(details);
+    if (key) detailsState.set(key, details.open);
+  }
+  const focusedSessionId = list.contains(document.activeElement)
+    ? document.activeElement.closest("[data-session-id]")?.dataset.sessionId ?? null
+    : null;
+  const focusedSessionDay = list.contains(document.activeElement)
+    ? document.activeElement.closest("[data-session-id]")?.dataset.sessionDay ?? null
+    : null;
+  return { scrollTop: list.scrollTop, detailsState, focusedSessionId, focusedSessionDay };
+}
+
+function restoreSessionListInteraction(interaction) {
+  if (!interaction) return;
+  const list = elements["session-list"];
+  for (const details of list.querySelectorAll("details")) {
+    const key = sessionDetailsKey(details);
+    if (key && interaction.detailsState.has(key)) details.open = interaction.detailsState.get(key);
+  }
+  if (interaction.focusedSessionId) {
+    [...list.querySelectorAll("[data-session-id]")]
+      .find((button) =>
+        button.dataset.sessionId === interaction.focusedSessionId &&
+        (button.dataset.sessionDay ?? null) === interaction.focusedSessionDay,
+      )?.focus({ preventScroll: true });
+  }
+  list.scrollTop = interaction.scrollTop;
+}
+
+function sessionDetailsKey(details) {
+  if (details.dataset.sessionGroupKey) return `project:${details.dataset.sessionGroupKey}`;
+  if (details.dataset.timeMonth) return `month:${details.dataset.timeMonth}`;
+  if (details.dataset.timeDay) return `day:${details.dataset.timeDay}`;
+  return null;
+}
+
+function syncSessionSelection() {
+  for (const button of elements["session-list"].querySelectorAll("[data-session-id]")) {
+    const active = button.dataset.sessionId === state.selectedId && (
+      state.sessionView === "project" || button.dataset.sessionDay === state.selectedDay
+    );
+    button.classList.toggle("active", active);
+  }
+}
+
+function patchSessionNavigation(previousSession, nextSession) {
+  syncSessionSelection();
+  if (state.sessionView !== "project") return;
+  if (projectGroupKey(previousSession.projectPath) !== projectGroupKey(nextSession.projectPath)) {
+    renderSessions();
+    return;
+  }
+  const button = findByData(elements["session-list"], "sessionId", nextSession.id);
+  if (!button) return;
+  const title = nextSession.title || "未命名会话";
+  const titleElement = button.querySelector("strong");
+  if (titleElement) {
+    titleElement.textContent = title;
+    titleElement.title = title;
+  }
+  const time = button.querySelector("time");
+  if (time) {
+    time.textContent = formatRelative(nextSession.updatedAt);
+    time.title = nextSession.updatedAt || "";
+  }
+  const agentCount = button.querySelector("span > b");
+  if (agentCount) agentCount.textContent = `${nextSession.agentCount || "—"} 智能体`;
 }
 
 function renderSessionsByTime(sessions) {
@@ -185,7 +301,7 @@ function renderSessionsByTime(sessions) {
     return '<p class="empty-agent">正在建立按日期索引…</p>';
   }
   const visibleIds = new Set(sessions.map((session) => session.id));
-  const selectedDate = findTimelineDate(state.timeline, state.selectedId);
+  const selectedDate = state.selectedDay ?? findTimelineDate(state.timeline, state.selectedId);
   const query = state.search.trim();
   const months = state.timeline.months.map((month) => ({
     ...month,
@@ -197,31 +313,40 @@ function renderSessionsByTime(sessions) {
   if (!months.length) return '<p class="empty-agent">没有匹配的日期记录</p>';
   return months.map((month) => {
     const monthOpen = Boolean(query) || month.key === selectedDate?.slice(0, 7) || month.key === currentMonthKey();
-    return `<details class="time-group" ${monthOpen ? "open" : ""}>
+    return `<details class="time-group" data-time-month="${escapeHtml(month.key)}" ${monthOpen ? "open" : ""}>
       <summary class="time-heading">
         <span><strong>${escapeHtml(formatMonthLabel(month.key))}</strong><code>${escapeHtml(month.key)}</code></span>
-        <span class="time-meta"><b>${formatTokens(month.usage.totalTokens)}</b><i aria-hidden="true">›</i></span>
+        <span class="time-meta" title="${escapeHtml(costSummaryTitle(month.costEstimate, `${formatMonthLabel(month.key)} `))}"><b>${formatTimelineUsageCost(month.usage, month.costEstimate)}</b><i aria-hidden="true">›</i></span>
       </summary>
       <div class="time-days">${month.days.map((day) => {
         const dayOpen = Boolean(query) || day.key === selectedDate || day.key === currentDayKey();
-        return `<details class="time-day" ${dayOpen ? "open" : ""}>
+        return `<details class="time-day" data-time-day="${escapeHtml(day.key)}" ${dayOpen ? "open" : ""}>
           <summary class="time-day-heading">
             <span><strong>${escapeHtml(formatDayLabel(day.key))}</strong><code>${escapeHtml(day.key)}</code></span>
-            <span class="time-meta"><b>${formatTokens(day.usage.totalTokens)}</b><i aria-hidden="true">›</i></span>
+            <span class="time-meta" title="${escapeHtml(costSummaryTitle(day.costEstimate, `${formatDayLabel(day.key)} `))}"><b>${formatTimelineUsageCost(day.usage, day.costEstimate)}</b><i aria-hidden="true">›</i></span>
           </summary>
-          <div class="time-sessions">${day.sessions.map(renderTimeSession).join("")}</div>
+          <div class="time-sessions">${day.sessions.map((session) => renderTimeSession(session, day.key)).join("")}</div>
         </details>`;
       }).join("")}</div>
     </details>`;
   }).join("");
 }
 
-function renderTimeSession(session) {
-  const quality = summarizeQuality(session.qualityCounts);
-  return `<button class="session-item time-session-item ${session.id === state.selectedId ? "active" : ""}"
-    type="button" data-session-id="${escapeHtml(session.id)}">
+function renderTimeSession(session, day) {
+  const project = projectName(normalizeProjectPath(session.projectPath));
+  const costTitle = costSummaryTitle(session.costEstimate, "该会话");
+  const active = session.id === state.selectedId && day === state.selectedDay;
+  return `<button class="session-item time-session-item ${active ? "active" : ""}"
+    type="button" data-session-id="${escapeHtml(session.id)}" data-session-day="${escapeHtml(day)}">
     <strong title="${escapeHtml(session.title || "未命名会话")}">${escapeHtml(session.title || "未命名会话")}</strong>
-    <span><time title="${escapeHtml(session.updatedAt || "")}">${formatTokens(session.usage.totalTokens)}</time><b>${escapeHtml(projectName(normalizeProjectPath(session.projectPath)))} · ${escapeHtml(quality)}</b></span>
+    <span>
+      <time title="Total token: ${escapeHtml(formatTokens(session.usage?.totalTokens))}">${formatTokens(session.usage?.totalTokens)}</time>
+      <b class="time-session-meta" title="${escapeHtml(`${project} · ${costTitle}`)}">
+        <span class="time-session-project">${escapeHtml(project)}</span>
+        <span class="time-session-separator" aria-hidden="true">·</span>
+        <span class="time-session-cost">${formatTimelineSessionCost(session.costEstimate?.amountUsd)}</span>
+      </b>
+    </span>
   </button>`;
 }
 
@@ -233,6 +358,25 @@ function findTimelineDate(timeline, sessionId) {
     }
   }
   return null;
+}
+
+function preferredTimelineDay(sessionId) {
+  if (!sessionId) return null;
+  const remembered = localStorage.getItem(`codex-monitor-session-day:${sessionId}`);
+  if (remembered && timelineHasSessionDay(state.timeline, sessionId, remembered)) return remembered;
+  return findTimelineDate(state.timeline, sessionId);
+}
+
+function rememberTimelineDay(sessionId, day) {
+  localStorage.setItem(`codex-monitor-session-day:${sessionId}`, day);
+}
+
+function timelineHasSessionDay(timeline, sessionId, dayKey) {
+  for (const month of timeline?.months ?? []) {
+    const day = month.days.find((candidate) => candidate.key === dayKey);
+    if (day?.sessions.some((session) => session.id === sessionId)) return true;
+  }
+  return false;
 }
 
 function currentDayKey() {
@@ -267,20 +411,15 @@ function formatDayLabel(value) {
   }).format(date);
 }
 
-function summarizeQuality(counts) {
-  const attention = (counts?.partial ?? 0) + (counts?.unknown ?? 0);
-  if (attention) return `${attention} 条需注意`;
-  if ((counts?.provisional ?? 0) > 0) return "实时";
-  return "验证完整";
-}
-
 function renderDashboard() {
   const snapshot = state.snapshot;
   if (!snapshot) return;
   const sessionIndex = state.sessions.findIndex((session) => session.id === snapshot.session.id);
   if (sessionIndex !== -1) {
-    state.sessions[sessionIndex] = { ...state.sessions[sessionIndex], ...snapshot.session };
-    renderSessions();
+    const previousSession = state.sessions[sessionIndex];
+    const nextSession = { ...previousSession, ...snapshot.session };
+    state.sessions[sessionIndex] = nextSession;
+    patchSessionNavigation(previousSession, nextSession);
   }
   elements["empty-state"].hidden = true;
   elements.dashboard.hidden = false;
@@ -291,8 +430,11 @@ function renderDashboard() {
   elements["session-project"].title = snapshot.session.projectPath || "";
   elements["session-id"].textContent = snapshot.session.id;
   elements["session-id"].title = snapshot.session.id;
-  elements["session-version"].textContent = snapshot.session.cliVersion || "版本未知";
-  elements["hero-total"].textContent = formatTokens(snapshot.summary.subagentUsage?.totalTokens);
+  const versionLabel = snapshot.session.cliVersion || "版本未知";
+  elements["session-version"].textContent = snapshot.scope?.type === "day"
+    ? `${versionLabel} · ${snapshot.scope.day} 当日`
+    : versionLabel;
+  elements["hero-total"].textContent = formatTokens(snapshot.summary.totalUsage?.totalTokens);
   elements["agent-count"].textContent = tokenFormatter.format(snapshot.summary.agentCount);
   elements["task-count"].textContent = tokenFormatter.format(snapshot.summary.taskCount);
   elements["active-task-count"].textContent = snapshot.summary.activeTasks
@@ -304,7 +446,8 @@ function renderDashboard() {
   elements["cache-hit-rate"].textContent = formatCacheHitRate(sessionUsage);
   elements["output-total"].textContent = formatTokens(sessionUsage?.outputTokens);
   elements["session-cost"].textContent = formatUsdAmount(snapshot.summary.totalCostEstimate?.amountUsd);
-  elements["session-cost"].title = costSummaryTitle(snapshot.summary.totalCostEstimate, "整个会话");
+  const costScopeLabel = snapshot.scope?.type === "day" ? `${snapshot.scope.day} 当日` : "整个会话";
+  elements["session-cost"].title = costSummaryTitle(snapshot.summary.totalCostEstimate, costScopeLabel);
   elements["session-cost-coverage"].textContent = costSummaryCoverage(snapshot.summary.totalCostEstimate);
   elements["last-update"].textContent = snapshot.health.lastUpdateAt
     ? `更新 ${formatDate(snapshot.health.lastUpdateAt)}`
@@ -381,7 +524,9 @@ function syncQuotaRefreshButton() {
 function renderAgents() {
   const agents = state.snapshot?.agents ?? [];
   if (!agents.length) {
-    elements["agent-tree"].innerHTML = '<p class="empty-agent">这个会话尚未解析到智能体记录。</p>';
+    if (!elements["agent-tree"].querySelector(":scope > .empty-agent")) {
+      elements["agent-tree"].innerHTML = '<p class="empty-agent">这个会话尚未解析到智能体记录。</p>';
+    }
     return;
   }
   const byParent = new Map();
@@ -394,47 +539,136 @@ function renderAgents() {
     byParent.set(key, list);
   }
   for (const list of byParent.values()) list.sort((a, b) => a.depth - b.depth || agentLabel(a).localeCompare(agentLabel(b)));
-  const renderBranch = (parentId, depth) => (byParent.get(parentId) ?? []).map((agent) => {
-    const active = agent.tasks.some((task) => task.status === "in_progress");
-    const rootClass = agent.isRoot ? "root" : "";
-    const children = renderBranch(agent.threadId, depth + 1);
-    return `<div class="agent-branch depth-${Math.min(depth, 6)}">
-      <div class="agent-node ${active ? "active" : ""} ${rootClass}">${renderAgent(agent)}</div>
-      ${children ? `<div class="agent-children">${children}</div>` : ""}
-    </div>`;
-  }).join("");
-  elements["agent-tree"].innerHTML = renderBranch("__root__", 0);
+  const anchor = captureVisualAnchor(elements["agent-tree"]);
+  const structuralChanged = patchAgentBranches(elements["agent-tree"], byParent, "__root__", 0);
+  if (structuralChanged) restoreVisualAnchor(elements["agent-tree"], anchor);
+}
+
+function patchAgentBranches(container, byParent, parentId, depth) {
+  let structuralChanged = false;
+  for (const child of [...container.children]) {
+    if (!child.classList.contains("agent-branch")) {
+      child.remove();
+      structuralChanged = true;
+    }
+  }
+  const desiredAgents = byParent.get(parentId) ?? [];
+  const existing = new Map(
+    [...container.children].map((branch) => [branch.dataset.agentId, branch]),
+  );
+  const desiredIds = new Set(desiredAgents.map((agent) => agent.threadId));
+
+  desiredAgents.forEach((agent, index) => {
+    let branch = existing.get(agent.threadId);
+    if (!branch) {
+      branch = createAgentBranch(agent, depth);
+      structuralChanged = true;
+    } else {
+      structuralChanged = updateAgentBranch(branch, agent, depth) || structuralChanged;
+    }
+    const currentAtIndex = container.children[index] ?? null;
+    if (currentAtIndex !== branch) {
+      container.insertBefore(branch, currentAtIndex);
+      structuralChanged = true;
+    }
+
+    const childAgents = byParent.get(agent.threadId) ?? [];
+    let childContainer = directChildByClass(branch, "agent-children");
+    if (childAgents.length) {
+      if (!childContainer) {
+        childContainer = document.createElement("div");
+        childContainer.className = "agent-children";
+        branch.append(childContainer);
+        structuralChanged = true;
+      }
+      structuralChanged = patchAgentBranches(childContainer, byParent, agent.threadId, depth + 1) || structuralChanged;
+    } else if (childContainer) {
+      childContainer.remove();
+      structuralChanged = true;
+    }
+  });
+
+  for (const [agentId, branch] of existing) {
+    if (!desiredIds.has(agentId)) {
+      branch.remove();
+      structuralChanged = true;
+    }
+  }
+  return structuralChanged;
+}
+
+function createAgentBranch(agent, depth) {
+  const branch = document.createElement("div");
+  branch.className = `agent-branch depth-${Math.min(depth, 6)}`;
+  branch.dataset.agentId = agent.threadId;
+  const node = document.createElement("div");
+  node.className = agentNodeClass(agent);
+  node.innerHTML = renderAgent(agent);
+  node.querySelector(":scope > .agent-card > summary").dataset.agentAnchorId = agent.threadId;
+  branch.append(node);
+  return branch;
+}
+
+function updateAgentBranch(branch, agent, depth) {
+  let structuralChanged = false;
+  for (const className of [...branch.classList]) {
+    if (/^depth-\d+$/u.test(className)) branch.classList.remove(className);
+  }
+  branch.classList.add(`depth-${Math.min(depth, 6)}`);
+  branch.dataset.agentId = agent.threadId;
+
+  const node = branch.firstElementChild;
+  node.className = agentNodeClass(agent);
+  const details = node.querySelector(":scope > .agent-card");
+  const summary = details?.querySelector(":scope > summary");
+  if (summary) {
+    summary.dataset.agentAnchorId = agent.threadId;
+    summary.innerHTML = renderAgentSummary(agent);
+  }
+  structuralChanged = patchAgentTasks(details, agent.tasks) || structuralChanged;
+  return structuralChanged;
+}
+
+function agentNodeClass(agent) {
+  const active = agent.tasks.some((task) => task.status === "in_progress");
+  return `agent-node${active ? " active" : ""}${agent.isRoot ? " root" : ""}`;
 }
 
 function renderAgent(agent) {
   const active = agent.tasks.some((task) => task.status === "in_progress");
   const shouldOpen = !agent.isRoot || active;
-  const role = agentRole(agent);
   return `<details class="agent-card" ${shouldOpen ? "open" : ""}>
-    <summary>
-      <div class="agent-name">
-        <div class="agent-title-line">
-          <span class="role-badge ${agentRoleClass(role)}">${escapeHtml(role.toLocaleUpperCase())}</span>
-          <strong>${escapeHtml(agentLabel(agent))}</strong>
-        </div>
-        <code>${escapeHtml(agent.agentPath || agent.threadId)}</code>
-      </div>
-      <div class="agent-stats">
-        <div class="agent-stat task-count"><span>任务</span><strong>${agent.taskCount}</strong></div>
-        <div class="agent-stat tokens"><span>自身 tokens</span><strong>${formatTokens(agent.ownUsage?.totalTokens)}</strong></div>
-        <div class="agent-stat subtree"><span>含后代</span><strong>${formatTokens(agent.subtreeUsage?.totalTokens)}</strong></div>
-        <div class="agent-stat cache-hit"><span>缓存命中</span><strong>${formatCacheHitRate(agent.ownUsage)}</strong></div>
-        <div class="agent-stat cost-own" title="${escapeHtml(costSummaryTitle(agent.ownCostEstimate, "该智能体自身"))}"><span>自身 USD</span><strong>${formatUsdSummary(agent.ownCostEstimate)}</strong></div>
-        <div class="agent-stat cost-subtree" title="${escapeHtml(costSummaryTitle(agent.subtreeCostEstimate, "该智能体及后代"))}"><span>含后代 USD</span><strong>${formatUsdSummary(agent.subtreeCostEstimate)}</strong></div>
-      </div>
-      <span class="agent-chevron" aria-hidden="true">›</span>
-    </summary>
+    <summary>${renderAgentSummary(agent)}</summary>
     ${renderTasks(agent)}
   </details>`;
 }
 
+function renderAgentSummary(agent) {
+  const role = agentRole(agent);
+  return `<div class="agent-name">
+      <div class="agent-title-line">
+        <span class="role-badge ${agentRoleClass(role)}">${escapeHtml(role.toLocaleUpperCase())}</span>
+        <strong>${escapeHtml(agentLabel(agent))}</strong>
+      </div>
+      <code>${escapeHtml(agent.agentPath || agent.threadId)}</code>
+    </div>
+    <div class="agent-stats">
+      <div class="agent-stat task-count"><span>任务</span><strong>${agent.taskCount}</strong></div>
+      <div class="agent-stat tokens"><span>自身 tokens</span><strong>${formatTokens(agent.ownUsage?.totalTokens)}</strong></div>
+      <div class="agent-stat subtree"><span>含后代</span><strong>${formatTokens(agent.subtreeUsage?.totalTokens)}</strong></div>
+      <div class="agent-stat cache-hit"><span>缓存命中</span><strong>${formatCacheHitRate(agent.ownUsage)}</strong></div>
+      <div class="agent-stat cost-own" title="${escapeHtml(costSummaryTitle(agent.ownCostEstimate, "该智能体自身"))}"><span>自身 USD</span><strong>${formatUsdSummary(agent.ownCostEstimate)}</strong></div>
+      <div class="agent-stat cost-subtree" title="${escapeHtml(costSummaryTitle(agent.subtreeCostEstimate, "该智能体及后代"))}"><span>含后代 USD</span><strong>${formatUsdSummary(agent.subtreeCostEstimate)}</strong></div>
+    </div>
+    <span class="agent-chevron" aria-hidden="true">›</span>`;
+}
+
 function renderTasks(agent) {
   if (!agent.tasks.length) return '<div class="empty-agent">该智能体还没有持久化任务边界。</div>';
+  return renderTaskTableShell(agent.tasks.map(renderTaskRow).join(""));
+}
+
+function renderTaskTableShell(rows = "") {
   return `<div class="task-table-wrap" role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 13 列"><table class="task-table">
     <colgroup>
       <col class="col-task"><col class="col-status"><col class="col-start"><col class="col-duration">
@@ -443,26 +677,114 @@ function renderTasks(agent) {
       <col class="col-cost"><col class="col-quality">
     </colgroup>
     <thead><tr>
-      <th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="按当前标准 API 短上下文价格估算，不等于 Codex 订阅实际扣费">估算 USD</th><th>质量</th>
+      <th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>
     </tr></thead>
-    <tbody>${agent.tasks.map((task) => `
-      <tr class="task-row">
-        <td class="task-name-cell"><strong>Task ${task.sequence}</strong><code title="${escapeHtml(task.turnId)}">${escapeHtml(shortId(task.turnId))}</code></td>
-        <td class="task-status-cell"><span class="status-chip ${escapeHtml(task.status)}">${statusLabel(task.status)}</span></td>
-        <td title="${escapeHtml(task.startedAt || "")}">${formatDate(task.startedAt)}</td>
-        <td>${formatDuration(task.durationMs, task.startedAt, task.completedAt)}</td>
-        <td class="model-cell"><code title="${escapeHtml(task.model || "模型未知")}">${escapeHtml(task.model || "未知")}</code></td>
-        <td><span class="effort-chip">${escapeHtml(effortLabel(task.effort))}</span></td>
-        <td>${formatTokens(task.deltaUsage?.inputTokens)}</td>
-        <td>${formatTokens(task.deltaUsage?.cachedInputTokens)}</td>
-        <td>${formatCacheHitRate(task.deltaUsage)}</td>
-        <td>${formatTokens(task.deltaUsage?.outputTokens)}</td>
-        <td><strong>${formatTokens(task.deltaUsage?.totalTokens)}</strong></td>
-        <td class="cost-cell" title="${escapeHtml(costEstimateTitle(task.costEstimate))}"><strong>${formatUsdEstimate(task.costEstimate)}</strong><span>${costEstimateLabel(task.costEstimate)}</span></td>
-        <td><span class="quality-chip ${escapeHtml(task.quality)}">${qualityLabel(task.quality)}</span></td>
-      </tr>
-    `).join("")}</tbody>
+    <tbody>${rows}</tbody>
   </table></div>`;
+}
+
+function renderTaskRow(task) {
+  return `<tr class="task-row" data-task-id="${escapeHtml(task.turnId)}">${renderTaskCells(task)}</tr>`;
+}
+
+function renderTaskCells(task) {
+  return `<td class="task-name-cell"><strong>Task ${task.sequence}</strong><code title="${escapeHtml(task.turnId)}">${escapeHtml(shortId(task.turnId))}</code></td>
+    <td class="task-status-cell"><span class="status-chip ${escapeHtml(task.status)}">${statusLabel(task.status)}</span></td>
+    <td title="${escapeHtml(task.startedAt || "")}">${formatDate(task.startedAt)}</td>
+    <td>${formatDuration(task.durationMs, task.startedAt, task.completedAt)}</td>
+    <td class="model-cell"><code title="${escapeHtml(task.model || "模型未知")}">${escapeHtml(task.model || "未知")}</code></td>
+    <td><span class="effort-chip">${escapeHtml(effortLabel(task.effort))}</span></td>
+    <td>${formatTokens(task.deltaUsage?.inputTokens)}</td>
+    <td>${formatTokens(task.deltaUsage?.cachedInputTokens)}</td>
+    <td>${formatCacheHitRate(task.deltaUsage)}</td>
+    <td>${formatTokens(task.deltaUsage?.outputTokens)}</td>
+    <td><strong>${formatTokens(task.deltaUsage?.totalTokens)}</strong></td>
+    <td class="cost-cell" title="${escapeHtml(costEstimateTitle(task.costEstimate))}"><strong>${formatUsdEstimate(task.costEstimate)}</strong><span>${costEstimateLabel(task.costEstimate)}</span></td>
+    <td><span class="quality-chip ${escapeHtml(task.quality)}">${qualityLabel(task.quality)}</span></td>`;
+}
+
+function patchAgentTasks(details, tasks) {
+  if (!details) return false;
+  let structuralChanged = false;
+  let tableWrap = directChildByClass(details, "task-table-wrap");
+  let empty = directChildByClass(details, "empty-agent");
+  if (!tasks.length) {
+    if (tableWrap) {
+      tableWrap.remove();
+      structuralChanged = true;
+    }
+    if (!empty) {
+      empty = document.createElement("div");
+      empty.className = "empty-agent";
+      empty.textContent = "该智能体还没有持久化任务边界。";
+      details.append(empty);
+      structuralChanged = true;
+    }
+    return structuralChanged;
+  }
+
+  if (empty) {
+    empty.remove();
+    structuralChanged = true;
+  }
+  if (!tableWrap) {
+    tableWrap = createElementFromHtml(renderTaskTableShell());
+    details.append(tableWrap);
+    structuralChanged = true;
+  }
+  return patchTaskRows(tableWrap, tasks) || structuralChanged;
+}
+
+function patchTaskRows(tableWrap, tasks) {
+  const tbody = tableWrap.querySelector("tbody");
+  const existing = new Map(
+    [...tbody.children].map((row) => [row.dataset.taskId, row]),
+  );
+  const desiredIds = new Set(tasks.map((task) => task.turnId));
+  let structuralChanged = false;
+
+  tasks.forEach((task, index) => {
+    let row = existing.get(task.turnId);
+    if (!row) {
+      row = document.createElement("tr");
+      row.className = "task-row";
+      row.dataset.taskId = task.turnId;
+      structuralChanged = true;
+    }
+    row.innerHTML = renderTaskCells(task);
+    const currentAtIndex = tbody.children[index] ?? null;
+    if (currentAtIndex !== row) {
+      tbody.insertBefore(row, currentAtIndex);
+      structuralChanged = true;
+    }
+  });
+
+  for (const [taskId, row] of existing) {
+    if (!desiredIds.has(taskId)) {
+      row.remove();
+      structuralChanged = true;
+    }
+  }
+  return structuralChanged;
+}
+
+function captureVisualAnchor(root) {
+  const viewportHeight = window.innerHeight || document.documentElement.clientHeight;
+  for (const candidate of root.querySelectorAll("[data-agent-anchor-id], [data-task-id]")) {
+    const rect = candidate.getBoundingClientRect();
+    if (rect.bottom <= 0 || rect.top >= viewportHeight) continue;
+    if (candidate.dataset.taskId) return { type: "taskId", id: candidate.dataset.taskId, top: rect.top };
+    return { type: "agentAnchorId", id: candidate.dataset.agentAnchorId, top: rect.top };
+  }
+  return null;
+}
+
+function restoreVisualAnchor(root, anchor) {
+  if (!anchor) return;
+  const candidate = findByData(root, anchor.type, anchor.id);
+  if (!candidate) return;
+  const delta = candidate.getBoundingClientRect().top - anchor.top;
+  if (Math.abs(delta) >= 0.5) window.scrollBy(0, delta);
 }
 
 function setLoading(loading) {
@@ -549,11 +871,31 @@ function groupSessionsByProject(sessions) {
   const groups = new Map();
   for (const session of sessions) {
     const projectPath = normalizeProjectPath(session.projectPath);
-    const key = projectPath ? projectPath.replaceAll("\\", "/").replace(/\/+$/u, "").toLocaleLowerCase() : "__ungrouped__";
+    const key = projectGroupKey(projectPath);
     if (!groups.has(key)) groups.set(key, { projectPath, sessions: [] });
     groups.get(key).sessions.push(session);
   }
   return [...groups.values()];
+}
+
+function projectGroupKey(projectPath) {
+  const normalized = normalizeProjectPath(projectPath);
+  return normalized ? normalized.replaceAll("\\", "/").replace(/\/+$/u, "").toLocaleLowerCase() : "__ungrouped__";
+}
+
+function directChildByClass(parent, className) {
+  return [...parent.children].find((child) => child.classList.contains(className)) ?? null;
+}
+
+function createElementFromHtml(html) {
+  const template = document.createElement("template");
+  template.innerHTML = html.trim();
+  return template.content.firstElementChild;
+}
+
+function findByData(root, property, value) {
+  return [...root.querySelectorAll(`[data-${property.replace(/[A-Z]/gu, (letter) => `-${letter.toLocaleLowerCase()}`)}]`)]
+    .find((element) => element.dataset[property] === value) ?? null;
 }
 
 function normalizeProjectPath(projectPath) {
@@ -616,7 +958,7 @@ function formatUsdEstimate(estimate) {
 function formatUsdSummary(summary) {
   const value = summary?.amountUsd;
   if (value == null || !Number.isFinite(value)) return "—";
-  return `${summary.status === "partial" ? "≥" : ""}${formatUsdAmount(value)}`;
+  return formatUsdAmount(value);
 }
 
 function formatUsdAmount(value) {
@@ -631,46 +973,65 @@ function formatUsdAmount(value) {
   }).format(value);
 }
 
+function formatTimelineUsageCost(usage, costEstimate) {
+  return `${formatTokens(usage?.totalTokens)} · ${formatUsdAmount(costEstimate?.amountUsd)}`;
+}
+
+function formatTimelineSessionCost(value) {
+  if (value == null || !Number.isFinite(value)) return "—";
+  return new Intl.NumberFormat("en-US", {
+    style: "currency",
+    currency: "USD",
+    minimumFractionDigits: 2,
+    maximumFractionDigits: 2,
+  }).format(value);
+}
+
 function costSummaryCoverage(summary) {
-  const estimated = summary?.estimatedTasks ?? 0;
-  const unavailable = summary?.unavailableTasks ?? 0;
-  if (estimated + unavailable === 0) return "暂无任务 · 标准 API 等值";
-  if (summary?.status === "partial") return `${estimated} 已估算 · ${unavailable} 不可估算`;
-  if (summary?.status === "estimated") return `${estimated} 个任务 · 标准 API 等值`;
-  return `${unavailable} 个任务不可估算`;
+  const requests = (summary?.estimatedRequests ?? 0) +
+    (summary?.partialRequests ?? 0) +
+    (summary?.unavailableRequests ?? 0);
+  if (requests === 0) return "暂无可计价请求 · 订阅标准价等值";
+  if (summary?.status === "partial") {
+    return `${summary.estimatedRequests ?? 0} 完整 · ${summary.partialRequests ?? 0} 部分 · ${summary.unavailableRequests ?? 0} 不可用`;
+  }
+  if (summary?.status === "estimated") return `${requests} 个请求 · 订阅标准价等值`;
+  return `${requests} 个请求不可估算`;
 }
 
 function costSummaryTitle(summary, scope) {
-  const estimated = summary?.estimatedTasks ?? 0;
-  const unavailable = summary?.unavailableTasks ?? 0;
-  if (estimated + unavailable === 0) return `${scope}暂无任务，因而没有费用估算。`;
+  const requests = (summary?.estimatedRequests ?? 0) +
+    (summary?.partialRequests ?? 0) +
+    (summary?.unavailableRequests ?? 0);
+  if (requests === 0) return `${scope}暂无可计价的 verified Request Ledger usage unit。`;
   if (summary?.status === "partial") {
-    return `${scope}有 ${estimated} 个任务已估算、${unavailable} 个任务不可估算；显示金额只是已知下限，不是 Codex 订阅实际扣费。`;
+    return `${scope}的订阅标准价等值存在 pricing evidence 缺口；显示金额仅为当前可证明部分，不是 Plus 实际扣费。${formatFeatureCoverage(summary.featureCoverage)}`;
   }
   if (summary?.status === "estimated") {
-    return `${scope}共 ${estimated} 个任务，按当前标准 API 短上下文价格估算；不等于 Codex 订阅实际扣费。`;
+    return `${scope}共 ${requests} 个 verified usage unit，按事件发生时的历史订阅标准价及可证明的长上下文/Fast 条件估算；不是 Plus 实际扣费。`;
   }
-  return `${scope}的 ${unavailable} 个任务缺少可审计的模型、价格或 token 明细，无法估算。`;
+  return `${scope}缺少可审计的历史模型价格或 request-level pricing evidence，无法估算。`;
 }
 
 function costEstimateLabel(estimate) {
-  if (estimate?.status !== "estimated") return "不可估算";
-  return estimate.catalogStale ? "价目待复核" : "API 等值";
+  if (estimate?.status === "estimated") return "订阅标准价等值";
+  if (estimate?.status === "partial") return "部分可估";
+  return "不可估算";
 }
 
 function costEstimateTitle(estimate) {
-  if (!estimate || estimate.status !== "estimated") {
-    return ({
-      missing_model: "rollout 未记录任务模型，无法匹配官方价格。",
-      unsupported_model: "该模型没有已验证的官方价格映射。",
-      missing_usage: "任务缺少可计算的 token 差分。",
-      incomplete_usage_breakdown: "任务缺少输入、缓存或输出 token 明细。",
-      inconsistent_usage_breakdown: "任务 token 明细互相矛盾，未生成伪精确费用。",
-    })[estimate?.reason] || "缺少可审计的模型或 token 明细。";
-  }
-  const rates = estimate.ratesPerMillion;
-  const stale = estimate.catalogStale ? " 当前价目已到复核日期。" : "";
-  return `${estimate.pricedModel} 当前标准 API 短上下文等值：输入 $${rates.input}/1M、缓存输入 $${rates.cachedInput}/1M、缓存写入 $${rates.cacheWriteInput}/1M、输出 $${rates.output}/1M。不等于 Codex 订阅实际扣费；未含长上下文、服务层级、区域和工具费用。${stale}`;
+  if (!estimate) return "缺少可审计的 request pricing evidence。";
+  const requests = estimate.requestCount ?? 0;
+  if (requests === 0) return "该任务没有可计价的 verified Request Ledger usage unit。";
+  const rates = (estimate.rateVersions ?? []).join("、") || "历史价目不可用";
+  const reasons = (estimate.reasons ?? []).join("、");
+  const suffix = reasons ? ` 限制：${reasons}。` : "";
+  return `按 ${requests} 个 verified usage unit 逐请求汇总；价目版本：${rates}。${formatFeatureCoverage(estimate.featureCoverage)}不是 Plus 实际扣费。${suffix}`;
+}
+
+function formatFeatureCoverage(coverage) {
+  if (!coverage) return "";
+  return ` 历史价：${coverage.historicalRate ?? "unknown"}；请求边界：${coverage.requestBoundary ?? "unknown"}；服务层级：${coverage.serviceTier ?? "unknown"}。`;
 }
 
 function formatWindow(minutes) {

@@ -14,7 +14,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 | 状态 | 含义 |
 |---|---|
-| `400` | ID 格式无效 |
+| `400` | ID 格式无效，或 `day` 不是合法 `YYYY-MM-DD` 本地日期 |
 | `401` | 缺少或错误的会话 Cookie |
 | `403` | Host 或 Origin 不受信任 |
 | `404` | 会话、任务或接口不存在 |
@@ -35,7 +35,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 ### `GET /api/timeline`
 
-返回全部已发现根 session 的本地日期用量账页。schema v11 会先按 portable `source_key` 匹配各 root session 的持久化 task/cursor/Request Ledger 状态：从未导入或尚未完成 schema v9 Request Ledger backfill 的历史才完整解析；可信的 append-only cursor 只读取新增字节；无变化的 session 不读取 rollout 正文。同步完成后，接口从 SQLite `session_day_usage` 物化索引生成 request-derived 响应。已有 Request Ledger 的 v10 数据库升级到 v11 时只删除旧 Boundary 存储并重建 Agent/Calendar 派生 aggregate，不重新读取 rollout。
+返回全部已发现根 session 的本地日期用量账页。Phase 18/schema v14 起该 endpoint **只读取已有 SQLite projection**，不会因为一次 HTTP Timeline 请求同步解析 rollout 或现场重算历史费用。启动与文件 watcher 把 stale/dirty session 交给 background indexer；已有 projection 立即返回，首次没有任何 projection 时才允许等待首轮后台构建形成可用基线。Indexer 使用 portable `source_key` + cursor 执行 restore/tail/replay，并在单一 transaction 内生成 ownership、`canonical_requests`、request-day/cost projection 与新的 `projection_generation`。
 
 该同步只写监控器自己的派生 SQLite（task、cursor、session-day aggregate），从不修改 `.codex`。Timeline 后台补齐不会把历史 rollout 中的全部 quota 快照批量归档；账号额度仍由现有 latest-quota/实时路径维护。cursor 不可信、文件收缩或持久化状态不足时，parser 会回退到原有安全 replay 规则。
 
@@ -43,6 +43,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 {
   "generatedAt": "2026-08-25T03:22:56.706Z",
   "timezone": "Asia/Shanghai",
+  "projection": { "version": 1, "generation": 42 },
   "usage": { "inputTokens": 0, "cachedInputTokens": 0, "outputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 0 },
   "modelRequestCount": 0,
   "tokensPerModelRequest": null,
@@ -50,6 +51,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
   "months": [{
     "key": "2026-08",
     "usage": {},
+    "costEstimate": { "status": "estimated", "amountUsd": 0.0, "currency": "USD", "estimatedTasks": 0, "unavailableTasks": 0 },
     "modelRequestCount": 0,
     "tokensPerModelRequest": null,
     "taskCount": 0,
@@ -58,6 +60,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
     "days": [{
       "key": "2026-08-24",
       "usage": {},
+      "costEstimate": { "status": "estimated", "amountUsd": 0.0, "currency": "USD", "estimatedTasks": 0, "unavailableTasks": 0 },
       "modelRequestCount": 0,
       "tokensPerModelRequest": null,
       "taskCount": 0,
@@ -69,6 +72,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
         "projectPath": "C:\\workspace\\example",
         "date": "2026-08-24",
         "usage": {},
+        "costEstimate": { "status": "estimated", "amountUsd": 0.0, "currency": "USD", "estimatedTasks": 0, "unavailableTasks": 0 },
         "modelRequestCount": 0,
         "tokensPerModelRequest": null,
         "taskCount": 0,
@@ -81,17 +85,18 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 }
 ```
 
-`months` 和 `days` 均按 key 降序排列；页面用原生 `details` 展开月份、日期和当天 session。日期 key 仍按任务 `startedAt` 的本地时区生成。`usage` 只累加 Request Ledger 中已验证且已归属 task 的 usage；同 task 存在 unverified/anomaly 时只保留已验证部分并以 `partial` 披露。schema v11 不存在第二套 Boundary task delta 或 fallback。`modelRequestCount` 只统计 verified model usage units，`tokensPerModelRequest=usage.totalTokens/modelRequestCount`；它们不保证与 HTTP 请求或服务端计费请求一一对应。没有可归入本地日期的任务进入 `unattributed`。
+`months` 和 `days` 均按 key 降序排列；页面用原生 `details` 展开月份、日期和当天 session。Phase 18 起日期 key 只由 **canonical Request** 的原始 `observedAt` 所在监控器本地自然日决定；Task lifecycle 本身不再创建 Time slice。跨午夜 Task 只有在对应日期确实存在 canonical Request 时才出现，并且该日 `usage/request/coverage/quality/cost` 只聚合该日 Request。fork copy 的重写 envelope timestamp 不会改变 canonical Request 日期。`modelRequestCount` 对应 canonical verified Request Ledger units；`tokensPerModelRequest=usage.totalTokens/modelRequestCount`。
 
 该接口的 total token 是本地 rollout 的审计汇总，不是 Codex 个人资料的订阅账单字段。个人资料可能采用不同的服务端时间边界、未公开的请求级计费口径或包含本地无法证明的记录；二者只应比较量级和质量覆盖，不应要求逐字相等。
 
-### `GET /api/sessions/:id`
+### `GET /api/sessions/:id[?day=YYYY-MM-DD]`
 
-选择并解析根会话，返回一个 snapshot：
+选择根会话并返回一个显式 scope 的 **cached canonical snapshot**。已有 projection 时点击不会启动 parser；若 source 比 projection 新，响应先使用当前缓存并把 session 标记进后台 dirty queue，完成后由 SSE 推送新 generation。无 `day` 时保持完整 session 契约；带合法 `day` 时只返回该 session 在该本地自然日的 canonical Request / Task / Agent / Usage / Cost slice。日期使用监控器本地时区的 `[dayStart, nextDayStart)` 日历边界，支持 DST；非法或不存在的日历日期返回 `400`。
 
 ```json
 {
   "session": { "projectPath": "C:\\workspace\\example" },
+  "scope": { "type": "session" },
   "agents": [{
     "tasks": [],
     "ownCostEstimate": {},
@@ -133,6 +138,14 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 }
 ```
 
+day scope 的 metadata 形如：
+
+```json
+{ "scope": { "type": "day", "day": "2026-08-26", "timezone": "America/Los_Angeles" } }
+```
+
+day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；同一跨午夜 task 可以出现在相邻两天，但前提是两天都实际发生 canonical Request。`deltaUsage`、`requestCount`、`requestLedgerCoverage`、`quality` 和 `costEstimate` 都按目标日 Request 重新计算；生命周期跨日但当天无 Request 的 Task 不进入 Time 页面。Agent 只保留当天相关节点及维持 lineage 所需祖先。
+
 每个 `agents[].tasks[]` 任务的 `deltaUsage` 都在运行时由 Request Ledger 物化，并同时包含 rollout 的 `model`、`effort` 以及运行时派生的 `costEstimate`：
 
 ```json
@@ -149,36 +162,41 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
     "status": "estimated",
     "amountUsd": 0.012345,
     "currency": "USD",
-    "basis": "openai-standard-api-short-context",
-    "catalogVersion": "2026-08-24",
-    "catalogStale": false,
-    "pricedModel": "gpt-5.6-terra",
-    "ratesPerMillion": {},
-    "components": {},
-    "sourceUrl": "https://developers.openai.com/api/docs/models/gpt-5.6-terra",
+    "basis": "subscription-standard-equivalent",
+    "policyVersion": "2026-08-26",
+    "requestCount": 1,
+    "estimatedRequests": 1,
+    "partialRequests": 0,
+    "unavailableRequests": 0,
+    "rateVersions": ["gpt-5.6-terra@2026-07-30"],
+    "featureCoverage": {
+      "historicalRate": "verified",
+      "requestBoundary": "verified",
+      "serviceTier": "verified"
+    },
     "limitations": [],
-    "reason": null
+    "reasons": []
   }
 }
 ```
 
 若 task 同时包含 verified 与 unverified/anomaly 事件，`deltaUsage` 只保留 verified 部分并以 `partial` 标记；没有可证明 usage 的完成任务保持 `partial`，活跃任务保持 `unknown`。旧 `boundaryDeltaUsage` / `boundaryQuality` API 字段已在 schema v11 删除；需要复核旧实现时使用 Git tag `usage-boundary-ledger-v1`。
 
-`costEstimate.status` 为 `estimated` 或 `unavailable`；不可估算时 `amountUsd=null` 并给出 `reason`。`pricing` 返回本地价目表版本、抓取/复核日期、官方来源、支持模型和是否待复核。金额是当前标准 API 短上下文等值，不是 Codex 订阅扣费，也不包含无法从 rollout 证明的长上下文、服务层级、区域或工具费用。
+`costEstimate` 先逐 verified Request Ledger usage unit 计算，再在 Task 层求和。状态为 `estimated | partial | unavailable`；`partial.amountUsd` 是当前可证明金额，不代表完整 Plus 扣费。`pricing.basis` 固定为 `subscription-standard-equivalent`。Historical Rate Resolver 使用 event `observedAt` 选择历史价；`input >272K` 的 long-context multiplier 与 Fast 只在 request-level evidence 可证明时应用，unknown service tier 不默认 standard。`featureCoverage` 明确披露 historical rate、request boundary 与 service tier 证据状态。
 
-每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。四类摘要均返回 `estimatedTasks` 和 `unavailableTasks`：全部可计算为 `estimated`，混合覆盖为 `partial`，没有可计算任务为 `unavailable`。`partial.amountUsd` 只是已知任务的下限；页面用 `≥` 显示，不把它冒充完整总额。
+每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。摘要同时返回 task 与 request 级 `estimated/partial/unavailable` 数量及 `featureCoverage`。所有金额都来自 request cost 求和，不能重新对 Task aggregate 套 272K/Fast 规则；页面继续直接显示 `$xx.xx`，partial 状态通过 coverage/title 解释，不在主数值前加 `≥`。
 
 页面从 request-derived `summary.totalUsage` 计算完整会话输入、输出和缓存命中率，从 `agents[].ownUsage` 与 `tasks[].deltaUsage` 计算对应层级命中率。统一公式为 `cachedInputTokens / inputTokens`；费用估算也消费同一套 request-derived 六字段 token。`requestCount` / `modelRequestCount` 和 `tokensPerModelRequest` 只由 verified model usage units 派生。
 
 这是有状态选择操作，但不写 `.codex`；它只更新监控器自身的解析范围和派生 SQLite。
 
-### `GET /api/sessions/:id/events`
+### `GET /api/sessions/:id/events[?day=YYYY-MM-DD]`
 
-为已选择的会话打开 `text/event-stream`。连接后立即发送 `snapshot`，随后可能发送：
+为已选择的会话打开 `text/event-stream`。scope 规则与 snapshot endpoint 完全相同。连接后立即发送该 scope 的 `snapshot`；后续 session 更新会在最新持久化状态上按 listener 原始 scope 重新物化，day listener 不会收到其他日期 usage，full listener 仍获得完整 session。
 
 | SSE event | data |
 |---|---|
-| `snapshot` | 当前会话完整 snapshot |
+| `snapshot` | 当前 listener scope 的 session snapshot |
 | `quota` | 最新账号级额度对象或 `null` |
 | `health` | 最新解析器/仓库/存储健康对象 |
 
@@ -205,10 +223,24 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 ### `GET /api/health`
 
 ```json
-{ "health": { "status": "healthy", "observerMode": "rollout-file-observer" } }
+{
+  "health": {
+    "status": "healthy",
+    "observerMode": "rollout-file-observer",
+    "projectionVersion": 1,
+    "projectionGeneration": 42,
+    "canonicalRequests": 100,
+    "inheritedRequestCopies": 20,
+    "unresolvedRequests": 0,
+    "canonicalTasks": 10,
+    "inheritedTaskCopies": 4,
+    "unresolvedTasks": 0,
+    "timeline": { "projectionDirtySessions": 0, "indexQueueLength": 0, "activeIndexJobs": 0 }
+  }
+}
 ```
 
-完整对象还包含当前选择、监听状态、最后更新时间、repository 摘要、storage 统计、parser 健康及最近最多 5 条错误。Parser 健康会报告坏行、unknown/skipped records、discontinuity、partial bytes，以及本次恢复/全量回放的文件数。路径信息只对已认证本地用户可见。
+完整对象还包含当前选择、监听状态、最后更新时间、repository 摘要、storage 统计、parser 健康及最近最多 5 条错误。Phase 18 明确暴露 canonical/inherited/unresolved Request 与 Task 数、projection version/generation、dirty queue/active index jobs 和 pricing projection version；`unresolvedRequests > 0` 时整体 `status` 不得显示为完全 healthy。Parser 健康继续报告坏行、unknown/skipped records、discontinuity、partial bytes，以及本次恢复/全量回放的文件数。路径信息只对已认证本地用户可见。
 
 ## 兼容性
 

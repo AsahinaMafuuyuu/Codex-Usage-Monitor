@@ -33,7 +33,7 @@ npm run start:no-open
 
 ## 停止与重启
 
-在运行终端按 `Ctrl+C`。进程会停止 watcher 和 timer、关闭 HTTP 服务与 SQLite。每次启动都会生成新的随机 token/Cookie；旧浏览器 Cookie 对新进程无效。
+在运行终端按 `Ctrl+C`。Phase 18 的关闭顺序是：停止接收新索引任务 → 取消 queued dirty session → 等待 active parse/write → 关闭 watcher/timer → 关闭 HTTP → 最后关闭 SQLite。不要在后台 index job 活跃时直接删除/覆盖 `usage.sqlite*`。每次启动都会生成新的随机 token/Cookie；旧浏览器 Cookie 对新进程无效。
 
 ## 健康检查
 
@@ -44,23 +44,29 @@ npm run start:no-open
 - `lastUpdateAt`：选择会话最近解析时间。
 - `repository`：发现的 sessions、rollout files、state DB 和索引错误。
 - `storage`：schema/parser 数据和 cursor 状态。
+- `projectionVersion` / `projectionGeneration`：当前 canonical projection 版本与原子 generation。
+- `canonicalRequests` / `inheritedRequestCopies` / `unresolvedRequests`：Request ownership 健康；`unresolvedRequests > 0` 时整体 health 必须降级为 warning。
+- `canonicalTasks` / `inheritedTaskCopies` / `unresolvedTasks`：Task ownership/provenance 统计。
+- `timeline.projectionDirtySessions` / `indexQueueLength` / `activeIndexJobs`：后台 indexer 队列和活跃任务。
 - `parser`：坏行、尾部 partial bytes、跳过/未知记录、discontinuity，以及重启时 restored/replayed 文件数。
 - `recentErrors`：最近最多 5 条本地异常。
 
 页面额度卡超过 5 分钟会显示可能过期；这通常表示最近没有新的 rate-limit 记录，并不自动代表账号异常。
 
+schema version 与 parser semantics version 是两个不同概念。Phase 18 当前 SQLite 仍是 schema v14，但事件分类/allowlist 发生兼容性变化时，旧 session 会被标记为 parser-stale 并进入后台 reindex；不要手工更新 `ingest_cursors.unknown_records` 来“修复” health。真实重扫完成后 cursor diagnostics 才是新的事实。
+
 ## USD 价目维护
 
-进程不会联网获取价格。`src/pricing.js` 内的标准 API 短上下文价目表带 `version`、`capturedAt` 和 `reviewAfter`；页面在复核日期后显示“价目待复核”，但不会静默切换或猜测新价格。
+进程不会联网获取价格。`src/pricing.js` 内维护不可变 Historical Rate Catalog；resolver 按 `model + event.observedAt` 选择唯一有效区间，并由 policy version 决定 long-context / Fast / cache-write 语义。历史记录不能通过覆盖“当前价格”来回写。
 
 更新价目时：
 
-1. 只使用 OpenAI 官方模型/定价页面，逐项核对 input、cached input、cache write 和 output。
-2. 更新价目版本、抓取/复核日期和来源 URL；不要覆盖不再适用的历史证据而不记录变更。
-3. 同步 [ADR-0007](decisions/0007-versioned-api-equivalent-cost.md)、API 文档和 CHANGELOG。
-4. 为每个变更模型更新精确分项测试，然后运行 `npm test`、`npm run check` 和桌面/窄屏浏览器验收。
+1. 只使用 OpenAI 官方模型/定价/订阅计量材料，核对 effective interval、input/cached/output 以及 feature multiplier。
+2. 新价格新增 interval，不修改已发生历史区间；gap/overlap 必须让测试失败，而不是选最近价。
+3. 同步 [ADR-0019](decisions/0019-request-level-subscription-standard-cost.md)、DESIGN、API 文档和 CHANGELOG。
+4. 更新 T-COST historical/feature fixtures，然后运行 `npm test`、`npm run check`、`git diff --check` 和桌面/窄屏浏览器验收。
 
-价格显示始终是当前标准 API 等值，不是 Codex 订阅实际扣费。不要从 `rate_limits`、plan type 或账号额度百分比反推美元。
+价格显示始终是 **Subscription Standard-Rate Equivalent**，不是 Plus 实际扣费。不要从 `rate_limits`、plan type 或账号额度百分比反推美元。
 
 ## SQLite、备份和重建
 
@@ -78,8 +84,8 @@ data\usage.sqlite-shm
 
 1. 停止监控器。
 2. 把 `data\usage.sqlite*` 移到项目外的备份目录。
-3. 重新启动监控器。
-4. 在页面中选择需要回填的根会话。
+3. 重新启动监控器；repository discovery 会自动把未导入 session 放入后台 dirty queue。
+4. 页面可立即使用已有 projection；全新空库会在首轮后台索引形成可用基线，不需要逐个点击 Session 触发解析。
 
 此操作不应触碰 `%USERPROFILE%\.codex`。记录默认无限期保留；当前没有自动清理策略。
 
@@ -120,11 +126,31 @@ DB source_key：sessions/2026/08/25/rollout-abc.jsonl
 
 ### 会话存在但没有任务
 
-先确认选中的是根会话、对应 rollout 仍存在，并查看 `/api/health` 的 repository/parser 信息。未选择的会话只完成索引；第一次选择才做完整解析。
+先确认选中的是根会话，并查看 `/api/health` 的 ownership/index queue。已有 SQLite projection 时点击只读缓存，不会同步解析 rollout；若 session 仍在 `projectionDirtySessions`，等待后台 indexer 完成并通过 SSE 更新。若原 rollout 已删除，Phase 18 会保留上一次已验证的 historical canonical usage，但无法凭缺失 source 重新判定新的 ownership，preview 也会不可用。
 
 ### 实时更新延迟
 
 正常目标是追加完整 JSONL 行后 2 秒内。若 `fs.watch` 丢事件，1 秒轮询应补偿；若仍未更新，检查源文件是否位于 `sessions` 或 `archived_sessions`、尾行是否已有换行，并查看 recent errors。
+
+Timeline/Session 点击本身不应触发大规模解析。如果 UI 可读但 health 显示 `indexQueueLength > 0`，这是“先返回 cached generation、后台构建下一代 projection”的预期状态；只有空库首次启动时允许等待首个 generation。
+
+### Phase 18 真实 fork-history 对账
+
+开发/升级排查 legacy history 污染时可运行只读 CLI：
+
+```powershell
+npm run reconcile:phase18 -- --session <root-session-id>
+```
+
+它只读取该 root session 的 rollout，报告 raw/canonical/inherited/unresolved Task 与 Request、六字段 usage conservation、临时 SQLite projection 性能和源文件 before/after SHA-256。临时数据库位于系统临时目录并在结束后删除；`.codex` 不会被写入。任何 `unresolved > 0` 或 `conserved=false` 都不能当作精确交付结果。
+
+如果 `/api/health` 出现较大的 `unknownRecords`，先运行只读聚类：
+
+```powershell
+npm run audit:unknown-records -- --session <root-session-id>
+```
+
+该命令只扫描 record type/payload type/key shape，不把 record 自动提升成 Request，也不会修改 `.codex`。2026-08-27 的 Phase 18 污染样本中，原 1,978 条 unknown 被确认全部是 `patch_apply_end/user_message/thread_rolled_back/web_search_end` 非计量事件；加入显式 allowlist 后真实重扫得到 `unknownRecords=0`，canonical Request/Token 对账完全不变。对未来新类型仍必须先审计，不能因为“看起来像工具或消息”就直接静默忽略。
 
 ### 指令预览不可用
 
@@ -132,9 +158,9 @@ DB source_key：sessions/2026/08/25/rollout-abc.jsonl
 
 ### USD 显示“不可估算”或与实际账单不同
 
-任务必须同时有受支持的官方模型映射和一致的 input/cached/cache-write/output 差分才能估算。内部 alias、未知模型、total-only 增长或字段缺失会显示不可估算，不会套用相近模型价格。
+费用必须有 verified Request Ledger usage、事件发生时可解析的历史模型价，以及对应 request pricing evidence。service tier 缺失会保留基础金额但降低为 partial；未知模型、历史价 gap、矛盾 usage 或不支持的 Fast+long-context 组合不会猜测。
 
-即使有金额，它也只代表价目表版本对应的标准 API 短上下文等值。Codex 订阅、超过 272K input 的请求、Fast/Batch/Flex/Priority、区域处理和收费工具调用可能采用不同口径，不能用该字段对账。
+长上下文只按单个 verified usage unit 的 `input >272K` 判定；Fast/priority 只按 event-level service tier 应用。即使 coverage 完整，金额也只是订阅标准价等值，不是 Plus invoice；区域处理和收费工具仍未纳入当前 policy。
 
 ### 端口全部被占用
 

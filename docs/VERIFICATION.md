@@ -245,6 +245,70 @@ npm test
 - Headless Chrome 认证页面截图已成功生成：1440×900 desktop 与 390×844 narrow。该步骤证明当前静态资源、认证入口和页面脚本可在真实 Chrome 中加载；本轮未执行新的 CDP console/error 采样或精确 overflow 几何断言，因此不新增“0 warning / 0 overflow”类未验证结论。
 - `.impeccable/` 中的浏览器 QA 工件保持忽略状态，不进入 Git；本轮没有修改 `.codex` 源文件，也没有把截图或运行时数据库纳入提交。
 
+### Phase 15：实时交互稳定性增量复核
+
+日期：2026-08-26。将 selected-session SSE snapshot 从 destructive render 改为 session / Agent / Task stable-key reconciliation，并对结构变化增加视觉锚点补偿。
+
+- 全量 `npm test`：52 tests，51 passed，0 failed，1 skipped；唯一 skipped 为本轮未配置 `CODEX_MONITOR_REAL_FIXTURE` 的开发机真实五任务 fixture。
+- `npm run check` 与 `git diff --check`：通过；静态 UI 回归新增 `live updates preserve keyed interaction containers instead of rebuilding them`，约束 `threadId` / `turnId` key、Agent summary/task row visual anchor、selected-session 导航原位更新以及禁止恢复旧的整树 `innerHTML` 路径。
+- 真实 Chrome/CDP 回归通过。测试在页面加载前包装浏览器 `EventSource`，捕获应用实际注册的 `snapshot` listener 与最新 snapshot，再仅在浏览器内重复回放，不写入 rollout。普通 snapshot 前后 `.task-table-wrap` 与 `.agent-card` 均保持同一 DOM 实例；任务表 `scrollLeft` 保持 `354`，键盘 focus 保持在 `DIV.task-table-wrap`，Agent `details.open=true` 保持不变。
+- 手工折叠同一 Agent 后再次回放 snapshot：仍为同一 `<details>`，`open=false` 保持，任务表横向位置仍为 `354`。
+- 结构回归在浏览器内复制一条 Task 并临时插入当前可见 Task 之前；原 Task row DOM 继续存活。插入造成布局增加 66px，visual-anchor 逻辑同步将页面滚动补偿 66px，因此该 surviving Task 的 `getBoundingClientRect().top` 从 `0.40625px` 到 `0.40625px`，top delta 为 `0px`。随后回放原 snapshot 清除临时结构。
+- 本轮浏览器结构数据和额外 spacer 都只存在于 QA 页面内存/DOM；未向 `.codex` 写入测试记录，也未把 Chrome profile、运行时 SQLite 或其他 QA 工件纳入仓库。
+
+### Phase 16：Day-scoped Request Ledger snapshots / schema v12
+
+日期：2026-08-26。按 `DESIGN-DAY-SCOPED-SNAPSHOT.md`、`TEST-DAY-SCOPED-SNAPSHOT.md` 与 ADR-0018 实现 Project=full session、Time=`(sessionId, local day)` 两套显式 snapshot scope，并把 Timeline 日期归属切换为 Request Ledger event `observedAt`。
+
+- T-DAY-001~043：严格 `YYYY-MM-DD` 本地日期校验通过；`America/Los_Angeles` 2026-03-08 / 2026-11-01 分别验证 23h / 25h DST 日边界。确定性跨午夜 fixture 的 full/day1/day2 total token 为 `300 / 100 / 200`，六类 usage 字段逐项满足 `day1 + day2 == full`。duplicate 不增量，unverified/anomaly 降低 quality，未归属的 `999` token event 不进入 Task/Agent/Session 主统计。
+- Task Day Slice 保留原 `startedAt` / `completedAt`，按目标日重新计算 `deltaUsage`、request count、coverage、quality 和 cost；生命周期跨日但当日无 usage 的 task 仍可形成 slice，没有时间字段但存在当天归属 event 的 task 也可形成 slice。Agent Day Slice 只保留相关 Agent 与必要祖先，并从当天 task 重建 own/subtree usage、request、task count 和 cost。
+- 审查阶段新增 T-DAY-022 数据库回归：无 lifecycle timestamp、但有合法 `observedAt` 的 25-token task 只计入 2026-08-27 day slice 一次；Timeline 总量为 `325`、`unattributed=0`，避免旧 `started_at IS NULL` 路径重复计数。
+- schema v12：新增 `(root_session_id, observed_at, classification)` 索引；Request Ledger `observed_at` 写入统一规范为 UTC ISO，v11→v12 同样规范化历史值后从已持久化 `tasks + model_usage_events` 重建 `session_day_usage`。迁移回归确认 `PRAGMA user_version=12`、Timeline 恢复正确且 `replayedFiles=0 / tailedFiles=0`，没有因日期语义迁移重放 Request-ready rollout。
+- T-DAY-050~054：`GET /api/sessions/:id` 保持 full scope，总量 `300`；`?day=2026-08-26` / `?day=2026-08-27` 分别返回 `100 / 200`，非法 `2026-02-31` 返回 400。两天的 Timeline session usage、model request count 与 USD cost 均分别和 day snapshot 对账一致。
+- T-DAY-060~062：day-scoped SSE listener 在只增加另一天 `25` token 后仍保持目标日 `100`；再给目标日增加 `10` token 后更新为 `110`；同一持久化状态下 full snapshot 为 `335`。证明 listener 后续更新按建立连接时 scope 重新物化，不把 full-session snapshot 泄漏给 day listener。
+- T-DAY-070~073 静态 UI 契约覆盖 `selectedDay`、`data-session-day`、`?day=` snapshot/SSE、id+day active identity、Project↔Time scope 切换、stale selection version 防护，以及 Time live update 重新拉取 Timeline 时复用导航 interaction capture/restore。
+- 真实 Chrome/CDP 验收通过：1440×900 下 task table `scrollLeft=357` 在 snapshot 后不变，focus 和 Agent 展开状态保持；结构插入造成页面 66px 布局变化时 visual anchor top delta 为 `0px`。实机 selected session 同时存在 `2026-08-27` 与 `2026-08-26`，Time 模式实际完成同 session 跨日切换，版本标签同步变更，随后 Project 模式恢复 full scope。切到 720×900 后 task table 仍保持水平 overflow，`scrollLeft=240`、focus 与 Agent 展开状态均不变。
+- 全量自动化门槛：`npm test` 为 62 tests / 61 passed / 0 failed / 1 skipped；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选真实五任务 fixture，因此 T-DAY-081 源文件哈希门槛本轮按测试计划记为 skipped。`npm run check` 与 `git diff --check` 均通过。
+- 当前真实监控 SQLite（schema v12）热路径抽样：399 个 session-day、2,934 个 cost task-day slice；`getTimeline()` 约 `29ms`，按 event-day 物化 cost slices 约 `354ms`。该路径只读 SQLite，不扫描 rollout 正文；第一版逐 session/逐日重复过滤约 `596ms`，审查阶段已改为单次 event 分组后按 task/day 物化。
+- 浏览器 QA 只读取本机现有 monitor/rollout，并在页面内存中回放/复制 snapshot；没有写 `.codex`。schema/API/privacy 回归继续确认数据库不新增 prompt、response、message 等正文列。
+
+### Phase 17：Subscription Standard-Rate Cost / schema v13
+
+日期：2026-08-26。按 `DESIGN-SUBSCRIPTION-STANDARD-COST.md`、`TEST-SUBSCRIPTION-STANDARD-COST.md` 与 ADR-0019 将旧 Task-level current API estimator 替换为逐 verified Request Ledger usage unit 的 Subscription Standard-Rate Equivalent。
+
+- T-COST-001~013：Historical Rate Catalog、Terra/Luna 2026-07-30 切价、Sol 2026-08-21 promotion exclusion、GPT-5.4/5.5 历史有效期、cached input、reasoning 与 subscription-policy cache-write 语义通过。gap/unknown 不选择最近价。
+- T-COST-020~034：`272000` 为 normal、`272001` 为 long；full-request input/cached 2×、output 1.5×；两个 200K request 的 Task aggregate=400K 不误触发 long。Fast multiplier 按模型族，missing tier 保持 partial，Fast+long-context 不叠乘。
+- request-boundary evidence gate 以 bounded semantics 通过：verified Request Ledger usage unit 可作为 Codex model sampling usage boundary 使用 272K threshold；不宣称等于 HTTP invoice identity。duplicate `token_count` 仍必须由 cumulative advancement 去重。
+- T-COST-033/060/061：同一 thread 内 `turn_context` model 与 `thread_settings_applied.service_tier` 按 event ordinal as-of 绑定，后续设置不会回写旧 request。schema v13 只持久化最小 `model/service_tier/pricing_context_quality`。
+- T-COST-062~065：v12→v13 migration 前后 `classification + input/cached/cache-write/output/reasoning/total` 逐字段完全一致。原 rollout 存在时只读 enrichment pricing metadata，测试 SHA-256 前后相同；原文件不存在时 service tier/model pricing context 保持 unknown；新 schema 不保存正文或完整 settings payload。
+- T-COST-040~052：Task cost 只等于 `Σ requestCost`；Agent own/subtree、Session total/subagent-only、Full/Day/Timeline 只汇总 request-derived summary。跨 2026-07-29/07-30 的 Terra fixture 分别得到 `$0.25 / $0.20`，完整 session `$0.45`，Timeline 与 day detail 一致。
+- T-COST-070~073：API `basis=subscription-standard-equivalent`；Task/summary 暴露 request/task counts 与 historical-rate/request-boundary/service-tier coverage；UI 主数值不恢复 `≥`，title 明确 partial 为可证明部分而非 Plus 实际扣费；历史 recorded model 不被改写成当前模型。
+- T-COST-080~083：新增 `npm run reconcile:subscription-cost` 只读 reconciliation CLI。脱敏 fixture 证明 subscription-policy、historical-rate、long-context、Fast adjustment 可分离且加总 delta=0，源 rollout 哈希不变。
+- 真实历史 reconciliation：`425` rollout、`242` root session、`2,368` task、`41,089` verified usage unit、`5,223,166,739` verified token。`571` 个 usage unit 的 input `>272K`，合计 input `166,551,689`。
+- 真实 service-tier inventory：`default=23,743`、`fast=0`、`priority=0`、`unknown=17,346`。因此真实 Fast adjustment 为 `$0`；unknown 不并入 default。未知/无历史价格 usage unit `301` 个，其中 `missing_model=92`、`historical_rate_unavailable=209`；`service_tier_unknown=17,289` 个 request 保留已知基础金额但降低 coverage。
+- additive reconciliation subset 覆盖 `1,792` 个可比较 task：旧 current API equivalent `$2703.97106036`；subscription-policy adjustment `+$155.09507810`；historical-rate `+$50.84818823`；long-context `+$106.61941600`；Fast `$0`；新 subscription-standard equivalent `$3016.53374269`，`additivityDeltaUsd=0`。所有存在可证明新金额的 usage unit 合计 `$3087.22782329`。
+- 真实 `.codex` 只读门槛：reconciliation 前后 425 个 rollout 全部 SHA-256 相同，`hashChangedFiles=0 / sourceReadOnly=true`。
+- 真实 Chrome/CDP：1440px 常规 snapshot 前后 task wrap/Agent details DOM identity、`scrollLeft=357`、focus、展开状态保持；结构变化 visual-anchor top delta `0px`。720px 下横向 overflow 保持，`scrollLeft=240`、focus 与展开状态不变；同 session Time 跨日和 Project full-scope 恢复通过。
+- 最终全量门槛：`npm test` 为 `86 tests / 85 passed / 0 failed / 1 skipped`；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选五任务样本。`npm run check` 与 `git diff --check` 均通过；真实历史只读证据由上面的 425-file reconciliation 独立满足。
+
+### Phase 18：Canonical Request Ownership / Request-Day Projection / schema v14
+
+日期：2026-08-27。按 `DESIGN-CANONICAL-REQUEST-PROJECTION.md`、`TEST-CANONICAL-REQUEST-PROJECTION.md` 与 ADR-0020 完成 legacy fork-history 去重、Request identity、canonical projection、background indexer 与 graceful shutdown。
+
+- Native Request Identity 调查覆盖真实污染 root session `019fbb2b-5db4-7410-bc55-41bbf5a6afc1` 的 20 个 rollout / 13,593 条 `token_count`。`request_id/response_id/model_request_id/trace_id/span_id/generation_id` 在计量事件上均未出现；`token_count` 携带 `call_id` / `turn_id` 均为 0。`call_id` 只出现在 MCP/patch/web-search/function/custom-tool call 链，因此不能作为模型 Request identity。
+- T-ID-001~007：native identity 只从 `token_count` 强字段提取；当前格式缺失时使用 `turnId + generation + cumulative verified usage + last verified usage` 确定性 reconstruction。thread/source/line/envelope timestamp 不参与 identity，同一 fork copy 可稳定映射同一 `reqr_*`。新增回归证明 persisted reconstructed identity 在 restore 时保持 authoritative，且 v13→v14 可仅凭持久化 Request Ledger backfill identity。
+- schema v14 将 `model_usage_events` 固定为 raw evidence，新建 `canonical_requests`、`task_ownership`、`event_ownership`；inherited copy 的 provenance 持久化 `canonical_request_id`。Parser restart/portable relocation 恢复时读取 raw session，不把 UI canonical projection 回灌为 raw evidence。
+- T-OWN/T-PROJ：真实污染 session Task 为 `639 raw = 67 canonical + 572 inherited + 0 unresolved`；verified Request evidence 为 `12,783 raw = 1,464 canonical + 11,319 inherited + 0 unresolved`。业务 Request 不随 20 个 Agent/fork copy 倍增。
+- 六字段 evidence conservation 全部成立。total token：`1,739,759,444 raw observed = 175,379,870 canonical business + 1,564,379,574 inherited provenance + 0 unresolved`；input/cached/cache-write/output/reasoning 字段也逐项满足同一恒等式。
+- Request-Day：Time scope 只消费 canonical Request 原始 `observedAt`；lifecycle-only Task 不进入日期页，fork copy 重写 timestamp 不改变原 Request 日期。`verified_zero` 只有严格 unchanged cumulative post-checkpoint 才产生 `0 Token / $0.00`。
+- Background indexer：首次空 projection 可等待首轮构建；已有 projection 的 Timeline/Session 点击只读 SQLite cache。append 只消费 dirty session；restart/portable source key 不 replay 无变化历史。present source 采用 source-scoped authoritative replace，source missing 保留 historical verified evidence；Agent persisted aggregate 与 Timeline unattributed fallback 也已回归锁定 canonical-only。parser semantics 与 schema version 分离，旧 cursor diagnostics 会通过后台 reindex 重建。T-INDEX-005 证明 close 会取消 queued job 并等待 active index job，生产 `server.close()` 在此后才关闭 SQLite。
+- projection generation：ownership、`canonical_requests`、day/cost rows 与 `projection_generation` 在 SQLite transaction 内切换；Health 暴露 projection version/generation、canonical/inherited/unresolved Request/Task、dirty queue 和 active jobs；`unresolvedRequests > 0` 会降低 health。
+- unknown-record 审计：52,552 条真实 JSONL record 中，原 `1,978 unknownRecords` 精确聚类为 `patch_apply_end=1,104`、`user_message=610`、`thread_rolled_back=183`、`web_search_end=81`。四类均为 non-accounting event；显式 allowlist 后同一只读样本 `unknownRecords=0 / parser health=healthy`，Request/Token reconciliation 数值完全不变。
+- 最终真实 shadow benchmark：临时 SQLite 写入 `13,593` raw evidence rows、`1,464` canonical request rows、2 个 day rows；background persist `1,306.58ms`。20 次 warm 查询 P95：Timeline `19.76ms`（门槛 `<200ms`），Session-Day `65.43ms`（门槛 `<300ms`）。临时 DB `21,057,536` bytes，WAL `21,506,432` bytes。
+- `.codex` read-only gate：20 个参与 rollout 的 combined SHA-256 manifest before=`3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`，after 完全相同；`hashChangedFiles=0`。
+- 最终 Chrome/CDP 复验：1440×900 下 task-table `scrollLeft=354`、focus、Agent 展开/手工折叠与 DOM identity 在 snapshot 后保持，结构插入 `scrollDelta=66px` 时 visual-anchor top delta=`0px`；Project 恢复 full scope。当前复验选中的 live session 只有 `2026-08-27` 一个 Timeline day，因此 cross-day 子检查自然 skipped；前一轮多日真实 session 已实际通过 `2026-08-27 → 2026-08-26`。720×900 下横向 overflow、`scrollLeft=240`、focus 与 Agent 状态保持。
+- 最终全量门槛：`npm test` 为 `109 tests / 108 passed / 0 failed / 1 skipped`；唯一 skipped 为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选五任务 fixture。`npm run check` 与 `git diff --check` 均通过。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。
@@ -259,4 +323,4 @@ npm test
 
 ## 证据解释
 
-自动化测试证明 parser 对已覆盖结构的行为、数据库内容边界、定价公式和 HTTP 安全控制。它不证明 rollout 是长期稳定公共格式，也不证明客户端 token 差分或 API 等值等于服务端/Codex 订阅账单。页面的数据质量标签、USD 限制和 [架构证据边界](ARCHITECTURE.md#官方证据边界) 必须保留。
+自动化测试证明 parser 对已覆盖结构的行为、数据库内容边界、定价公式和 HTTP 安全控制。它不证明 rollout 是长期稳定公共格式，也不证明本地 Request Ledger / Subscription Standard-Rate Equivalent 等于服务端实际 Plus 账单。页面的数据质量标签、USD 限制和 [架构证据边界](ARCHITECTURE.md#官方证据边界) 必须保留。

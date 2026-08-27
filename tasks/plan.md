@@ -807,6 +807,327 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Verification:** `npm test`, `npm run check`, `npm run audit:request-ledger`, `npm run benchmark:request-ledger`, `git diff --check`, schema v10→v11 no-replay regression, final tag/status inspection.
 
+## Phase 15: Preserve interaction state during live updates
+
+### Goals
+
+- [x] Real-time SSE snapshots must not recreate an existing task table or agent `<details>` node when only values change.
+- [x] Horizontal task-table scroll, agent expansion state, focusable container identity, and the user's visible vertical anchor remain stable while token/cost/status values update.
+- [x] The left session navigator must not be destructively re-rendered for routine selected-session snapshots.
+- [x] Structural additions/removals use stable session/agent/task IDs and preserve the user's current visual reading position.
+
+### Task 1: Incrementally reconcile the agent/task ledger
+
+**Description:** Replace `agent-tree.innerHTML = ...` snapshot rendering with keyed reconciliation using `threadId` for agents and `turnId` for tasks. Existing agent branches, `<details>` elements and `.task-table-wrap` containers remain mounted; value cells and structural children are patched in place.
+
+**Acceptance criteria:**
+
+- [x] Existing `.task-table-wrap` elements survive ordinary token/status/cost updates, preserving `scrollLeft` and keyboard focus.
+- [x] Existing agent `<details>` open/closed state is not overwritten by subsequent snapshots.
+- [x] New/removed/reordered agents or tasks are inserted, removed or moved by stable key rather than rebuilding the whole lineage tree.
+
+**Verification:** `npm test -- --test-name-pattern "static UI|live update"`, `npm run check`, `git diff --check`, browser scroll/expand regression.
+
+**Dependencies:** ADR-0005, ADR-0006, ADR-0011.
+
+**Files likely touched:** `public/app.js`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Preserve the visible anchor for structural live changes
+
+**Description:** Capture the first visible stable agent/task key before structural reconciliation and restore its viewport offset after insertion/removal, so content added above the reader does not move the current reading target.
+
+**Acceptance criteria:**
+
+- [x] Value-only updates do not perform page-scroll correction.
+- [x] Structural changes restore the same surviving visible agent/task to its pre-update viewport offset.
+- [x] If the anchor itself disappears, reconciliation completes safely without forced scrolling.
+
+**Verification:** `npm test -- --test-name-pattern "static UI|live update"`, `npm run check`, browser structural-update regression.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `public/app.js`, `test/ui-security.test.js`.
+
+**Estimated scope:** Small.
+
+### Task 3: Stop selected-session snapshots from rebuilding navigation
+
+**Description:** Decouple selected-session summary refreshes from `renderSessions()`. Patch the currently rendered project-session item in place when its title/update time/agent count changes; only deliberate navigation-mode/search rebuilds or a grouping-key change may rebuild the list.
+
+**Acceptance criteria:**
+
+- [x] Routine SSE snapshots do not replace `#session-list` descendants.
+- [x] Project-view session metadata visible in the sidebar still refreshes in place.
+- [x] Session selection toggles active state without resetting project/month/day `<details>` state or navigator scroll position.
+
+**Verification:** `npm test -- --test-name-pattern "static UI|live update"`, `npm run check`, browser sidebar-state regression.
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `public/app.js`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Record the live-interaction rendering contract
+
+**Description:** Add ADR-0017 defining stable DOM identity as the live-rendering invariant, documenting why refresh throttling or scroll-position restoration alone are insufficient, and update the decision index/task checklist with delivered verification evidence.
+
+**Acceptance criteria:**
+
+- [x] ADR-0017 records value updates versus structural updates, stable keys, visual anchoring, and rejected alternatives.
+- [x] `docs/decisions/README.md`, `tasks/plan.md`, and `tasks/todo.md` match the implementation state.
+- [x] Each independently verifiable frontend interaction slice is committed according to the repository Git rules.
+
+**Verification:** `npm test`, `npm run check`, `git diff --check`, `git status --short`.
+
+**Dependencies:** Tasks 1-3.
+
+**Files likely touched:** `docs/decisions/0017-live-interaction-stable-rendering.md`, `docs/decisions/README.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Small.
+
+### Checkpoint: Live interaction stability
+
+- [x] Full tests, syntax checks, and diff checks pass.
+- [x] Horizontal task-table scroll remains unchanged through repeated selected-session snapshots.
+- [x] Manually collapsed/expanded agent and sidebar groups stay unchanged through live updates.
+- [x] Structural additions above the viewport do not displace the surviving visible anchor.
+
+**Delivered evidence (2026-08-26):** `npm test` reports 52 tests / 51 passed / 0 failed / 1 skipped; the skipped test is the optional real five-task fixture because `CODEX_MONITOR_REAL_FIXTURE` was not configured. `npm run check` and `git diff --check` pass. The Chrome/CDP `verify:live-ui` harness replays the page's real snapshot callback without writing rollout data: an existing task table remains the same DOM with `scrollLeft=354`, focus remains on `.task-table-wrap`, manually collapsed Agent state remains collapsed, and a synthetic task insertion above the visible row causes a 66px scroll compensation while the surviving row's viewport top delta remains exactly 0px.
+
+## Phase 16: Day-scoped Request Ledger snapshots
+
+### Goal
+
+把“工程”与“时间”两种导航正式定义为不同 snapshot scope：工程模式继续展示完整 session；时间模式以 `(sessionId, local day)` 为选择身份，Task / Agent / Session / Cost 全部只统计该本地自然日。token 日归属从 task `startedAt` 更新为 verified Request Ledger event `observedAt`。
+
+**设计事实源：** [`docs/DESIGN-DAY-SCOPED-SNAPSHOT.md`](../docs/DESIGN-DAY-SCOPED-SNAPSHOT.md)
+
+**测试门槛：** [`docs/TEST-DAY-SCOPED-SNAPSHOT.md`](../docs/TEST-DAY-SCOPED-SNAPSHOT.md)
+**ADR：** [`ADR-0018`](../docs/decisions/0018-day-scoped-request-ledger-snapshot.md)
+
+### Task 1: Build the day-slice domain seam and schema v12 calendar semantics
+
+**Description:** 建立唯一的本地日期边界与 Task Day Slice 物化语义；`session_day_usage` 改为按 Request Ledger `observedAt` 分日，并通过 schema v12 从已持久化 Request Ledger 重建，避免为语义迁移重放 rollout。
+
+**Acceptance criteria:**
+
+- [x] 跨午夜 verified usage 按本地 event day 分桶，六字段 `day1 + day2 == full`。
+- [x] Task 生命周期跨日或当天存在归属 event 时形成 Task Day Slice；usage/request/coverage/quality 按日裁剪，身份/原始时间不伪造。
+- [x] v11 -> v12 calendar rebuild 对 Request-ready session `replayedFiles=0`，并建立 `(root_session_id, observed_at, classification)` 查询索引。
+
+**Verification:** TEST-DAY-SCOPED-SNAPSHOT T-DAY-001~043，`npm test`, `npm run check`, `git diff --check`。
+
+**Dependencies:** ADR-0016 Request-only architecture, ADR-0018.
+
+**Files likely touched:** `src/request-ledger.js`, `src/database.js`, `test/request-ledger.test.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 2: Materialize scoped Agent and Session snapshots
+
+**Description:** 让 monitor 通过统一 scope interface 生成 full-session 或 day-scoped snapshot。day scope 从 Task Day Slice 重建 Agent own/subtree usage、request、cost 和 Session summary，不复用完整 session aggregate。
+
+**Acceptance criteria:**
+
+- [x] `snapshot(sessionId, session-scope)` 保持现有完整 session 数值。
+- [x] `snapshot(sessionId, day-scope)` 的 task/agent/summary/request/cost 均只来自当天。
+- [x] 当日无关 Agent 被省略，必要祖先保留；Timeline 与 day snapshot 对同一 `session + day` 对账一致。
+
+**Verification:** T-DAY-020~054，`npm test`, `npm run check`。
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/request-ledger.js`, `src/database.js`, `src/monitor.js`, `test/database-server.test.js`, `test/pricing.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 3: Expose day-scoped HTTP and SSE contracts
+
+**Description:** 在现有 session snapshot / SSE endpoint 上增加严格校验的 `?day=YYYY-MM-DD` scope，并确保每个 SSE listener 后续更新持续使用其原始 scope。
+
+**Acceptance criteria:**
+
+- [x] 无 `day` 的 endpoint 行为兼容；合法 day 返回显式 scope metadata；非法 day 返回 400。
+- [x] 同一 session 的两个日期请求可连续得到独立 snapshot，不发生 cache/scope 串线。
+- [x] day-scoped SSE 不接收其他日期 usage；full-session snapshot 继续得到完整总量。
+
+**Verification:** T-DAY-050~062，`npm test`, `npm run check`。
+
+**Dependencies:** Task 2.
+
+**Files likely touched:** `src/server.js`, `src/monitor.js`, `test/database-server.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Make time-view selection identity `(sessionId, day)`
+
+**Description:** 前端为时间模式保存 `selectedDay`，按二元组标记 active、发起 snapshot/SSE 请求并处理模式切换；同一 session 在多个日期可分别选择，同时继续遵守 ADR-0017 的稳定交互契约。
+
+**Acceptance criteria:**
+
+- [x] 时间按钮携带 id/day；点击同一 session 的另一日期会重新请求对应 day scope。
+- [x] Project -> Time 和 Time -> Project 都会切换正确 snapshot scope，不出现“时间导航 + 完整详情”。
+- [x] scoped live updates 不重置 session navigator、task-table horizontal scroll、Agent 展开状态或 visible anchor。
+
+**Verification:** T-DAY-070~073，静态 UI tests，desktop + narrow browser E2E，`npm test`, `npm run check`, `git diff --check`。
+
+**Dependencies:** Task 3, ADR-0017.
+
+**Files likely touched:** `public/app.js`, `public/index.html`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 5: Execute the implementation gate and close delivery
+
+**Description:** 严格执行 `docs/TEST-DAY-SCOPED-SNAPSHOT.md`。任何失败都先回到设计/ADR 分类原因；默认修实现，不通过削弱断言来掩盖设计偏差。最终把实际证据写入 Verification/Delivery/API/Architecture 等当前行为文档。
+
+**Acceptance criteria:**
+
+- [x] T-DAY-001~082 中适用测试全部通过；未配置真实 fixture 的项明确 skipped。
+- [x] `npm test`, `npm run check`, `git diff --check` 和 desktop/narrow E2E 全部通过。
+- [x] `docs/VERIFICATION.md` 记录 day1/day2/full 六字段对账、Timeline/detail 对账、SSE scope、schema v12 no-replay 证据；Delivery 从“设计已批准”改为“已交付”。
+
+**Verification:** 按 TEST-DAY-SCOPED-SNAPSHOT 第 13~15 节执行。
+
+**Dependencies:** Tasks 1-4.
+
+**Files likely touched:** `docs/VERIFICATION.md`, `docs/DELIVERY.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `README.md`, `CHANGELOG.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Day-scoped snapshot delivered
+
+- [x] 业务需求、数据边界、日期语义和 scope interface 已冻结。
+- [x] ADR-0018 已记录为什么从 task-start day 切换为 event-observed day。
+- [x] 测试方案已规定跨午夜、迁移、API/SSE、前端二元选择和失败回退流程。
+- [x] 开发前已再次阅读 DESIGN + TEST + ADR-0018，并按测试失败回退流程完成实现、迁移与浏览器验收。
+
+**Delivered evidence (2026-08-26):** deterministic T-DAY fixtures validate `full/day1/day2 = 300/100/200`, six-field conservation, DST 23h/25h boundaries, Timeline/detail cost parity, lifecycle-less event-backed task no-double-count, v11→v12 `replayedFiles=0`, invalid-day 400 and scoped SSE isolation. Full `npm test` reports 62 tests / 61 passed / 0 failed / 1 optional real-fixture skip; `npm run check` and `git diff --check` pass. Chrome/CDP verifies a real same-session `2026-08-27 -> 2026-08-26` Time switch, Project full-scope restoration, desktop stable-key/visual-anchor behavior, and 720px narrow horizontal-scroll/focus/Agent-state preservation.
+
+## Phase 17: Subscription Standard-Rate Cost / Request-level Pricing
+
+### Overview
+
+把现有 Task-level “current API short-context equivalent” 重构为 **Subscription Standard-Rate Equivalent**。Request Ledger 的 token classification/usage 保持不变；Pricing 以单个 verified model-usage unit 为基础，按 `model + observedAt + event-level service tier + feature evidence` 选择历史标准价和 multiplier，再向 Task / Agent / Session / Day / Timeline 汇总。
+
+设计事实源：
+
+- [`docs/DESIGN-SUBSCRIPTION-STANDARD-COST.md`](../docs/DESIGN-SUBSCRIPTION-STANDARD-COST.md)
+- [`docs/TEST-SUBSCRIPTION-STANDARD-COST.md`](../docs/TEST-SUBSCRIPTION-STANDARD-COST.md)
+- [ADR-0019](../docs/decisions/0019-request-level-subscription-standard-cost.md)
+
+### Architecture decisions
+
+- Token Ledger 与 Pricing Ledger 分离；费用重构不得改变 verified token 数。
+- Historical Rate Catalog 按有效期选价，禁止今天的价格回算全部历史。
+- Sol 临时 token-based USD 促销不切换 subscription-standard policy；Terra/Luna 2026-07-30 是付费订阅 usage 的历史切价点。
+- Long context 必须逐 usage unit/request evidence 判断 `input >272K`，不能看 Task aggregate。
+- Fast 使用 event 当时有效 `service_tier`；`priority` 与 `fast` 统一为 Fast。
+- 当前官方不支持 Fast + long context，冲突时不得叠乘。
+- subscription-standard policy 不直接沿用 API cache-write 1.25× surcharge。
+
+### Task 1: Freeze pricing policy, historical catalog, and test gate
+
+**Description:** 把用户确认的订阅标准价等值、历史价、历史模型、长上下文、Fast、cache-write 和 coverage 语义写成实现前事实源，并建立失败回退测试门槛。
+
+**Acceptance criteria:**
+
+- [x] DESIGN 明确 Request-level pricing、historical resolver、272K 边界和 service-tier evidence。
+- [x] TEST 定义 `T-COST-001~083` 的单元/迁移/聚合/真实历史验收。
+- [x] ADR-0019 记录为什么不继续使用 Task-level API-equivalent estimator。
+
+**Verification:** `git diff --check`；人工核对 DESIGN / TEST / ADR / Delivery 之间术语、边界和官方来源一致。
+
+**Dependencies:** Phase 16 已交付的 Request Ledger + event-observed day scope。
+
+**Files likely touched:** `docs/DESIGN-SUBSCRIPTION-STANDARD-COST.md`, `docs/TEST-SUBSCRIPTION-STANDARD-COST.md`, `docs/decisions/0019-request-level-subscription-standard-cost.md`, `docs/DELIVERY.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Small.
+
+### Task 2: Implement historical catalog and request-cost engine
+
+**Description:** 用不可变有效期目录替代单张当前 rate card，并建立只消费单个 verified Request Ledger usage unit 的 request-cost engine。先实现普通订阅标准价、历史模型/价格和 coverage，再启用 feature policy。
+
+**Acceptance criteria:**
+
+- [x] `model + observedAt` 唯一选择历史 rate；gap/overlap/unknown model 显式失败。
+- [x] Sol promotion exclusion、Terra/Luna 7/30 切价、GPT-5.5/GPT-5.4 历史 fixture 固定通过。
+- [x] 普通 request cost 正确处理 cached input、reasoning 和 subscription-policy cache-write，不双算。
+
+**Verification:** `T-COST-001~013`；`npm test -- --test-name-pattern="T-COST|cost|pricing"`（实现时按实际测试框架调整精确过滤命令）。
+
+**Dependencies:** Task 1.
+
+**Files likely touched:** `src/pricing.js`, `test/pricing.test.js`，必要时新增只读 catalog module/data file。
+
+**Estimated scope:** Medium.
+
+### Task 3: Prove long-context boundary and persist event pricing context
+
+**Description:** 在不改 Token Ledger 数值的前提下，验证 `last_token_usage`/verified usage unit 是否满足 272K billing-request threshold 的证据门槛；同时按 ordinal 采集 event model/service tier，必要时升级 schema v13 并为已有历史执行只读 metadata enrichment。
+
+**Acceptance criteria:**
+
+- [x] request-boundary evidence gate 已明确为 PASS with bounded semantics；只有 cumulative-verified model sampling usage unit 可应用 272K policy，未验证 event 仍只能 candidate/partial。
+- [x] `272000` normal / `272001` long、mixed-request Task、Task aggregate false-positive fixtures 全部通过。
+- [x] event model/service tier as-of ordinal 可持久化；v12→v13 前后六字段 usage/classification 完全不变。
+
+**Verification:** `T-COST-020~034`, `T-COST-060~065`；真实 rollout enrichment 前后 SHA-256 一致。
+
+**Dependencies:** Task 2.
+
+**Files likely touched:** `src/rollout-parser.js`, `src/database.js`, `src/pricing.js`, `test/parser.test.js`, `test/database-server.test.js`, `test/pricing.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 4: Rebuild cost aggregation and public contract
+
+**Description:** Task/Agent/Session/Day/Timeline 不再从 aggregate usage 直接估价，而只汇总 request-cost summaries；API/UI 同步改成 subscription-standard-equivalent 并保留 historical/feature coverage。
+
+**Acceptance criteria:**
+
+- [x] Task cost = `Σ requestCost`，Agent/Session lineage 汇总和 unavailable count 守恒。
+- [x] Full Session / Day / Timeline 在相同 coverage 下逐项对账一致。
+- [x] 页面仍可简洁显示 `$xx.xx`，但明确不是实际 Plus 扣费，并能解释 partial/unknown feature coverage。
+
+**Verification:** `T-COST-040~052`, `T-COST-070~073`；桌面/窄屏 browser contract（若 UI 有变化）。
+
+**Dependencies:** Tasks 2-3.
+
+**Files likely touched:** `src/pricing.js`, `src/snapshot-scope.js`, `src/monitor.js`, `src/server.js`, `public/**`, `test/database-server.test.js`, `test/ui-security.test.js`.
+
+**Estimated scope:** Medium.
+
+### Task 5: Reconcile real history and close delivery
+
+**Description:** 对真实历史生成可审计的新旧 Cost reconciliation，分别量化 historical-rate、subscription-policy、long-context、Fast 和 unavailable coverage 的贡献；执行全量门槛并更新当前行为文档。
+
+**Acceptance criteria:**
+
+- [x] reconciliation 不只输出总差额，而能拆分每类 policy adjustment。
+- [x] 真实历史 long-context candidate/request、service-tier coverage 和未知模型均有数量/Token/金额覆盖报告。
+- [x] `npm test`, `npm run check`, `git diff --check`、只读源哈希和适用浏览器验收全部通过后，Delivery/Verification 才标记 Phase 17 implemented。
+
+**Verification:** `T-COST-080~083` + TEST 文档第 12~13 节全部门槛。
+
+**Dependencies:** Tasks 2-4.
+
+**Files likely touched:** `scripts/` reconciliation tool、`docs/VERIFICATION.md`, `docs/DELIVERY.md`, `docs/API.md`, `docs/ARCHITECTURE.md`, `docs/OPERATIONS.md`, `README.md`, `CHANGELOG.md`, `tasks/plan.md`, `tasks/todo.md`.
+
+**Estimated scope:** Medium.
+
+### Checkpoint: Phase 17 design frozen
+
+- [x] 用户选择 Subscription Standard-Rate Equivalent，而不是当前 API promotional equivalent。
+- [x] 历史模型/历史价格、long context、Fast 与 cache-write 边界已冻结。
+- [x] Request-level pricing 与 Token Ledger 不变量已冻结。
+- [x] 测试失败必须回到 DESIGN/ADR 的闭环已写入测试门槛。
+- [x] 开发前已重新阅读 DESIGN + TEST + ADR-0019，并按失败闭环实施。
+- [x] 全部 T-COST 门槛通过后才将 Phase 17 标记为已交付。
+
 ## Risks and Mitigations
 
 | Risk | Impact | Mitigation |
@@ -816,11 +1137,61 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 | Cumulative counters reset | High | Request classifier accepts only a validated new generation whose request usage is independently proven by cumulative/last invariants; unexplained rollback remains anomaly/health evidence and cannot enter precise totals |
 | Windows file notifications are dropped | Medium | Combine file watching with one-second stat reconciliation |
 | Prompt text leaks into the archive | High | Never persist previews; serve them only after authenticated, explicit expansion |
+| Task aggregate 被误当成 long-context request | High | Long-context 只允许在 event/request boundary evidence 通过后逐 usage unit 判断；测试锁定多 request false positive |
+| 当前价重估导致历史金额漂移 | High | Historical Rate Catalog 使用 immutable effective intervals；gap 不猜最近价 |
+| 历史 Fast metadata 未持久化 | Medium | 原 rollout 存在时只读 enrichment；缺源时保持 unknown/partial，不默认 standard |
+| Pricing 重构污染 Token Ledger | High | v12→v13 migration test 对 classification + 六字段 usage 做逐行不变量验证 |
 
 ## Open Questions
 
-None. The user explicitly requested USD cost; ADR-0007 bounds it to a versioned official standard API short-context equivalent rather than billing-grade Codex subscription cost.
+- 无。long-context request-boundary gate 已按 bounded semantics 关闭：verified usage unit 可作为 model sampling usage boundary 使用 272K threshold，但不宣称 HTTP invoice identity；重复广播继续依赖 cumulative advancement 验证。
 
 ## Decision Log
 
 Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisions/README.md). This plan remains the implementation history; ADRs are the source of truth for architectural rationale and consequences.
+
+## Phase 18: Canonical Request Ownership / Request-Day / Projection Cache
+
+### Overview
+
+修复新版 `history_mode=legacy` fork history 被重复归属的问题，并把运行时模型收敛为：Rollout=证据、Canonical Request=计量事实、Task/Agent/Session/Day=不同投影。Time 模式只按 canonical Request `observedAt` 切片；后台 Indexer 维护 versioned SQL projection，页面点击不再承担 parse/reprice。
+
+设计事实源：`docs/DESIGN-CANONICAL-REQUEST-PROJECTION.md`、`docs/TEST-CANONICAL-REQUEST-PROJECTION.md`、ADR-0020。
+
+### Task 1: Ownership resolver + evidence reconciliation
+
+- [x] 用 native-first / deterministic Request identity + turn lineage 选 canonical Task owner；nested descendants 的 copied turns 不形成新 Task/Request。
+- [x] ownership 冲突显式 unresolved，raw verified evidence 必须满足 canonical + inherited + unresolved 六字段守恒。
+- [x] 覆盖无 ordinal / 无 history-start 的真实 legacy fork fixture，并完成真实 20-rollout native identity 调查。
+
+### Task 2: Request-day projection + verified-zero
+
+- [x] Time 只按 canonical Request observed day 聚合并按 Task 分组；Project 保留完整 Task。
+- [x] lifecycle-only Task 不污染另一天；fork copy 的重写 timestamp 不污染 day ledger。
+- [x] 无 Request Task 仅在严格 cumulative equality proof 下显示 `0 token / $0.00`。
+
+### Task 3: Versioned SQL projection
+
+- [x] schema v14 持久化 raw evidence、canonical Request、ownership provenance、projection version/generation 与 day cost/coverage；旧 raw rows 保留审计但退出 runtime aggregate。
+- [x] Timeline 直接查询 day projection，不再加载全部 Task/Event 后现场定价。
+- [x] projection generation 原子更新，重建不修改 rollout。
+
+### Task 4: Background indexer
+
+- [x] 初始化/文件变化只把 stale session 入队，低并发后台同步 parse→identity/ownership→projection。
+- [x] cached session 点击只读 DB snapshot；dirty 状态通过 health/SSE 披露，不阻塞 UI。
+- [x] watcher/tail/restart/portable relocation/graceful shutdown 保持增量正确性。
+
+### Task 5: Shadow rebuild / delivery
+
+- [x] 对真实污染历史执行 canonical/inherited/unresolved reconciliation，禁止 verified evidence 无归宿。
+- [x] 真实 warm Timeline <200ms、day detail <300ms；源 `.codex` combined manifest 前后完全一致。
+- [x] 全量 tests/check/diff/browser QA 通过并更新 DELIVERY/VERIFICATION/API/ARCHITECTURE/OPERATIONS/README/CHANGELOG。
+
+### Checkpoint
+
+- [x] Task/Request/Day 语义与 ADR-0020 一致。
+- [x] 任何“Token 下降”都能由 inherited-copy provenance 解释，不能来自静默删除。
+- [x] 页面点击不再是索引器入口。
+
+**Delivered evidence (2026-08-27):** 真实污染 session 的 639 raw Task 收敛为 67 canonical + 572 inherited + 0 unresolved；12,783 verified Request evidence 收敛为 1,464 canonical + 11,319 inherited + 0 unresolved，六字段守恒。canonical total token `175,379,870`，重复 provenance `1,564,379,574`。52,552 条 JSONL record 中原 1,978 unknown 已审计为 1,104 patch end + 610 user message + 183 thread rollback + 81 web-search end，均为 non-accounting；allowlist 后 `unknownRecords=0` 且 Request/Token reconciliation 不变。最终 warm Timeline P95 `19.76ms`、Session-Day P95 `65.43ms`；20-file SHA-256 manifest before/after 均为 `3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`。新增 restore identity、migration backfill、source-scoped replace、canonical Agent/unattributed 与 parser-semantics regressions 后，`npm test` 109 / 108 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 和 1440px/720px Chrome/CDP 全部通过。

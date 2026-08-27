@@ -1,9 +1,9 @@
 # ADR-0007：使用版本化官方 API 价目估算任务、智能体和会话美元等值
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0019
 - **Date:** 2026-08-24
 
-> 2026-08-26 更新：价目、公式与覆盖语义继续有效；schema v10 起传给定价器的 `deltaUsage` 已由 [ADR-0015](0015-request-ledger-primary-aggregation.md) 切换为 verified Request Ledger 派生值，schema v11 又按 [ADR-0016](0016-retire-boundary-ledger.md) 删除旧 Boundary `delta_usage` 存储，因此当前不存在第二套费用 fallback。
+> 2026-08-26 更新：本 ADR 保留为旧“当前标准 API 短上下文等值”的历史决策。Phase 17 已由 [ADR-0019](0019-request-level-subscription-standard-cost.md) 以 request-level Subscription Standard-Rate Equivalent 取代其运行时职责；旧 estimator 仅保留给 reconciliation 使用。
 
 ## Context
 

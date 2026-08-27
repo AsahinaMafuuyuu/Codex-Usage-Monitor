@@ -11,7 +11,7 @@
     <div class="app-shell">
       <aside class="session-panel" aria-label="会话列表">
         <header class="brand-block">
-          <div class="brand-mark" aria-hidden="true"><span></span><span></span><span></span></div>
+          <img class="brand-mark" src="/assets/mizuki.png" alt="" aria-hidden="true">
           <div>
             <p class="eyebrow">LOCAL USAGE LEDGER</p>
             <h1>Codex 观察台</h1>
@@ -79,10 +79,10 @@
                 <span id="session-version" class="version-chip">—</span>
               </div>
             </div>
-            <aside class="hero-signal" aria-label="子智能体 token 汇总">
-              <span class="hero-signal-label">SUBAGENT TOKENS</span>
+            <aside class="hero-signal" aria-label="Total token 汇总">
+              <span class="hero-signal-label">Total token</span>
               <strong id="hero-total">—</strong>
-              <small>全部递归任务 · 实时汇总</small>
+              <small>根智能体与全部后代 · 实时汇总</small>
             </aside>
           </section>
 
@@ -138,13 +138,13 @@
             <section class="metric-group cost-group" aria-labelledby="cost-group-title">
               <header class="metric-group-heading">
                 <span id="cost-group-title">COST</span>
-                <small>API 等值</small>
+                <small>订阅标准价等值</small>
               </header>
               <div class="metric-group-grid">
                 <article class="metric-card cost-metric">
                   <span>会话总计 USD</span>
                   <strong id="session-cost">—</strong>
-                  <small id="session-cost-coverage">标准 API 短上下文等值</small>
+                  <small id="session-cost-coverage">按 Request Ledger 逐请求计价</small>
                 </article>
               </div>
             </section>

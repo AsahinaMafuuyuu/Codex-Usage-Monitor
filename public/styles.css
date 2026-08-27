@@ -132,26 +132,13 @@ summary:focus-visible,
 }
 
 .brand-mark {
-  position: relative;
   flex: 0 0 auto;
   width: 40px;
   height: 40px;
-  border: 1px solid var(--clay);
-  border-radius: 48% 52% 45% 55%;
-  transform: rotate(-8deg);
+  object-fit: cover;
+  object-position: center;
+  border-radius: 50%;
 }
-
-.brand-mark span {
-  position: absolute;
-  left: 8px;
-  top: 19px;
-  width: 23px;
-  height: 1px;
-  background: var(--clay);
-  transform-origin: center;
-}
-.brand-mark span:nth-child(2) { transform: rotate(60deg); }
-.brand-mark span:nth-child(3) { transform: rotate(-60deg); }
 
 .search-field {
   display: block;
@@ -342,6 +329,28 @@ summary:focus-visible,
 }
 
 .time-session-item { padding-top: 9px; padding-bottom: 9px; }
+.time-session-item > span { align-items: center; }
+.time-session-item time {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
+.time-session-meta {
+  display: flex;
+  align-items: center;
+  min-width: 0;
+  gap: 4px;
+}
+.time-session-project {
+  overflow: hidden;
+  min-width: 0;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.time-session-separator,
+.time-session-cost {
+  flex: 0 0 auto;
+  white-space: nowrap;
+}
 
 .time-meta {
   display: flex;
@@ -678,6 +687,13 @@ summary:focus-visible,
   min-height: 126px;
   padding: 20px 18px 18px;
   background: transparent;
+}
+.activity-group .metric-card {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  justify-content: center;
+  text-align: center;
 }
 .activity-group .metric-card + .metric-card,
 .token-group .metric-card:nth-child(even) { border-left: 1px solid color-mix(in srgb, var(--line) 74%, transparent); }

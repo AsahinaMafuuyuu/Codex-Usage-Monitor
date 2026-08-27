@@ -8,6 +8,7 @@ export function materializeRequestLedgerTasks(tasks = [], events = []) {
     const state = states.get(taskKey(task.threadId, task.turnId));
     const requestUsage = state?.verifiedCount ? materializeUsageAccumulator(state) : null;
     const unresolvedCount = (state?.unverifiedCount ?? 0) + (state?.anomalyCount ?? 0);
+    const zeroUsageVerified = Boolean(task.zeroUsageVerified) && !requestUsage && unresolvedCount === 0;
     let quality;
     let deltaUsage = null;
     if (requestUsage) {
@@ -18,6 +19,9 @@ export function materializeRequestLedgerTasks(tasks = [], events = []) {
         : task.status === "in_progress"
           ? "provisional"
           : "complete";
+    } else if (zeroUsageVerified) {
+      deltaUsage = zeroUsage();
+      quality = task.status === "in_progress" ? "provisional" : "complete";
     } else if (unresolvedCount > 0) {
       quality = "partial";
     } else {
@@ -27,6 +31,7 @@ export function materializeRequestLedgerTasks(tasks = [], events = []) {
       ...task,
       deltaUsage,
       quality,
+      zeroUsageVerified,
       usageSource: "request_ledger",
       requestCount: state?.verifiedCount ?? 0,
       tokensPerModelRequest:

@@ -68,3 +68,33 @@
 - [x] Retire Boundary parser/storage/API/reconciliation paths with schema v11 and ADR-0016
 - [x] Run final schema v11 Request Ledger audit/benchmark and record the evidence
 - [x] Commit the Request-only architecture and create annotated tag `usage-request-ledger-v1`
+- [x] Reconcile live Agent/Task DOM by stable `threadId` / `turnId` keys
+- [x] Preserve task-table horizontal scroll and Agent expansion state across SSE snapshots
+- [x] Preserve the visible vertical anchor across structural live updates
+- [x] Stop selected-session snapshots from destructively rebuilding the session navigator
+- [x] Record ADR-0017 live-interaction rendering contract and verification evidence
+- [x] Freeze Phase 16 day-scoped snapshot design, ADR, delivery boundary, and test gate
+- [x] Implement schema v12 event-observed calendar materialization without rollout replay
+- [x] Implement scoped Task / Agent / Session aggregation for `session + day`
+- [x] Add `?day=` snapshot/SSE contracts and `(sessionId, day)` frontend selection identity
+- [x] Reconcile Timeline live values with day-scoped detail without breaking interaction stability
+- [x] Execute the Phase 16 test plan and fix any failures by returning to the approved design
+- [x] Record Phase 16 verification evidence and mark the delivery baseline as implemented
+- [x] Freeze Phase 17 subscription-standard cost design, ADR, delivery boundary, and T-COST test gate
+- [x] Implement immutable historical model/rate catalog and request-level subscription-standard cost engine
+- [x] Prove long-context request boundary before enabling >272K full-request multipliers
+- [x] Persist event-level model/service-tier pricing context without changing Request Ledger token evidence
+- [x] Add schema v13 pricing-context enrichment with read-only historical rollout handling
+- [x] Rebuild Task/Agent/Session/Day/Timeline cost from request-cost summaries
+- [x] Replace API-equivalent wording with subscription-standard-equivalent plus explicit coverage
+- [x] Run real-history cost reconciliation separating historical-rate, long-context, Fast, and unknown coverage effects
+- [x] Execute all T-COST gates and close Phase 17 delivery only after full verification
+- [x] Freeze Phase 18 canonical ownership / request-day / projection design and ADR-0020
+- [x] Resolve legacy fork-history ownership without losing verified evidence
+- [x] Replace lifecycle-day slices with canonical Request-day Task grouping
+- [x] Add verified-zero proof for no-request tasks
+- [x] Add versioned SQL cost/day projections and remove Timeline full-history repricing
+- [x] Move dirty-session parsing to a background indexer; cached clicks must not parse
+- [x] Shadow-rebuild polluted history and reconcile canonical/inherited/unresolved evidence
+- [x] Execute Phase 18 tests, real-history hashes, performance gates and browser QA
+- [x] Publish Phase 18 delivery/verification documentation

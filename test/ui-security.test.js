@@ -24,7 +24,26 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /agent\.subtreeCostEstimate/u);
   assert.match(script, /session\.projectPath/u);
   assert.match(script, /data-session-view/u);
+  assert.match(script, /selectedDay:\s*null/u);
+  assert.match(script, /data-session-day=/u);
+  assert.match(script, /button\.dataset\.sessionDay === state\.selectedDay/u);
+  assert.match(script, /\?day=\$\{encodeURIComponent\(day\)\}/u);
+  assert.match(script, /preferredTimelineDay\(state\.selectedId\)/u);
+  assert.match(script, /nextView === "time" \? preferredTimelineDay\(state\.selectedId\) : null/u);
+  assert.match(script, /snapshot\.scope\?\.type === "day"/u);
+  assert.match(script, /refreshTimelineNavigation\(selectionVersion\)/u);
   assert.match(script, /renderSessionsByTime/u);
+  assert.match(script, /formatTimelineUsageCost\(month\.usage, month\.costEstimate\)/u);
+  assert.match(script, /formatTimelineUsageCost\(day\.usage, day\.costEstimate\)/u);
+  assert.match(script, /formatTokens\(session\.usage\?\.totalTokens\)/u);
+  assert.match(script, /formatTimelineSessionCost\(session\.costEstimate\?\.amountUsd\)/u);
+  assert.match(html, /订阅标准价等值/u);
+  assert.match(script, /订阅标准价等值/u);
+  assert.match(script, /featureCoverage/u);
+  assert.match(script, /verified usage unit/u);
+  assert.doesNotMatch(script, /标准 API 短上下文|API 等值/u);
+  assert.doesNotMatch(script, /summary\.status === "partial" \? "≥"/u);
+  assert.match(script, /minimumFractionDigits:\s*2,[\s\S]*?maximumFractionDigits:\s*2/iu);
   assert.match(script, /document\.startViewTransition/u);
   assert.match(script, /prefers-reduced-motion: reduce/u);
   assert.match(script, /formatMonthLabel/u);
@@ -38,6 +57,9 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.doesNotMatch(script, /data-preview-thread|<th>指令<\/th>/u);
   assert.match(script, /cached \/ input/u);
   assert.match(html, /id="session-cost"/u);
+  assert.match(html, />Total token<\/span>/u);
+  assert.match(html, /根智能体与全部后代 · 实时汇总/u);
+  assert.match(script, /elements\["hero-total"\]\.textContent = formatTokens\(snapshot\.summary\.totalUsage\?\.totalTokens\)/u);
   assert.match(html, /id="input-total"/u);
   assert.match(html, /id="output-total"/u);
   assert.match(html, /id="cache-hit-rate"/u);
@@ -50,11 +72,13 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /quotaRefreshing/u);
   assert.match(styles, /\.quota-refresh\.refreshing svg/u);
   assert.match(html, /content="light"/u);
+  assert.match(html, /<img class="brand-mark" src="\/assets\/mizuki\.png" alt="" aria-hidden="true">/u);
+  assert.doesNotMatch(html, /class="brand-mark"[^>]*><span/u);
   assert.match(html, /id="session-project"/u);
   assert.match(html, /data-session-view="project"/u);
   assert.match(html, /data-session-view="time"/u);
-  assert.match(script, /class="agent-branch/u);
-  assert.match(script, /class="agent-children/u);
+  assert.match(script, /branch\.className = `agent-branch depth-\$\{Math\.min\(depth, 6\)\}`/u);
+  assert.match(script, /childContainer\.className = "agent-children"/u);
   assert.match(script, /role-badge/u);
   assert.match(script, /<colgroup>/u);
   assert.match(script, /role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 13 列"/u);
@@ -76,6 +100,7 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.task-table th\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.task-table td\s*\{[^}]*font-family:\s*var\(--mono\)/isu);
   assert.match(styles, /\.task-table td\s*\{[^}]*text-align:\s*center/isu);
+  assert.match(styles, /\.activity-group \.metric-card\s*\{[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.task-table\s*\{[^}]*min-width:\s*1314px/isu);
   assert.match(styles, /\.agent-stat span,\s*\.agent-stat strong\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.session-identity\s*\{[^}]*min-width:\s*0/isu);
@@ -83,6 +108,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.doesNotMatch(styles, /\.session-identity h2\s*\{[^}]*text-wrap:\s*balance/isu);
   assert.match(styles, /\.session-item strong\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/isu);
   assert.doesNotMatch(styles, /\.session-item strong\s*\{[^}]*-webkit-line-clamp/isu);
+  assert.match(styles, /\.time-session-project\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/isu);
+  assert.match(styles, /\.time-session-cost\s*\{[^}]*flex:\s*0 0 auto;[^}]*white-space:\s*nowrap/isu);
   assert.match(styles, /\.role-reviewer/u);
   assert.match(styles, /\.role-test-worker/u);
   assert.match(styles, /--lineage-rail-offset:\s*18px/iu);
@@ -105,3 +132,40 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /view-transition-name:\s*workspace-content/u);
   assert.match(styles, /::view-transition-new\(workspace-content\)/u);
 });
+
+test("live updates preserve keyed interaction containers instead of rebuilding them", async () => {
+  const script = await readFile(new URL("../public/app.js", import.meta.url), "utf8");
+  const renderDashboard = extractFunction(script, "renderDashboard", "renderQuota");
+  const updateAgentBranch = extractFunction(script, "updateAgentBranch", "agentNodeClass");
+  const patchAgentTasks = extractFunction(script, "patchAgentTasks", "patchTaskRows");
+
+  assert.match(script, /function patchAgentBranches\(/u);
+  assert.match(script, /branch\.dataset\.agentId = agent\.threadId/u);
+  assert.match(script, /summary\.dataset\.agentAnchorId = agent\.threadId/u);
+  assert.match(script, /row\.dataset\.taskId = task\.turnId/u);
+  assert.match(script, /function captureVisualAnchor\(/u);
+  assert.match(script, /function restoreVisualAnchor\(/u);
+  assert.match(script, /window\.scrollBy\(0, delta\)/u);
+  assert.match(script, /function patchSessionNavigation\(/u);
+  assert.match(script, /function syncSessionSelection\(/u);
+  assert.match(script, /data-session-group-key/u);
+  assert.match(script, /data-time-month/u);
+  assert.match(script, /data-time-day/u);
+  assert.match(script, /const interaction = captureSessionListInteraction\(\)/u);
+  assert.match(script, /restoreSessionListInteraction\(interaction\)/u);
+  assert.match(script, /selectionVersion !== state\.selectionVersion/u);
+  assert.match(script, /day !== state\.selectedDay/u);
+
+  assert.doesNotMatch(script, /elements\["agent-tree"\]\.innerHTML\s*=\s*renderBranch/u);
+  assert.doesNotMatch(renderDashboard, /renderSessions\(/u);
+  assert.match(renderDashboard, /patchSessionNavigation\(previousSession, nextSession\)/u);
+  assert.doesNotMatch(updateAgentBranch, /\.open\s*=|setAttribute\([^\n]*["']open["']/u);
+  assert.match(patchAgentTasks, /if \(!tableWrap\)/u);
+  assert.doesNotMatch(patchAgentTasks, /tableWrap\.innerHTML\s*=/u);
+});
+
+function extractFunction(source, name, nextName) {
+  const match = source.match(new RegExp(`function ${name}\\([^)]*\\) \\{([\\s\\S]*?)\\n\\}\\n\\nfunction ${nextName}\\(`, "u"));
+  assert.ok(match, `expected to find ${name} before ${nextName}`);
+  return match[1];
+}

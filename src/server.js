@@ -8,6 +8,7 @@ import { spawn } from "node:child_process";
 import { MonitorDatabase } from "./database.js";
 import { UsageMonitor } from "./monitor.js";
 import { CodexRepository } from "./repository.js";
+import { resolveLocalDayRange } from "./snapshot-scope.js";
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
 const projectRoot = resolve(sourceDirectory, "..");
@@ -17,6 +18,7 @@ const STATIC_FILES = new Map([
   ["/", { path: join(publicDirectory, "index.html"), type: "text/html; charset=utf-8" }],
   ["/styles.css", { path: join(publicDirectory, "styles.css"), type: "text/css; charset=utf-8" }],
   ["/app.js", { path: join(publicDirectory, "app.js"), type: "text/javascript; charset=utf-8" }],
+  ["/assets/mizuki.png", { path: join(publicDirectory, "assets", "mizuki.png"), type: "image/png" }],
   ["/vendor/lucide.min.js", { path: join(lucideDirectory, "lucide.min.js"), type: "text/javascript; charset=utf-8" }],
 ]);
 const ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/u;
@@ -88,7 +90,7 @@ export async function startApplication(options = {}) {
   if (options.openBrowser !== false) openBrowser(accessUrl);
 
   const close = async () => {
-    monitor.close();
+    await monitor.close();
     await new Promise((done) => server.close(done));
     database.close();
   };
@@ -198,7 +200,9 @@ async function handleApi({ request, response, url, monitor }) {
   if (sessionMatch) {
     const sessionId = decodeAndValidateId(sessionMatch[1]);
     if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
-    const snapshot = await monitor.selectSession(sessionId);
+    const scope = parseSnapshotScope(url);
+    if (scope.error) return sendJson(response, 400, { error: scope.error });
+    const snapshot = await monitor.selectSession(sessionId, scope.value);
     return snapshot
       ? sendJson(response, 200, snapshot)
       : sendJson(response, 404, { error: "找不到该会话" });
@@ -208,9 +212,11 @@ async function handleApi({ request, response, url, monitor }) {
   if (eventsMatch) {
     const sessionId = decodeAndValidateId(eventsMatch[1]);
     if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
-    const snapshot = await monitor.selectSession(sessionId);
+    const scope = parseSnapshotScope(url);
+    if (scope.error) return sendJson(response, 400, { error: scope.error });
+    const snapshot = await monitor.selectSession(sessionId, scope.value);
     if (!snapshot) return sendJson(response, 404, { error: "找不到该会话" });
-    return openEventStream(request, response, monitor, sessionId, snapshot);
+    return openEventStream(request, response, monitor, sessionId, scope.value, snapshot);
   }
 
   const previewMatch = url.pathname.match(/^\/api\/tasks\/([^/]+)\/([^/]+)\/preview$/u);
@@ -226,7 +232,7 @@ async function handleApi({ request, response, url, monitor }) {
   return sendJson(response, 404, { error: "接口不存在" });
 }
 
-function openEventStream(request, response, monitor, sessionId, snapshot) {
+function openEventStream(request, response, monitor, sessionId, scope, snapshot) {
   response.statusCode = 200;
   response.setHeader("Content-Type", "text/event-stream; charset=utf-8");
   response.setHeader("Cache-Control", "no-cache, no-transform");
@@ -235,7 +241,9 @@ function openEventStream(request, response, monitor, sessionId, snapshot) {
   sendEvent(response, "snapshot", snapshot);
 
   const onUpdate = (event) => {
-    if (event.sessionId === sessionId) sendEvent(response, "snapshot", event.snapshot);
+    if (event.sessionId !== sessionId) return;
+    const nextSnapshot = monitor.snapshot(sessionId, scope);
+    if (nextSnapshot) sendEvent(response, "snapshot", nextSnapshot);
   };
   const onQuota = (quota) => sendEvent(response, "quota", quota);
   const onHealth = (health) => sendEvent(response, "health", health);
@@ -251,6 +259,17 @@ function openEventStream(request, response, monitor, sessionId, snapshot) {
     monitor.off("quota", onQuota);
     monitor.off("health", onHealth);
   });
+}
+
+function parseSnapshotScope(url) {
+  if (!url.searchParams.has("day")) return { value: { type: "session" }, error: null };
+  const day = url.searchParams.get("day");
+  try {
+    const range = resolveLocalDayRange(day);
+    return { value: { type: "day", day, range }, error: null };
+  } catch {
+    return { value: null, error: "day 必须是合法的 YYYY-MM-DD 本地日期" };
+  }
 }
 
 function sendEvent(response, event, data) {
