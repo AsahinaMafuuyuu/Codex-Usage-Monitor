@@ -149,7 +149,7 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 
 ## Phase 17 交付规划：Subscription Standard-Rate Cost / Request-level Pricing
 
-**状态：设计与测试门槛已冻结，尚未实现代码。** 本阶段把现有“当前 API 短上下文等值”升级为更适合订阅用户审计的 **Subscription Standard-Rate Equivalent**，同时保持 Request Ledger 的 Token 事实链不变。
+**状态：实施中；Tasks 1-3 已完成，公共聚合/API/UI 与真实历史 reconciliation 尚未闭环。** 本阶段把现有“当前 API 短上下文等值”升级为更适合订阅用户审计的 **Subscription Standard-Rate Equivalent**，同时保持 Request Ledger 的 Token 事实链不变。
 
 ### 业务需求
 
@@ -163,7 +163,7 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 ### 证据与边界
 
 - Token Ledger 仍只接受 verified `generation_start` / `verified_increment`，本阶段不得改变六字段 usage、classification 或 day-scope 归属。
-- 现有 model usage unit 不自动宣称等于 HTTP/billing request；启用 272K multiplier 前必须完成 request-boundary evidence gate。证据不足时只能报告 candidate/partial。
+- request-boundary evidence gate 已通过 bounded semantics：verified Request Ledger usage unit 可作为 Codex 单次 model sampling usage unit 判断 272K；它不等价于 HTTP invoice identity。重复 `token_count` 仍必须由 cumulative advancement 去重，未验证 event 只能报告 candidate/partial。
 - 历史 service tier 目前没有持久化。原 rollout 存在时允许只读 metadata enrichment；原文件不存在时保持 unknown，不能默认 `default`。
 - USD 始终只是订阅标准价等值，不是 Plus 实际扣费，也不能用于反推 5 小时/周额度。
 - Regional processing、web search、image/voice/tool fee 不在本阶段范围，后续必须作为独立 feature policy 且有可证明本地 evidence 后再加入。
@@ -187,4 +187,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] 前端视觉迭代已提供独立接手文档与逐决策版本控制规则。
 - [x] Request Ledger 已在 reconciliation、增量 tail、重启、schema v9→v10 迁移和真实历史回放门槛通过后成为正式主统计事实源；schema v11 已结束迁移期并退役 Boundary Ledger，旧实现由 `usage-boundary-ledger-v1` 保存。
 - [x] Phase 16 Day-scoped Snapshot 已按 ADR-0018 和 schema v12 交付；Timeline/detail、HTTP/SSE、前端二元选择和 live interaction 验证证据已归档。
-- [x] Phase 17 Subscription Standard-Rate Cost 的设计、ADR、测试门槛和交付边界已冻结；实现尚未开始。
+- [ ] Phase 17 Subscription Standard-Rate Cost：Tasks 1-3 已完成（historical catalog、request-cost engine、long/Fast policy、schema v13、event pricing context 与只读 enrichment）；Tasks 4-5 尚待完成后才能标记交付。

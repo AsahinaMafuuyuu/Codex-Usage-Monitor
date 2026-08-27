@@ -177,6 +177,158 @@ test("T-COST-030 service tier normalization is evidence preserving", () => {
   assert.equal(normalizeServiceTier("mystery"), "unknown");
 });
 
+test("T-COST-020 long context uses a strict greater-than 272K boundary", () => {
+  const normal = estimateRequestCost(request({
+    inputTokens: 272_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 272_000,
+  }));
+  const long = estimateRequestCost(request({
+    inputTokens: 272_001,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 272_001,
+  }));
+  assert.equal(normal.longContextStatus, "normal");
+  assert.equal(normal.multipliers.input, 1);
+  assert.equal(long.longContextStatus, "long");
+  assert.equal(long.multipliers.input, 2);
+  assert.equal(long.multipliers.output, 1.5);
+});
+
+test("T-COST-021 long-context multipliers apply to the full request", () => {
+  const estimate = estimateRequestCost(request({
+    inputTokens: 300_000,
+    cachedInputTokens: 250_000,
+    outputTokens: 10_000,
+    totalTokens: 310_000,
+  }));
+  assert.equal(estimate.status, "estimated");
+  assert.equal(estimate.amountUsd, 1.2);
+  assert.equal(estimate.components.uncachedInputUsd, 0.5);
+  assert.equal(estimate.components.cachedInputUsd, 0.25);
+  assert.equal(estimate.components.outputUsd, 0.45);
+});
+
+test("T-COST-022 task aggregate above 272K does not make ordinary requests long", () => {
+  const first = estimateRequestCost(request({
+    inputTokens: 200_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 200_000,
+  }));
+  const second = estimateRequestCost(request({
+    inputTokens: 200_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 200_000,
+  }));
+  assert.equal(first.longContextStatus, "normal");
+  assert.equal(second.longContextStatus, "normal");
+  assert.equal(first.amountUsd + second.amountUsd, 2);
+});
+
+test("T-COST-023 mixed task applies long multiplier only to the qualifying request", () => {
+  const long = estimateRequestCost(request({
+    inputTokens: 300_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 300_000,
+  }));
+  const normal = estimateRequestCost(request({
+    inputTokens: 100_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 100_000,
+  }));
+  assert.equal(long.longContextStatus, "long");
+  assert.equal(long.amountUsd, 3);
+  assert.equal(normal.longContextStatus, "normal");
+  assert.equal(normal.amountUsd, 0.5);
+  assert.equal(long.amountUsd + normal.amountUsd, 3.5);
+});
+
+test("T-COST-024 unproven request boundary reports a candidate without applying surcharge", () => {
+  const estimate = estimateRequestCost(request({
+    inputTokens: 300_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 300_000,
+  }), { requestBoundaryVerified: false });
+  assert.equal(estimate.status, "partial");
+  assert.equal(estimate.longContextStatus, "candidate");
+  assert.equal(estimate.amountUsd, 1.5);
+  assert.equal(estimate.multipliers.input, 1);
+  assert.equal(estimate.featureCoverage.requestBoundary, "unproven");
+  assert.equal(estimate.reason, "long_context_request_boundary_unproven");
+});
+
+test("T-COST-025 an unsupported long-context model is never guessed into a priced family", () => {
+  const estimate = estimateRequestCost(request({
+    model: "unknown-long-model",
+    inputTokens: 300_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 300_000,
+  }));
+  assert.equal(estimate.status, "unavailable");
+  assert.equal(estimate.amountUsd, null);
+  assert.equal(estimate.reason, "historical_rate_unavailable");
+});
+
+test("T-COST-031 Fast multiplier follows model family", () => {
+  const cases = [
+    ["gpt-5.6-sol", AT("2026-08-26"), 1.25, 2.5],
+    ["gpt-5.5", AT("2026-08-26"), 1.25, 2.5],
+    ["gpt-5.4", AT("2026-08-26"), 0.5, 2],
+  ];
+  for (const [model, observedAt, amountUsd, multiplier] of cases) {
+    const estimate = estimateRequestCost(request({
+      model,
+      observedAt,
+      serviceTier: "fast",
+      inputTokens: 100_000,
+      cachedInputTokens: 0,
+      outputTokens: 0,
+      totalTokens: 100_000,
+    }));
+    assert.equal(estimate.status, "estimated");
+    assert.equal(estimate.amountUsd, amountUsd);
+    assert.equal(estimate.multipliers.fast, multiplier);
+  }
+});
+
+test("T-COST-032 missing tier keeps known base amount but lowers feature coverage", () => {
+  const estimate = estimateRequestCost(request({
+    serviceTier: null,
+    inputTokens: 100_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 100_000,
+  }));
+  assert.equal(estimate.status, "partial");
+  assert.equal(estimate.amountUsd, 0.5);
+  assert.equal(estimate.featureCoverage.serviceTier, "unknown");
+  assert.equal(estimate.reason, "service_tier_unknown");
+});
+
+test("T-COST-034 Fast and long context are never multiplied together", () => {
+  const estimate = estimateRequestCost(request({
+    serviceTier: "priority",
+    inputTokens: 300_000,
+    cachedInputTokens: 0,
+    outputTokens: 10_000,
+    totalTokens: 310_000,
+  }));
+  assert.equal(estimate.status, "partial");
+  assert.equal(estimate.reason, "unsupported_feature_combination");
+  assert.equal(estimate.amountUsd, 1.8);
+  assert.equal(estimate.multipliers.input, 1);
+  assert.equal(estimate.multipliers.output, 1);
+  assert.equal(estimate.multipliers.fast, 1);
+});
+
 test("legacy rollup helpers remain stable before the public contract cutover", () => {
   assert.equal(pricingCatalogSummary().basis, "openai-standard-api-short-context");
   assert.deepEqual(summarizeTaskCosts([

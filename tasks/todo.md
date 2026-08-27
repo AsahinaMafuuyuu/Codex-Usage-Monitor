@@ -81,10 +81,10 @@
 - [x] Execute the Phase 16 test plan and fix any failures by returning to the approved design
 - [x] Record Phase 16 verification evidence and mark the delivery baseline as implemented
 - [x] Freeze Phase 17 subscription-standard cost design, ADR, delivery boundary, and T-COST test gate
-- [ ] Implement immutable historical model/rate catalog and request-level subscription-standard cost engine
-- [ ] Prove long-context request boundary before enabling >272K full-request multipliers
-- [ ] Persist event-level model/service-tier pricing context without changing Request Ledger token evidence
-- [ ] Add schema v13 pricing-context enrichment with read-only historical rollout handling
+- [x] Implement immutable historical model/rate catalog and request-level subscription-standard cost engine
+- [x] Prove long-context request boundary before enabling >272K full-request multipliers
+- [x] Persist event-level model/service-tier pricing context without changing Request Ledger token evidence
+- [x] Add schema v13 pricing-context enrichment with read-only historical rollout handling
 - [ ] Rebuild Task/Agent/Session/Day/Timeline cost from request-cost summaries
 - [ ] Replace API-equivalent wording with subscription-standard-equivalent plus explicit coverage
 - [ ] Run real-history cost reconciliation separating historical-rate, long-context, Fast, and unknown coverage effects

@@ -27,9 +27,16 @@ Request Ledger 已保存逐 verified model-usage unit 的六字段 usage 和 `ob
 
 ## Evidence boundary
 
-现有 Request Ledger 的 verified usage unit 虽由 `last_token_usage` 和累计快照逐字段证明，但项目尚不把它宣称为 HTTP/billing request 一一映射。
+现有 Request Ledger 的 verified usage unit 虽由 `last_token_usage` 和累计快照逐字段证明，但项目不把它宣称为 HTTP invoice / billing request 一一映射。
 
-因此在正式启用 long-context multiplier 前，实现必须先通过官方源码/文档或可重复 fixture 证明该 usage unit 可以作为 272K threshold 的请求边界。未通过时只报告 long-context candidate，并降低 cost coverage。
+2026-08-26 实施阶段完成了 long-context evidence gate，并将结论限定在“Codex model sampling request usage boundary”这一层：
+
+1. OpenAI Codex 当前 `TokenUsageInfo` 明确区分 `last_token_usage` 与累计的 `total_token_usage`；后者是累计 session total。
+2. OpenAI Codex issue #37460 对当前 rollout 的可观测边界给出实际字段，并明确说明一个 turn 可以包含多个 sampling requests，而对应的 per-request rollout boundary 包含 `event_msg.token_count.info.last_token_usage`。
+3. issue #14489 同时证明 `TokenCount` 可能仅因 rate-limit 更新而重复携带旧 `last_token_usage`。因此本项目**不能**把每个 `token_count` 都直接算成一个请求；只有累计六字段 advancement 与 `last_token_usage` 逐字段相符的 `generation_start` / `verified_increment` 才能进入 Request Ledger pricing。
+4. `T-COST-020~025` 已锁定 `272000` / `272001`、Task aggregate false-positive、mixed-request 和 evidence-unproven 降级行为。
+
+因此 gate 结论为 **PASS with bounded semantics**：verified Request Ledger usage unit 可作为本 policy 的单次 model sampling usage unit 来判断 272K feature threshold；它仍不代表实际 Plus 扣费或 HTTP invoice identity。任何未通过 cumulative verification 的 event 继续只作为 candidate/partial，不得应用 long-context multiplier。
 
 ## Alternatives considered
 
@@ -55,3 +62,6 @@ Request Ledger 已保存逐 verified model-usage unit 的六字段 usage 和 `ob
 - https://help.openai.com/en/articles/20001415
 - https://help.openai.com/en/articles/11647665
 - https://developers.openai.com/api/docs/models/gpt-5.6-sol
+- https://github.com/openai/codex/blob/main/codex-rs/tui/src/token_usage.rs
+- https://github.com/openai/codex/issues/37460
+- https://github.com/openai/codex/issues/14489

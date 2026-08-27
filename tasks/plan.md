@@ -1053,9 +1053,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] `model + observedAt` 唯一选择历史 rate；gap/overlap/unknown model 显式失败。
-- [ ] Sol promotion exclusion、Terra/Luna 7/30 切价、GPT-5.5/GPT-5.4 历史 fixture 固定通过。
-- [ ] 普通 request cost 正确处理 cached input、reasoning 和 subscription-policy cache-write，不双算。
+- [x] `model + observedAt` 唯一选择历史 rate；gap/overlap/unknown model 显式失败。
+- [x] Sol promotion exclusion、Terra/Luna 7/30 切价、GPT-5.5/GPT-5.4 历史 fixture 固定通过。
+- [x] 普通 request cost 正确处理 cached input、reasoning 和 subscription-policy cache-write，不双算。
 
 **Verification:** `T-COST-001~013`；`npm test -- --test-name-pattern="T-COST|cost|pricing"`（实现时按实际测试框架调整精确过滤命令）。
 
@@ -1071,9 +1071,9 @@ Phase 9 不再更换整体视觉语言，而是以可独立回退的设计决策
 
 **Acceptance criteria:**
 
-- [ ] request-boundary evidence gate 有明确 pass/fail 证据；未通过时只能输出 candidate/partial。
-- [ ] `272000` normal / `272001` long、mixed-request Task、Task aggregate false-positive fixtures 全部通过。
-- [ ] event model/service tier as-of ordinal 可持久化；v12→v13 前后六字段 usage/classification 完全不变。
+- [x] request-boundary evidence gate 已明确为 PASS with bounded semantics；只有 cumulative-verified model sampling usage unit 可应用 272K policy，未验证 event 仍只能 candidate/partial。
+- [x] `272000` normal / `272001` long、mixed-request Task、Task aggregate false-positive fixtures 全部通过。
+- [x] event model/service tier as-of ordinal 可持久化；v12→v13 前后六字段 usage/classification 完全不变。
 
 **Verification:** `T-COST-020~034`, `T-COST-060~065`；真实 rollout enrichment 前后 SHA-256 一致。
 

@@ -6,7 +6,7 @@ import { materializeCalendarSlices } from "./snapshot-scope.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import { addUsage, normalizeTimestamp, sumTaskUsage, USAGE_FIELDS, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 12;
+const SCHEMA_VERSION = 13;
 const REQUEST_LEDGER_SCHEMA_VERSION = 9;
 const QUALITY_KEYS = ["complete", "provisional", "partial", "unknown"];
 
@@ -118,6 +118,7 @@ export class MonitorDatabase {
         skipped_records INTEGER NOT NULL DEFAULT 0,
         discontinuities INTEGER NOT NULL DEFAULT 0,
         last_usage TEXT,
+        pricing_context TEXT,
         parsed_at TEXT NOT NULL
       );
 
@@ -159,6 +160,9 @@ export class MonitorDatabase {
         output_tokens INTEGER,
         reasoning_output_tokens INTEGER,
         total_tokens INTEGER,
+        model TEXT,
+        service_tier TEXT,
+        pricing_context_quality TEXT,
         PRIMARY KEY (source_key, line_number),
         FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
@@ -207,6 +211,9 @@ export class MonitorDatabase {
     if (addedDiscontinuityState) {
       this.db.exec("ALTER TABLE ingest_cursors ADD COLUMN discontinuities INTEGER NOT NULL DEFAULT 0;");
     }
+    if (!cursorColumns.some((column) => column.name === "pricing_context")) {
+      this.db.exec("ALTER TABLE ingest_cursors ADD COLUMN pricing_context TEXT;");
+    }
     if (addedWarningCounters || addedUsageState || addedDiscontinuityState) {
       // A pre-v5 cursor cannot prove that diagnostics or cumulative usage state were complete.
       // Invalidate non-empty offsets once so the parser safely replays and rebuilds them.
@@ -218,13 +225,24 @@ export class MonitorDatabase {
       this.db.exec("ALTER TABLE session_day_usage ADD COLUMN model_request_count INTEGER NOT NULL DEFAULT 0;");
     }
 
+    const usageEventColumns = this.db.prepare("PRAGMA table_info(model_usage_events)").all();
+    if (!usageEventColumns.some((column) => column.name === "model")) {
+      this.db.exec("ALTER TABLE model_usage_events ADD COLUMN model TEXT;");
+    }
+    if (!usageEventColumns.some((column) => column.name === "service_tier")) {
+      this.db.exec("ALTER TABLE model_usage_events ADD COLUMN service_tier TEXT;");
+    }
+    if (!usageEventColumns.some((column) => column.name === "pricing_context_quality")) {
+      this.db.exec("ALTER TABLE model_usage_events ADD COLUMN pricing_context_quality TEXT;");
+    }
+
     if (previousVersion < 8) this.migratePortableSourceLocators();
     if (previousVersion < 11) this.retireBoundaryLedgerStorage();
     if (previousVersion < 12) this.normalizeStoredUsageEventTimestamps();
 
     const timezone = localTimezone();
     const storedTimezone = this.db.prepare("SELECT value FROM derived_state WHERE key='calendar_timezone'").get()?.value;
-    if (previousVersion < SCHEMA_VERSION || storedTimezone !== timezone) {
+    if (previousVersion < 12 || storedTimezone !== timezone) {
       this.rebuildAllCalendarIndex();
     }
     if (previousVersion < 11) {
@@ -306,8 +324,8 @@ export class MonitorDatabase {
         INSERT INTO ingest_cursors (
           source_key, root_session_id, thread_id, byte_offset, line_number, file_size,
           modified_at_ms, last_ordinal, invalid_lines, partial_bytes, unknown_records,
-          skipped_records, discontinuities, last_usage, parsed_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          skipped_records, discontinuities, last_usage, pricing_context, parsed_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_key) DO UPDATE SET
           root_session_id=excluded.root_session_id,
           thread_id=excluded.thread_id,
@@ -322,6 +340,7 @@ export class MonitorDatabase {
           skipped_records=excluded.skipped_records,
           discontinuities=excluded.discontinuities,
           last_usage=excluded.last_usage,
+          pricing_context=excluded.pricing_context,
           parsed_at=excluded.parsed_at
       `),
       upsertQuota: this.db.prepare(`
@@ -337,8 +356,9 @@ export class MonitorDatabase {
           source_key, line_number, root_session_id, thread_id, turn_id,
           event_ordinal, observed_at, generation, classification, quality, reason,
           input_tokens, cached_input_tokens, cache_write_input_tokens,
-          output_tokens, reasoning_output_tokens, total_tokens
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          output_tokens, reasoning_output_tokens, total_tokens,
+          model, service_tier, pricing_context_quality
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         ON CONFLICT(source_key, line_number) DO UPDATE SET
           root_session_id=excluded.root_session_id,
           thread_id=excluded.thread_id,
@@ -354,7 +374,10 @@ export class MonitorDatabase {
           cache_write_input_tokens=excluded.cache_write_input_tokens,
           output_tokens=excluded.output_tokens,
           reasoning_output_tokens=excluded.reasoning_output_tokens,
-          total_tokens=excluded.total_tokens
+          total_tokens=excluded.total_tokens,
+          model=excluded.model,
+          service_tier=excluded.service_tier,
+          pricing_context_quality=excluded.pricing_context_quality
       `),
     };
   }
@@ -428,6 +451,7 @@ export class MonitorDatabase {
             skipped_records INTEGER NOT NULL DEFAULT 0,
             discontinuities INTEGER NOT NULL DEFAULT 0,
             last_usage TEXT,
+            pricing_context TEXT,
             parsed_at TEXT NOT NULL
           );
         `);
@@ -435,8 +459,8 @@ export class MonitorDatabase {
           INSERT OR REPLACE INTO ingest_cursors_v8 (
             source_key, root_session_id, thread_id, byte_offset, line_number, file_size,
             modified_at_ms, last_ordinal, invalid_lines, partial_bytes, unknown_records,
-            skipped_records, discontinuities, last_usage, parsed_at
-          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+            skipped_records, discontinuities, last_usage, pricing_context, parsed_at
+          ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
         `);
         for (const row of legacyRows) {
           const sourceKey = recoverLegacySourceKey(row.source_key) ?? recoverLegacySourceKey(row.path);
@@ -456,6 +480,7 @@ export class MonitorDatabase {
             Number(row.skipped_records ?? 0),
             Number(row.discontinuities ?? 0),
             row.last_usage ?? null,
+            row.pricing_context ?? null,
             row.parsed_at ?? new Date(0).toISOString(),
           );
         }
@@ -687,6 +712,7 @@ export class MonitorDatabase {
           cursor.skippedRecords ?? 0,
           cursor.discontinuities ?? 0,
           jsonOrNull(cursor.lastUsage),
+          jsonOrNull(cursor.pricingContext),
           new Date().toISOString(),
         );
       }
@@ -713,6 +739,9 @@ export class MonitorDatabase {
           usage?.outputTokens ?? null,
           usage?.reasoningOutputTokens ?? null,
           usage?.totalTokens ?? null,
+          event.model ?? null,
+          event.serviceTier ?? null,
+          event.pricingContextQuality ?? null,
         );
       }
 
@@ -805,7 +834,8 @@ export class MonitorDatabase {
       SELECT source_key, line_number, root_session_id, thread_id, turn_id,
              event_ordinal, observed_at, generation, classification, quality, reason,
              input_tokens, cached_input_tokens, cache_write_input_tokens,
-             output_tokens, reasoning_output_tokens, total_tokens
+             output_tokens, reasoning_output_tokens, total_tokens,
+             model, service_tier, pricing_context_quality
       FROM model_usage_events
       WHERE root_session_id=? AND observed_at>=? AND observed_at<?
       ORDER BY observed_at, source_key, line_number
@@ -822,7 +852,7 @@ export class MonitorDatabase {
     return this.db.prepare(`
       SELECT source_key, root_session_id, thread_id, byte_offset, line_number, file_size,
              modified_at_ms, last_ordinal, invalid_lines, partial_bytes, unknown_records,
-             skipped_records, discontinuities, last_usage, parsed_at
+             skipped_records, discontinuities, last_usage, pricing_context, parsed_at
       FROM ingest_cursors WHERE root_session_id=? ORDER BY source_key
     `).all(rootSessionId).map((row) => ({
       sourceKey: row.source_key,
@@ -839,6 +869,7 @@ export class MonitorDatabase {
       skippedRecords: Number(row.skipped_records ?? 0),
       discontinuities: Number(row.discontinuities ?? 0),
       lastUsage: parseJson(row.last_usage),
+      pricingContext: parseJson(row.pricing_context),
       parsedAt: row.parsed_at ?? null,
     }));
   }
@@ -848,7 +879,8 @@ export class MonitorDatabase {
       SELECT source_key, line_number, root_session_id, thread_id, turn_id,
              event_ordinal, observed_at, generation, classification, quality, reason,
              input_tokens, cached_input_tokens, cache_write_input_tokens,
-             output_tokens, reasoning_output_tokens, total_tokens
+             output_tokens, reasoning_output_tokens, total_tokens,
+             model, service_tier, pricing_context_quality
       FROM model_usage_events
       WHERE root_session_id=?
       ORDER BY source_key, line_number
@@ -909,7 +941,8 @@ export class MonitorDatabase {
       SELECT m.source_key, m.line_number, m.root_session_id, m.thread_id, m.turn_id,
              m.event_ordinal, m.observed_at, m.generation, m.classification, m.quality, m.reason,
              m.input_tokens, m.cached_input_tokens, m.cache_write_input_tokens,
-             m.output_tokens, m.reasoning_output_tokens, m.total_tokens
+             m.output_tokens, m.reasoning_output_tokens, m.total_tokens,
+             m.model, m.service_tier, m.pricing_context_quality
       FROM model_usage_events m
       INNER JOIN tasks t
         ON t.root_session_id=m.root_session_id
@@ -1019,7 +1052,8 @@ export class MonitorDatabase {
       SELECT source_key, line_number, root_session_id, thread_id, turn_id,
              event_ordinal, observed_at, generation, classification, quality, reason,
              input_tokens, cached_input_tokens, cache_write_input_tokens,
-             output_tokens, reasoning_output_tokens, total_tokens
+             output_tokens, reasoning_output_tokens, total_tokens,
+             model, service_tier, pricing_context_quality
       FROM model_usage_events
       ORDER BY root_session_id, observed_at, source_key, line_number
     `).all().map(mapModelUsageEvent);
@@ -1294,6 +1328,9 @@ function mapModelUsageEvent(row) {
     quality: row.quality,
     reason: row.reason ?? null,
     usage: usageFromModelUsageRow(row),
+    model: row.model ?? null,
+    serviceTier: row.service_tier ?? null,
+    pricingContextQuality: row.pricing_context_quality ?? null,
   };
 }
 

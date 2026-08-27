@@ -38,7 +38,6 @@ const IGNORED_EVENT_TYPES = new Set([
   "item_completed",
   "mcp_tool_call_end",
   "sub_agent_activity",
-  "thread_settings_applied",
 ]);
 
 export class SessionRolloutParser {
@@ -182,6 +181,8 @@ export class SessionRolloutParser {
         currentTaskId,
         lastUsage: null,
         usageGeneration: usageGenerationByThread.get(storedAgent.threadId) ?? 0,
+        currentModel: null,
+        serviceTier: null,
       };
       if (thread.cliVersion) this.health.cliVersions.add(thread.cliVersion);
       this.threads.set(thread.threadId, thread);
@@ -204,6 +205,7 @@ export class SessionRolloutParser {
         skippedRecords: numberOrNull(cursor.skippedRecords) ?? 0,
         discontinuities: numberOrNull(cursor.discontinuities) ?? 0,
         lastUsage: normalizeUsage(cursor.lastUsage),
+        pricingContext: normalizePricingContext(cursor.pricingContext),
         fileSize: cursor.fileSize,
         modifiedAtMs: cursor.modifiedAtMs,
         firstMetaSeen: true,
@@ -217,6 +219,10 @@ export class SessionRolloutParser {
       this.health.discontinuities += context.discontinuities;
       const thread = this.threads.get(context.threadId);
       if (thread && context.lastUsage) thread.lastUsage = structuredClone(context.lastUsage);
+      if (thread && context.pricingContext) {
+        thread.currentModel = context.pricingContext.model ?? thread.currentModel;
+        thread.serviceTier = context.pricingContext.serviceTier ?? thread.serviceTier;
+      }
     }
     for (const cursor of cursors) {
       if (currentSources.has(cursorIdentity(cursor)) || replayThreadIds.has(cursor.threadId)) continue;
@@ -224,10 +230,81 @@ export class SessionRolloutParser {
       this.health.skippedRecords += numberOrNull(cursor.skippedRecords) ?? 0;
       this.health.discontinuities += numberOrNull(cursor.discontinuities) ?? 0;
     }
+    await this.enrichRestoredPricingContext(sortedEntries);
     this.health.files = this.fileContexts.size;
     this.health.restoredFiles = restoredPaths.length;
     this.health.replayedFiles = replayPaths.length;
     return { restoredPaths, replayPaths };
+  }
+
+  async enrichRestoredPricingContext(entries) {
+    const needsEnrichment = [...this.modelUsageEvents.values()].some((event) =>
+      event.pricingContextQuality == null
+    );
+    if (!needsEnrichment) return;
+
+    const stateByThread = new Map();
+    for (const entry of [...entries].sort(compareEntries)) {
+      const threadId = entryThreadId(entry);
+      if (!threadId) continue;
+      const state = stateByThread.get(threadId) ?? { model: null, serviceTier: null };
+      const historyStartOrdinal = numberOrNull(entry.meta?.subagent_history_start_ordinal);
+      try {
+        await readCompleteJsonLines(entry.path, 0, 0, ({ record, lineNumber }) => {
+          const ordinal = numberOrNull(record?.ordinal);
+          if (
+            historyStartOrdinal != null &&
+            ordinal != null &&
+            ordinal < historyStartOrdinal
+          ) {
+            return;
+          }
+          const payload = record?.payload ?? {};
+          if (record?.type === "turn_context") {
+            if (typeof payload.model === "string" && payload.model.trim()) state.model = payload.model;
+            return;
+          }
+          if (record?.type !== "event_msg") return;
+          if (payload.type === "thread_settings_applied") {
+            state.serviceTier = normalizeObservedServiceTier(
+              payload.thread_settings?.service_tier ??
+              payload.threadSettings?.serviceTier ??
+              payload.service_tier ??
+              payload.serviceTier ??
+              null,
+            );
+            return;
+          }
+          if (payload.type !== "token_count") return;
+          const event = this.modelUsageEvents.get(
+            modelUsageEventKey(entryIdentity(entry), lineNumber),
+          );
+          if (!event || event.pricingContextQuality != null) return;
+          event.model = event.model ?? state.model;
+          event.serviceTier = event.serviceTier ?? state.serviceTier;
+          event.pricingContextQuality = pricingContextQuality(event.model, event.serviceTier);
+        });
+      } catch (error) {
+        if (error?.code !== "ENOENT") {
+          // Pricing enrichment is best-effort metadata recovery. Token evidence remains usable.
+        }
+      }
+      stateByThread.set(threadId, state);
+      const context = this.fileContexts.get(entry.path);
+      if (context) context.pricingContext = structuredClone(state);
+    }
+
+    for (const event of this.modelUsageEvents.values()) {
+      if (event.pricingContextQuality == null) {
+        event.pricingContextQuality = pricingContextQuality(event.model, event.serviceTier);
+      }
+    }
+    for (const [threadId, state] of stateByThread) {
+      const thread = this.threads.get(threadId);
+      if (!thread) continue;
+      thread.currentModel = state.model ?? thread.currentModel;
+      thread.serviceTier = state.serviceTier ?? thread.serviceTier;
+    }
   }
 
   async tailFile(entry) {
@@ -251,6 +328,7 @@ export class SessionRolloutParser {
     let context = this.fileContexts.get(entry.path);
     if (!context || reset) {
       if (reset) this.removeModelUsageEventsForSource(entry.sourceKey ?? entry.path);
+      const existingThread = this.threads.get(entry.threadId ?? entry.meta?.id ?? null);
       context = {
         path: entry.path,
         sourceKey: entry.sourceKey ?? entry.path,
@@ -265,6 +343,10 @@ export class SessionRolloutParser {
         skippedRecords: 0,
         discontinuities: 0,
         lastUsage: null,
+        pricingContext: {
+          model: existingThread?.currentModel ?? null,
+          serviceTier: existingThread?.serviceTier ?? null,
+        },
         fileSize: 0,
         modifiedAtMs: null,
         firstMetaSeen: false,
@@ -325,7 +407,7 @@ export class SessionRolloutParser {
     thread.lastSeenAt = normalizeTimestamp(record?.timestamp, thread.lastSeenAt);
 
     if (record?.type === "turn_context") {
-      if (!this.applyTurnContext(thread, payload)) this.countSkipped(context);
+      if (!this.applyTurnContext(thread, payload, context)) this.countSkipped(context);
       return;
     }
 
@@ -373,6 +455,10 @@ export class SessionRolloutParser {
         entry.sourceKey ?? entry.path,
         context,
       );
+      return;
+    }
+    if (eventType === "thread_settings_applied") {
+      this.applyThreadSettings(thread, payload, context);
       return;
     }
     if (!IGNORED_EVENT_TYPES.has(eventType)) this.countUnknown(context);
@@ -426,6 +512,8 @@ export class SessionRolloutParser {
       currentTaskId: null,
       lastUsage: null,
       usageGeneration: 0,
+      currentModel: null,
+      serviceTier: null,
     };
     this.threads.set(threadId, thread);
     return thread;
@@ -476,13 +564,29 @@ export class SessionRolloutParser {
     thread.currentTaskId = turnId;
   }
 
-  applyTurnContext(thread, payload) {
+  applyTurnContext(thread, payload, context) {
     const turnId = payload.turn_id ?? payload.turnId ?? thread.currentTaskId;
     const task = turnId ? thread.tasks.get(turnId) : null;
+    if (typeof payload.model === "string" && payload.model.trim()) {
+      thread.currentModel = payload.model;
+      context.pricingContext.model = payload.model;
+    }
     if (!task) return false;
     task.model = payload.model ?? task.model;
     task.effort = payload.effort ?? task.effort;
     return true;
+  }
+
+  applyThreadSettings(thread, payload, context) {
+    const rawTier =
+      payload.thread_settings?.service_tier ??
+      payload.threadSettings?.serviceTier ??
+      payload.service_tier ??
+      payload.serviceTier ??
+      null;
+    const serviceTier = normalizeObservedServiceTier(rawTier);
+    thread.serviceTier = serviceTier;
+    context.pricingContext.serviceTier = serviceTier;
   }
 
   applyTokenCount(thread, payload, record, position, ordinal, sourcePath, sourceKey, context) {
@@ -513,6 +617,12 @@ export class SessionRolloutParser {
       quality: modelUsageEventQuality(usageEvent.classification),
       reason: usageEvent.reason,
       usage: usageEvent.usage ? structuredClone(usageEvent.usage) : null,
+      model: thread.currentModel ?? task?.model ?? null,
+      serviceTier: thread.serviceTier ?? null,
+      pricingContextQuality: pricingContextQuality(
+        thread.currentModel ?? task?.model ?? null,
+        thread.serviceTier ?? null,
+      ),
     };
     this.modelUsageEvents.set(
       modelUsageEventKey(modelUsageEvent.sourceKey, modelUsageEvent.lineNumber),
@@ -640,6 +750,7 @@ export class SessionRolloutParser {
       skippedRecords: context.skippedRecords ?? 0,
       discontinuities: context.discontinuities ?? 0,
       lastUsage: context.lastUsage ? structuredClone(context.lastUsage) : null,
+      pricingContext: context.pricingContext ? structuredClone(context.pricingContext) : null,
     }));
     const warningCount =
       this.health.invalidLines +
@@ -952,7 +1063,32 @@ function restoreModelUsageEvent(storedEvent) {
     quality: storedEvent.quality,
     reason: storedEvent.reason ?? null,
     usage: storedEvent.usage ? structuredClone(storedEvent.usage) : null,
+    model: storedEvent.model ?? null,
+    serviceTier: normalizeObservedServiceTier(storedEvent.serviceTier),
+    pricingContextQuality: storedEvent.pricingContextQuality ?? null,
   };
+}
+
+function normalizeObservedServiceTier(value) {
+  if (typeof value !== "string") return null;
+  const normalized = value.trim().toLowerCase();
+  return normalized === "default" || normalized === "fast" || normalized === "priority"
+    ? normalized
+    : null;
+}
+
+function normalizePricingContext(value) {
+  if (!value || typeof value !== "object") return { model: null, serviceTier: null };
+  return {
+    model: typeof value.model === "string" && value.model.trim() ? value.model : null,
+    serviceTier: normalizeObservedServiceTier(value.serviceTier),
+  };
+}
+
+function pricingContextQuality(model, serviceTier) {
+  return typeof model === "string" && model.trim() && normalizeObservedServiceTier(serviceTier)
+    ? "verified"
+    : "partial";
 }
 
 function modelUsageEventKey(sourceKey, lineNumber) {

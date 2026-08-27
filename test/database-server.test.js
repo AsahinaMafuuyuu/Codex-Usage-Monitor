@@ -286,6 +286,9 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(stored.modelUsageEvents.length, 1);
   assert.equal(stored.modelUsageEvents[0].classification, "generation_start");
   assert.equal(stored.modelUsageEvents[0].usage.totalTokens, 42);
+  assert.equal(stored.modelUsageEvents[0].model, "gpt-5.6-terra");
+  assert.equal(stored.modelUsageEvents[0].serviceTier, "default");
+  assert.equal(stored.modelUsageEvents[0].pricingContextQuality, "verified");
   assert.equal(stored.session.title, "");
   assert.equal(stored.session.projectPath, "C:\\workspace\\codex-usage-monitor");
   const columns = reopened.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
@@ -298,6 +301,9 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   const eventColumns = reopened.db.prepare("PRAGMA table_info(model_usage_events)").all()
     .map((row) => row.name);
   assert.equal(eventColumns.some((name) => /prompt|preview|content|message|source_path|rollout_path/iu.test(name)), false);
+  assert.equal(eventColumns.includes("model"), true);
+  assert.equal(eventColumns.includes("service_tier"), true);
+  assert.equal(eventColumns.includes("pricing_context_quality"), true);
   const calendar = reopened.getTimeline(new Map([[ROOT, {
     title: "Test",
     projectPath: "C:\\workspace\\codex-usage-monitor",
@@ -308,11 +314,49 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(calendar.months[0].days[0].sessions[0].tokensPerModelRequest, 42);
   assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
   assert.equal(reopened.getHealthStats().calendarRows, 1);
-  assert.equal(reopened.getHealthStats().schemaVersion, 12);
+  assert.equal(reopened.getHealthStats().schemaVersion, 13);
   assert.equal(reopened.getHealthStats().modelUsageEventRows, 1);
   assert.equal(reopened.getHealthStats().cacheSize, -2000);
   assert.equal(reopened.getHealthStats().mmapSize, 0);
   assert.equal(reopened.getHealthStats().walAutoCheckpoint, 256);
+});
+
+test("T-COST-062 v12 to v13 preserves classification and all six usage fields", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v12-v13-"));
+  const path = join(directory, "usage.sqlite");
+  let database = new MonitorDatabase(path);
+  t.after(async () => {
+    database?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  database.replaceSession(snapshot());
+  const evidenceSql = `
+    SELECT classification, input_tokens, cached_input_tokens, cache_write_input_tokens,
+           output_tokens, reasoning_output_tokens, total_tokens
+    FROM model_usage_events ORDER BY source_key, line_number
+  `;
+  const before = database.db.prepare(evidenceSql).all();
+  database.close();
+  database = null;
+
+  const legacy = new DatabaseSync(path);
+  legacy.exec(`
+    ALTER TABLE model_usage_events DROP COLUMN pricing_context_quality;
+    ALTER TABLE model_usage_events DROP COLUMN service_tier;
+    ALTER TABLE model_usage_events DROP COLUMN model;
+    ALTER TABLE ingest_cursors DROP COLUMN pricing_context;
+    PRAGMA user_version=12;
+  `);
+  legacy.close();
+
+  database = new MonitorDatabase(path);
+  const after = database.db.prepare(evidenceSql).all();
+  assert.deepEqual(after, before);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 13);
+  const event = database.getModelUsageEvents(ROOT)[0];
+  assert.equal(event.model, null);
+  assert.equal(event.serviceTier, null);
+  assert.equal(event.pricingContextQuality, null);
 });
 
 test("request ledger exclusively drives snapshot, agent, cost, and calendar usage", async (t) => {
@@ -360,7 +404,7 @@ test("request ledger exclusively drives snapshot, agent, cost, and calendar usag
   assert.equal(calendar.tokensPerModelRequest, 42);
 });
 
-test("T-DAY-040/042/043 schema v12 persists observedAt day slices and restart parity", async (t) => {
+test("T-DAY-040/042/043 schema v13 preserves v12 observedAt day slices and restart parity", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-v12-"));
   const path = join(directory, "usage.sqlite");
   let database = new MonitorDatabase(path);
@@ -382,7 +426,7 @@ test("T-DAY-040/042/043 schema v12 persists observedAt day slices and restart pa
   const restarted = database.getTimeline();
   assertDayTimeline(restarted, "2026-08-26", 100, 1, 1);
   assertDayTimeline(restarted, "2026-08-27", 200, 2, 2);
-  assert.equal(database.getHealthStats().schemaVersion, 12);
+  assert.equal(database.getHealthStats().schemaVersion, 13);
 });
 
 test("T-DAY-022 event-backed task without lifecycle timestamps is day-attributed only once", async (t) => {
@@ -425,7 +469,7 @@ test("T-DAY-022 event-backed task without lifecycle timestamps is day-attributed
   assert.equal(timeline.unattributed.usage.totalTokens, 0);
 });
 
-test("T-DAY-041 v11 to v12 rebuilds calendar from persisted ledger without rollout replay", async (t) => {
+test("T-DAY-041 v11 through v13 rebuilds calendar from persisted ledger without rollout replay", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v11-day-migration-"));
   const codexHome = join(directory, ".codex");
   const sessions = join(codexHome, "sessions", "2026", "08", "24");
@@ -456,7 +500,7 @@ test("T-DAY-041 v11 to v12 rebuilds calendar from persisted ledger without rollo
   legacy.close();
 
   booted = await bootMonitor(codexHome, databasePath);
-  assert.equal(booted.database.db.prepare("PRAGMA user_version").get().user_version, 12);
+  assert.equal(booted.database.db.prepare("PRAGMA user_version").get().user_version, 13);
   assert.equal(booted.monitor.health().timeline.dirtySessions, 0);
   const timeline = await booted.monitor.timeline();
   assert.equal(timeline.usage.totalTokens, 100);
@@ -562,7 +606,7 @@ test("manual quota refresh re-stats existing rollout files and reads the newest 
   assert.equal(refreshed.secondary.usedPercent, 31);
 });
 
-test("schema v1 ingest cursors migrate to portable resumable schema v12", async (t) => {
+test("schema v1 ingest cursors migrate to portable resumable schema v13", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -600,7 +644,7 @@ test("schema v1 ingest cursors migrate to portable resumable schema v12", async 
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
   assert.equal(columns.some((column) => column.name === "source_key"), true);
   assert.equal(columns.some((column) => column.name === "path"), false);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 12);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 13);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].sourceKey, "sessions/2026/08/24/rollout-fixture.jsonl");
@@ -649,7 +693,7 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 12);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 13);
 });
 
 test("schema v8 sessions replay once to backfill the request ledger", async (t) => {
@@ -693,7 +737,7 @@ test("schema v8 sessions replay once to backfill the request ledger", async (t) 
   assert.equal(database.getModelUsageEvents(ROOT)[0].usage.totalTokens, 100);
 });
 
-test("schema v10 retires boundary storage and reaches v12 without replaying rollout", async (t) => {
+test("schema v10 retires boundary storage and reaches v13 without replaying rollout", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v10-retire-boundary-"));
   const codexHome = join(directory, ".codex");
   const sessions = join(codexHome, "sessions", "2026", "08", "24");
@@ -741,7 +785,7 @@ test("schema v10 retires boundary storage and reaches v12 without replaying roll
 
   ({ monitor, database } = await bootMonitor(codexHome, databasePath));
   assert.equal(database.getSessionIndexState(ROOT).requestLedgerReady, true);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 12);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 13);
   const taskColumns = database.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(taskColumns.includes("quality"), false);
   assert.equal(taskColumns.includes("baseline_usage"), false);
@@ -1699,6 +1743,9 @@ function snapshot() {
       quality: "verified",
       reason: "zero_baseline_proven",
       usage,
+      model: "gpt-5.6-terra",
+      serviceTier: "default",
+      pricingContextQuality: "verified",
     }],
     cursors: [],
     quotas: [],
