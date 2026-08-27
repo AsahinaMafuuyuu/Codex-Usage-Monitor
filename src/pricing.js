@@ -1,5 +1,186 @@
 const MILLION = 1_000_000;
 
+const VERIFIED_REQUEST_CLASSIFICATIONS = new Set(["verified_increment", "generation_start"]);
+
+export const SUBSCRIPTION_PRICING_CATALOG = Object.freeze({
+  version: "subscription-standard-v1",
+  currency: "USD",
+  basis: "subscription-standard-equivalent",
+  capturedAt: "2026-08-26T00:00:00.000Z",
+  policyVersion: "2026-08-26",
+  limitations: Object.freeze([
+    "codex_subscription_not_billing",
+    "quota_not_currency_convertible",
+    "tool_fees_excluded",
+  ]),
+  sources: Object.freeze([
+    "https://openai.com/index/introducing-gpt-5-4/",
+    "https://openai.com/index/introducing-gpt-5-5/",
+    "https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/",
+    "https://help.openai.com/en/articles/11647665",
+  ]),
+});
+
+const HISTORICAL_RATE_INTERVALS = Object.freeze([
+  historicalRate("gpt-5.4", "2026-03-05T00:00:00.000Z", null, 2.5, 0.25, 15, "gpt-5.4@2026-03-05"),
+  historicalRate("gpt-5.5", "2026-04-23T00:00:00.000Z", null, 5, 0.5, 30, "gpt-5.5@2026-04-23"),
+  historicalRate("gpt-5.6-sol", "2026-07-09T00:00:00.000Z", null, 5, 0.5, 30, "gpt-5.6-sol@2026-07-09"),
+  historicalRate("gpt-5.6-terra", "2026-07-09T00:00:00.000Z", "2026-07-30T00:00:00.000Z", 2.5, 0.25, 15, "gpt-5.6-terra@2026-07-09"),
+  historicalRate("gpt-5.6-terra", "2026-07-30T00:00:00.000Z", null, 2, 0.2, 12, "gpt-5.6-terra@2026-07-30"),
+  historicalRate("gpt-5.6-luna", "2026-07-09T00:00:00.000Z", "2026-07-30T00:00:00.000Z", 1, 0.1, 6, "gpt-5.6-luna@2026-07-09"),
+  historicalRate("gpt-5.6-luna", "2026-07-30T00:00:00.000Z", null, 0.2, 0.02, 1.2, "gpt-5.6-luna@2026-07-30"),
+]);
+
+const HISTORICAL_MODEL_ALIASES = Object.freeze([
+  Object.freeze({
+    alias: "gpt-5.6",
+    model: "gpt-5.6-sol",
+    effectiveFrom: "2026-07-09T00:00:00.000Z",
+    effectiveUntil: null,
+  }),
+]);
+
+validateHistoricalCatalog(HISTORICAL_RATE_INTERVALS);
+
+export function resolveHistoricalRate(model, observedAt) {
+  const instant = timestampMs(observedAt);
+  if (!Number.isFinite(instant)) return null;
+  const normalized = normalizeHistoricalModel(model, instant);
+  if (!normalized) return null;
+  const matches = HISTORICAL_RATE_INTERVALS.filter((record) =>
+    record.model === normalized && intervalContains(record, instant)
+  );
+  if (matches.length !== 1) return null;
+  const record = matches[0];
+  return {
+    model: record.model,
+    rateVersion: record.rateVersion,
+    effectiveFrom: record.effectiveFrom,
+    effectiveUntil: record.effectiveUntil,
+    ratesPerMillion: { ...record.ratesPerMillion },
+    sourceUrl: record.sourceUrl,
+  };
+}
+
+export function normalizeServiceTier(value) {
+  if (typeof value !== "string") return "unknown";
+  const normalized = value.trim().toLowerCase();
+  if (normalized === "default" || normalized === "standard") return "standard";
+  if (normalized === "fast" || normalized === "priority") return "fast";
+  return "unknown";
+}
+
+export function estimateRequestCost(event, {
+  requestBoundaryVerified = true,
+  applyFeaturePolicy = true,
+} = {}) {
+  const model = event?.model ?? null;
+  const observedAt = event?.observedAt ?? null;
+  if (!VERIFIED_REQUEST_CLASSIFICATIONS.has(event?.classification)) {
+    return unavailableRequestCost("unverified_request_usage", model, observedAt);
+  }
+  const rate = resolveHistoricalRate(model, observedAt);
+  if (!rate) return unavailableRequestCost(model ? "historical_rate_unavailable" : "missing_model", model, observedAt);
+  const usage = validateRequestUsage(event?.usage);
+  if (!usage) return unavailableRequestCost("inconsistent_usage_breakdown", model, observedAt, rate);
+
+  const serviceTier = normalizeServiceTier(event?.serviceTier);
+  const uncachedInputTokens = usage.inputTokens - usage.cachedInputTokens;
+  const baseComponents = {
+    uncachedInput: priceTokens(uncachedInputTokens, rate.ratesPerMillion.input),
+    cachedInput: priceTokens(usage.cachedInputTokens, rate.ratesPerMillion.cachedInput),
+    output: priceTokens(usage.outputTokens, rate.ratesPerMillion.output),
+  };
+  const baseAmountUsd = baseComponents.uncachedInput + baseComponents.cachedInput + baseComponents.output;
+  const longCandidate = usage.inputTokens > 272_000;
+  let status = "estimated";
+  let reason = null;
+  let longContextStatus = "normal";
+  let inputMultiplier = 1;
+  let outputMultiplier = 1;
+  let fastMultiplier = 1;
+
+  if (!applyFeaturePolicy) {
+    longContextStatus = longCandidate ? "candidate" : "normal";
+  } else if (longCandidate && !supportsLongContext(rate.model)) {
+    status = "partial";
+    reason = "long_context_model_unsupported";
+    longContextStatus = "unknown";
+  } else if (longCandidate && !requestBoundaryVerified) {
+    status = "partial";
+    reason = "long_context_request_boundary_unproven";
+    longContextStatus = "candidate";
+  } else if (longCandidate) {
+    longContextStatus = "long";
+    inputMultiplier = 2;
+    outputMultiplier = 1.5;
+  }
+
+  if (!applyFeaturePolicy) {
+    // Historical/base pricing is intentionally feature-neutral. This seam is used by
+    // reconciliation and by the T-COST base-rate tests before long/Fast adjustments.
+  } else if (serviceTier === "fast" && longContextStatus === "long") {
+    status = "partial";
+    reason = "unsupported_feature_combination";
+    inputMultiplier = 1;
+    outputMultiplier = 1;
+  } else if (serviceTier === "fast") {
+    fastMultiplier = fastMultiplierForModel(rate.model);
+    if (fastMultiplier == null) {
+      status = "partial";
+      reason = "fast_model_unsupported";
+      fastMultiplier = 1;
+    }
+  } else if (serviceTier === "unknown") {
+    status = "partial";
+    reason ??= "service_tier_unknown";
+  }
+
+  const uncachedInputUsd = baseComponents.uncachedInput * inputMultiplier * fastMultiplier;
+  const cachedInputUsd = baseComponents.cachedInput * inputMultiplier * fastMultiplier;
+  const outputUsd = baseComponents.output * outputMultiplier * fastMultiplier;
+  const amountUsd = roundUsd(uncachedInputUsd + cachedInputUsd + outputUsd);
+  return {
+    status,
+    amountUsd,
+    currency: SUBSCRIPTION_PRICING_CATALOG.currency,
+    basis: SUBSCRIPTION_PRICING_CATALOG.basis,
+    policyVersion: SUBSCRIPTION_PRICING_CATALOG.policyVersion,
+    requestedModel: model,
+    pricedModel: rate.model,
+    rateVersion: rate.rateVersion,
+    observedAt,
+    serviceTier,
+    rawServiceTier: event?.serviceTier ?? null,
+    longContextStatus,
+    ratesPerMillion: { ...rate.ratesPerMillion },
+    multipliers: {
+      input: inputMultiplier,
+      cachedInput: inputMultiplier,
+      output: outputMultiplier,
+      fast: fastMultiplier,
+    },
+    featureCoverage: {
+      historicalRate: "verified",
+      requestBoundary: requestBoundaryVerified ? "verified" : "unproven",
+      serviceTier: serviceTier === "unknown" ? "unknown" : "verified",
+    },
+    components: {
+      uncachedInputTokens,
+      cachedInputTokens: usage.cachedInputTokens,
+      cacheWriteInputTokens: usage.cacheWriteInputTokens,
+      outputTokens: usage.outputTokens,
+      uncachedInputUsd: roundUsd(uncachedInputUsd),
+      cachedInputUsd: roundUsd(cachedInputUsd),
+      cacheWriteInputUsd: 0,
+      outputUsd: roundUsd(outputUsd),
+      baseAmountUsd: roundUsd(baseAmountUsd),
+    },
+    limitations: [...SUBSCRIPTION_PRICING_CATALOG.limitations],
+    reason,
+  };
+}
+
 export const PRICING_CATALOG = Object.freeze({
   version: "2026-08-24",
   currency: "USD",
@@ -218,4 +399,153 @@ function roundUsd(value) {
 function isCatalogStale(now) {
   const value = now instanceof Date ? now.valueOf() : Number(now);
   return !Number.isFinite(value) || value > Date.parse(PRICING_CATALOG.reviewAfter);
+}
+
+function historicalRate(
+  model,
+  effectiveFrom,
+  effectiveUntil,
+  input,
+  cachedInput,
+  output,
+  rateVersion,
+) {
+  return Object.freeze({
+    model,
+    effectiveFrom,
+    effectiveUntil,
+    rateVersion,
+    ratesPerMillion: Object.freeze({ input, cachedInput, output }),
+    sourceUrl: historicalSourceForModel(model),
+  });
+}
+
+function historicalSourceForModel(model) {
+  if (model === "gpt-5.4") return SUBSCRIPTION_PRICING_CATALOG.sources[0];
+  if (model === "gpt-5.5") return SUBSCRIPTION_PRICING_CATALOG.sources[1];
+  return SUBSCRIPTION_PRICING_CATALOG.sources[2];
+}
+
+function validateHistoricalCatalog(records) {
+  const byModel = new Map();
+  for (const record of records) {
+    const from = timestampMs(record.effectiveFrom);
+    const until = record.effectiveUntil == null ? Number.POSITIVE_INFINITY : timestampMs(record.effectiveUntil);
+    if (!Number.isFinite(from) || !(until > from)) {
+      throw new Error(`Invalid pricing interval: ${record.rateVersion}`);
+    }
+    const list = byModel.get(record.model) ?? [];
+    list.push({ record, from, until });
+    byModel.set(record.model, list);
+  }
+  for (const [model, intervals] of byModel) {
+    intervals.sort((left, right) => left.from - right.from);
+    for (let index = 1; index < intervals.length; index += 1) {
+      if (intervals[index].from < intervals[index - 1].until) {
+        throw new Error(`Overlapping pricing intervals for ${model}`);
+      }
+    }
+  }
+}
+
+function normalizeHistoricalModel(model, instant) {
+  if (typeof model !== "string" || !model.trim()) return null;
+  const normalized = model.trim().toLowerCase();
+  for (const alias of HISTORICAL_MODEL_ALIASES) {
+    if (normalized !== alias.alias) continue;
+    if (intervalContains(alias, instant)) return alias.model;
+    return null;
+  }
+  const models = [...new Set(HISTORICAL_RATE_INTERVALS.map((record) => record.model))]
+    .sort((left, right) => right.length - left.length);
+  for (const candidate of models) {
+    if (normalized === candidate || normalized.startsWith(`${candidate}-20`)) return candidate;
+  }
+  return null;
+}
+
+function intervalContains(record, instant) {
+  const from = timestampMs(record.effectiveFrom);
+  const until = record.effectiveUntil == null
+    ? Number.POSITIVE_INFINITY
+    : timestampMs(record.effectiveUntil);
+  return instant >= from && instant < until;
+}
+
+function validateRequestUsage(usage) {
+  if (!usage || typeof usage !== "object") return null;
+  const inputTokens = validTokenCount(usage.inputTokens);
+  const cachedInputTokens = validTokenCount(usage.cachedInputTokens);
+  const outputTokens = validTokenCount(usage.outputTokens);
+  const cacheWriteInputTokens = usage.cacheWriteInputTokens == null
+    ? 0
+    : validTokenCount(usage.cacheWriteInputTokens);
+  const reasoningOutputTokens = usage.reasoningOutputTokens == null
+    ? 0
+    : validTokenCount(usage.reasoningOutputTokens);
+  const totalTokens = usage.totalTokens == null ? null : validTokenCount(usage.totalTokens);
+  if (
+    inputTokens == null ||
+    cachedInputTokens == null ||
+    outputTokens == null ||
+    cacheWriteInputTokens == null ||
+    reasoningOutputTokens == null ||
+    cachedInputTokens > inputTokens ||
+    cacheWriteInputTokens > inputTokens - cachedInputTokens ||
+    (totalTokens != null && inputTokens + outputTokens !== totalTokens)
+  ) {
+    return null;
+  }
+  return {
+    inputTokens,
+    cachedInputTokens,
+    cacheWriteInputTokens,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens,
+  };
+}
+
+function supportsLongContext(model) {
+  return model === "gpt-5.4" || model === "gpt-5.5" || model.startsWith("gpt-5.6-");
+}
+
+function fastMultiplierForModel(model) {
+  if (model.startsWith("gpt-5.6-") || model === "gpt-5.5") return 2.5;
+  if (model === "gpt-5.4") return 2;
+  return null;
+}
+
+function unavailableRequestCost(reason, model, observedAt, rate = null) {
+  return {
+    status: "unavailable",
+    amountUsd: null,
+    currency: SUBSCRIPTION_PRICING_CATALOG.currency,
+    basis: SUBSCRIPTION_PRICING_CATALOG.basis,
+    policyVersion: SUBSCRIPTION_PRICING_CATALOG.policyVersion,
+    requestedModel: model ?? null,
+    pricedModel: rate?.model ?? null,
+    rateVersion: rate?.rateVersion ?? null,
+    observedAt: observedAt ?? null,
+    serviceTier: "unknown",
+    rawServiceTier: null,
+    longContextStatus: "unknown",
+    ratesPerMillion: rate?.ratesPerMillion ? { ...rate.ratesPerMillion } : null,
+    multipliers: null,
+    featureCoverage: {
+      historicalRate: rate ? "verified" : "unavailable",
+      requestBoundary: "unknown",
+      serviceTier: "unknown",
+    },
+    components: null,
+    limitations: [...SUBSCRIPTION_PRICING_CATALOG.limitations],
+    reason,
+  };
+}
+
+function timestampMs(value) {
+  if (value instanceof Date) return value.getTime();
+  if (typeof value === "number" && Number.isFinite(value)) return value;
+  const parsed = Date.parse(value ?? "");
+  return Number.isFinite(parsed) ? parsed : Number.NaN;
 }
