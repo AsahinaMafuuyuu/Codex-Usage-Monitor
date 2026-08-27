@@ -24,6 +24,14 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /agent\.subtreeCostEstimate/u);
   assert.match(script, /session\.projectPath/u);
   assert.match(script, /data-session-view/u);
+  assert.match(script, /selectedDay:\s*null/u);
+  assert.match(script, /data-session-day=/u);
+  assert.match(script, /button\.dataset\.sessionDay === state\.selectedDay/u);
+  assert.match(script, /\?day=\$\{encodeURIComponent\(day\)\}/u);
+  assert.match(script, /preferredTimelineDay\(state\.selectedId\)/u);
+  assert.match(script, /nextView === "time" \? preferredTimelineDay\(state\.selectedId\) : null/u);
+  assert.match(script, /snapshot\.scope\?\.type === "day"/u);
+  assert.match(script, /refreshTimelineNavigation\(selectionVersion\)/u);
   assert.match(script, /renderSessionsByTime/u);
   assert.match(script, /formatTimelineUsageCost\(month\.usage, month\.costEstimate\)/u);
   assert.match(script, /formatTimelineUsageCost\(day\.usage, day\.costEstimate\)/u);
@@ -137,6 +145,10 @@ test("live updates preserve keyed interaction containers instead of rebuilding t
   assert.match(script, /data-session-group-key/u);
   assert.match(script, /data-time-month/u);
   assert.match(script, /data-time-day/u);
+  assert.match(script, /const interaction = captureSessionListInteraction\(\)/u);
+  assert.match(script, /restoreSessionListInteraction\(interaction\)/u);
+  assert.match(script, /selectionVersion !== state\.selectionVersion/u);
+  assert.match(script, /day !== state\.selectedDay/u);
 
   assert.doesNotMatch(script, /elements\["agent-tree"\]\.innerHTML\s*=\s*renderBranch/u);
   assert.doesNotMatch(renderDashboard, /renderSessions\(/u);

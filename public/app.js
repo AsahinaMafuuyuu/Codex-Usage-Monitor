@@ -2,8 +2,10 @@ const state = {
   sessions: [],
   timeline: null,
   selectedId: null,
+  selectedDay: null,
   snapshot: null,
   eventSource: null,
+  selectionVersion: 0,
   search: "",
   sessionView: localStorage.getItem("codex-monitor-session-view") === "time" ? "time" : "project",
   connected: false,
@@ -41,25 +43,28 @@ elements["session-search"].addEventListener("input", (event) => {
 });
 document.querySelectorAll("[data-session-view]").forEach((button) => {
   button.addEventListener("click", async () => {
-    await withViewTransition(() => {
-      state.sessionView = button.dataset.sessionView === "time" ? "time" : "project";
-      localStorage.setItem("codex-monitor-session-view", state.sessionView);
-      renderSessions();
-    });
-    if (state.sessionView === "time" && !state.timeline) {
+    const nextView = button.dataset.sessionView === "time" ? "time" : "project";
+    if (nextView === state.sessionView) return;
+    if (nextView === "time") {
       try {
         await ensureTimeline();
-        await withViewTransition(() => renderSessions());
       } catch (error) {
         toast(`日期汇总失败：${error.message}`);
+        return;
       }
     }
+    state.sessionView = nextView;
+    localStorage.setItem("codex-monitor-session-view", state.sessionView);
+    const day = nextView === "time" ? preferredTimelineDay(state.selectedId) : null;
+    state.selectedDay = day;
+    await withViewTransition(() => renderSessions());
+    if (state.selectedId) await selectSession(state.selectedId, day);
   });
 });
 elements["mobile-session-toggle"].addEventListener("click", () => document.body.classList.toggle("sessions-open"));
 elements["session-list"].addEventListener("click", (event) => {
   const button = event.target.closest("[data-session-id]");
-  if (button) void selectSession(button.dataset.sessionId);
+  if (button) void selectSession(button.dataset.sessionId, button.dataset.sessionDay ?? null);
 });
 elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
 
@@ -76,7 +81,10 @@ async function initialize() {
     }
     const remembered = localStorage.getItem("codex-monitor-session");
     const initial = state.sessions.find((item) => item.id === remembered)?.id ?? state.sessions[0]?.id;
-    if (initial) await selectSession(initial);
+    if (initial) {
+      const day = state.sessionView === "time" ? preferredTimelineDay(initial) : null;
+      await selectSession(initial, day);
+    }
     else setEmpty("还没有可读取的 Codex 会话", "确认 .codex/sessions 中存在 rollout 文件后刷新页面。");
   } catch (error) {
     setHealth({ status: "warning", recentErrors: [{ message: error.message }] });
@@ -90,10 +98,20 @@ async function ensureTimeline() {
   return state.timeline;
 }
 
-async function selectSession(sessionId) {
+async function selectSession(sessionId, requestedDay = null) {
   if (!sessionId) return;
+  const day = state.sessionView === "time"
+    ? requestedDay ?? preferredTimelineDay(sessionId)
+    : null;
+  if (state.sessionView === "time" && !day) {
+    toast("该会话没有可用的日期记录");
+    return;
+  }
+  const selectionVersion = ++state.selectionVersion;
   state.selectedId = sessionId;
+  state.selectedDay = day;
   localStorage.setItem("codex-monitor-session", sessionId);
+  if (day) rememberTimelineDay(sessionId, day);
   await withViewTransition(() => {
     document.body.classList.remove("sessions-open");
     syncSessionSelection();
@@ -101,31 +119,41 @@ async function selectSession(sessionId) {
   });
   closeEvents();
   try {
-    state.snapshot = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}`);
+    const query = day ? `?day=${encodeURIComponent(day)}` : "";
+    const snapshot = await fetchJson(`/api/sessions/${encodeURIComponent(sessionId)}${query}`);
+    if (selectionVersion !== state.selectionVersion) return;
+    state.snapshot = snapshot;
     await withViewTransition(() => {
       setLoading(false);
       renderDashboard();
     });
-    connectEvents(sessionId);
+    connectEvents(sessionId, day, selectionVersion);
   } catch (error) {
+    if (selectionVersion !== state.selectionVersion) return;
     toast(error.message);
     await withViewTransition(() => setEmpty("会话解析失败", "健康状态中保留了具体错误；原始 .codex 文件未被修改。"));
   }
 }
 
-function connectEvents(sessionId) {
+function connectEvents(sessionId, day, selectionVersion) {
   state.connected = false;
   setConnection("正在连接实时观察…", false);
-  const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events`);
+  const query = day ? `?day=${encodeURIComponent(day)}` : "";
+  const source = new EventSource(`/api/sessions/${encodeURIComponent(sessionId)}/events${query}`);
   state.eventSource = source;
   source.addEventListener("open", () => {
     state.connected = true;
     setConnection("实时观察中", true);
   });
   source.addEventListener("snapshot", (event) => {
-    if (sessionId !== state.selectedId) return;
+    if (
+      selectionVersion !== state.selectionVersion ||
+      sessionId !== state.selectedId ||
+      day !== state.selectedDay
+    ) return;
     state.snapshot = JSON.parse(event.data);
     renderDashboard();
+    if (state.sessionView === "time") void refreshTimelineNavigation(selectionVersion);
   });
   source.addEventListener("quota", (event) => {
     if (!state.snapshot) return;
@@ -142,6 +170,17 @@ function connectEvents(sessionId) {
 function closeEvents() {
   state.eventSource?.close();
   state.eventSource = null;
+}
+
+async function refreshTimelineNavigation(selectionVersion) {
+  try {
+    const timeline = await fetchJson("/api/timeline");
+    if (selectionVersion !== state.selectionVersion || state.sessionView !== "time") return;
+    state.timeline = timeline;
+    renderSessions();
+  } catch (error) {
+    if (selectionVersion === state.selectionVersion) toast(`日期汇总刷新失败：${error.message}`);
+  }
 }
 
 function renderSessions() {
@@ -194,7 +233,10 @@ function captureSessionListInteraction() {
   const focusedSessionId = list.contains(document.activeElement)
     ? document.activeElement.closest("[data-session-id]")?.dataset.sessionId ?? null
     : null;
-  return { scrollTop: list.scrollTop, detailsState, focusedSessionId };
+  const focusedSessionDay = list.contains(document.activeElement)
+    ? document.activeElement.closest("[data-session-id]")?.dataset.sessionDay ?? null
+    : null;
+  return { scrollTop: list.scrollTop, detailsState, focusedSessionId, focusedSessionDay };
 }
 
 function restoreSessionListInteraction(interaction) {
@@ -205,7 +247,11 @@ function restoreSessionListInteraction(interaction) {
     if (key && interaction.detailsState.has(key)) details.open = interaction.detailsState.get(key);
   }
   if (interaction.focusedSessionId) {
-    findByData(list, "sessionId", interaction.focusedSessionId)?.focus({ preventScroll: true });
+    [...list.querySelectorAll("[data-session-id]")]
+      .find((button) =>
+        button.dataset.sessionId === interaction.focusedSessionId &&
+        (button.dataset.sessionDay ?? null) === interaction.focusedSessionDay,
+      )?.focus({ preventScroll: true });
   }
   list.scrollTop = interaction.scrollTop;
 }
@@ -219,7 +265,10 @@ function sessionDetailsKey(details) {
 
 function syncSessionSelection() {
   for (const button of elements["session-list"].querySelectorAll("[data-session-id]")) {
-    button.classList.toggle("active", button.dataset.sessionId === state.selectedId);
+    const active = button.dataset.sessionId === state.selectedId && (
+      state.sessionView === "project" || button.dataset.sessionDay === state.selectedDay
+    );
+    button.classList.toggle("active", active);
   }
 }
 
@@ -252,7 +301,7 @@ function renderSessionsByTime(sessions) {
     return '<p class="empty-agent">正在建立按日期索引…</p>';
   }
   const visibleIds = new Set(sessions.map((session) => session.id));
-  const selectedDate = findTimelineDate(state.timeline, state.selectedId);
+  const selectedDate = state.selectedDay ?? findTimelineDate(state.timeline, state.selectedId);
   const query = state.search.trim();
   const months = state.timeline.months.map((month) => ({
     ...month,
@@ -276,18 +325,19 @@ function renderSessionsByTime(sessions) {
             <span><strong>${escapeHtml(formatDayLabel(day.key))}</strong><code>${escapeHtml(day.key)}</code></span>
             <span class="time-meta" title="${escapeHtml(costSummaryTitle(day.costEstimate, `${formatDayLabel(day.key)} `))}"><b>${formatTimelineUsageCost(day.usage, day.costEstimate)}</b><i aria-hidden="true">›</i></span>
           </summary>
-          <div class="time-sessions">${day.sessions.map(renderTimeSession).join("")}</div>
+          <div class="time-sessions">${day.sessions.map((session) => renderTimeSession(session, day.key)).join("")}</div>
         </details>`;
       }).join("")}</div>
     </details>`;
   }).join("");
 }
 
-function renderTimeSession(session) {
+function renderTimeSession(session, day) {
   const project = projectName(normalizeProjectPath(session.projectPath));
   const costTitle = costSummaryTitle(session.costEstimate, "该会话");
-  return `<button class="session-item time-session-item ${session.id === state.selectedId ? "active" : ""}"
-    type="button" data-session-id="${escapeHtml(session.id)}">
+  const active = session.id === state.selectedId && day === state.selectedDay;
+  return `<button class="session-item time-session-item ${active ? "active" : ""}"
+    type="button" data-session-id="${escapeHtml(session.id)}" data-session-day="${escapeHtml(day)}">
     <strong title="${escapeHtml(session.title || "未命名会话")}">${escapeHtml(session.title || "未命名会话")}</strong>
     <span>
       <time title="Total token: ${escapeHtml(formatTokens(session.usage?.totalTokens))}">${formatTokens(session.usage?.totalTokens)}</time>
@@ -308,6 +358,25 @@ function findTimelineDate(timeline, sessionId) {
     }
   }
   return null;
+}
+
+function preferredTimelineDay(sessionId) {
+  if (!sessionId) return null;
+  const remembered = localStorage.getItem(`codex-monitor-session-day:${sessionId}`);
+  if (remembered && timelineHasSessionDay(state.timeline, sessionId, remembered)) return remembered;
+  return findTimelineDate(state.timeline, sessionId);
+}
+
+function rememberTimelineDay(sessionId, day) {
+  localStorage.setItem(`codex-monitor-session-day:${sessionId}`, day);
+}
+
+function timelineHasSessionDay(timeline, sessionId, dayKey) {
+  for (const month of timeline?.months ?? []) {
+    const day = month.days.find((candidate) => candidate.key === dayKey);
+    if (day?.sessions.some((session) => session.id === sessionId)) return true;
+  }
+  return false;
 }
 
 function currentDayKey() {
@@ -361,7 +430,10 @@ function renderDashboard() {
   elements["session-project"].title = snapshot.session.projectPath || "";
   elements["session-id"].textContent = snapshot.session.id;
   elements["session-id"].title = snapshot.session.id;
-  elements["session-version"].textContent = snapshot.session.cliVersion || "版本未知";
+  const versionLabel = snapshot.session.cliVersion || "版本未知";
+  elements["session-version"].textContent = snapshot.scope?.type === "day"
+    ? `${versionLabel} · ${snapshot.scope.day} 当日`
+    : versionLabel;
   elements["hero-total"].textContent = formatTokens(snapshot.summary.totalUsage?.totalTokens);
   elements["agent-count"].textContent = tokenFormatter.format(snapshot.summary.agentCount);
   elements["task-count"].textContent = tokenFormatter.format(snapshot.summary.taskCount);
@@ -374,7 +446,8 @@ function renderDashboard() {
   elements["cache-hit-rate"].textContent = formatCacheHitRate(sessionUsage);
   elements["output-total"].textContent = formatTokens(sessionUsage?.outputTokens);
   elements["session-cost"].textContent = formatUsdAmount(snapshot.summary.totalCostEstimate?.amountUsd);
-  elements["session-cost"].title = costSummaryTitle(snapshot.summary.totalCostEstimate, "整个会话");
+  const costScopeLabel = snapshot.scope?.type === "day" ? `${snapshot.scope.day} 当日` : "整个会话";
+  elements["session-cost"].title = costSummaryTitle(snapshot.summary.totalCostEstimate, costScopeLabel);
   elements["session-cost-coverage"].textContent = costSummaryCoverage(snapshot.summary.totalCostEstimate);
   elements["last-update"].textContent = snapshot.health.lastUpdateAt
     ? `更新 ${formatDate(snapshot.health.lastUpdateAt)}`

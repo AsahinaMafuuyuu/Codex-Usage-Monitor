@@ -171,12 +171,98 @@ try {
   assert(structural.sameAnchor, "existing task row identity changed during structural update");
   assert(Math.abs(structural.topDelta) < 1, `visual anchor moved by ${structural.topDelta}px`);
 
-  console.log(JSON.stringify({ collapsed, structural }, null, 2));
+  const scopedNavigation = await verifyScopedNavigation(cdp);
+  const narrow = await verifyNarrowViewport(cdp);
+
+  console.log(JSON.stringify({ collapsed, structural, scopedNavigation, narrow }, null, 2));
 } finally {
   try { socket?.close(); } catch {}
   chrome.kill();
   await sleep(250);
   await rm(profile, { recursive: true, force: true }).catch(() => {});
+}
+
+async function verifyScopedNavigation(cdp) {
+  await cdp.evaluate(`document.querySelector('[data-session-view="time"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(
+    document.querySelector('.time-session-item.active[data-session-day]') &&
+    document.querySelector('#session-version')?.textContent.includes('当日')
+  )`), "day-scoped time selection");
+
+  const timeState = await cdp.evaluate(`(() => {
+    const active = document.querySelector('.time-session-item.active[data-session-day]');
+    const sameSessionDays = [...document.querySelectorAll('.time-session-item[data-session-day]')]
+      .filter((button) => button.dataset.sessionId === active?.dataset.sessionId)
+      .map((button) => button.dataset.sessionDay);
+    return {
+      sessionId: active?.dataset.sessionId ?? null,
+      day: active?.dataset.sessionDay ?? null,
+      versionLabel: document.querySelector('#session-version')?.textContent ?? '',
+      sameSessionDays: [...new Set(sameSessionDays)],
+    };
+  })()`);
+  assert(timeState.sessionId && timeState.day, "time navigation did not expose composite selection identity");
+  assert(timeState.versionLabel.includes(timeState.day), "day snapshot label does not match active Timeline day");
+
+  let crossDay = { skipped: true, reason: "selected live session has only one Timeline day" };
+  if (timeState.sameSessionDays.length > 1) {
+    const nextDay = timeState.sameSessionDays.find((day) => day !== timeState.day);
+    await cdp.evaluate(`(() => {
+      const target = [...document.querySelectorAll('.time-session-item[data-session-day]')]
+        .find((button) => button.dataset.sessionId === ${JSON.stringify(timeState.sessionId)} &&
+          button.dataset.sessionDay === ${JSON.stringify(nextDay)});
+      target?.click();
+    })()`);
+    await waitFor(async () => cdp.evaluate(`Boolean(
+      document.querySelector('.time-session-item.active')?.dataset.sessionDay === ${JSON.stringify(nextDay)} &&
+      document.querySelector('#session-version')?.textContent.includes(${JSON.stringify(nextDay)})
+    )`), "same-session alternate day selection");
+    crossDay = { skipped: false, from: timeState.day, to: nextDay };
+  }
+
+  await cdp.evaluate(`document.querySelector('[data-session-view="project"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(
+    document.querySelector('[data-session-view="project"].active') &&
+    !document.querySelector('#session-version')?.textContent.includes('当日')
+  )`), "full-session project selection");
+  return { timeState, crossDay, projectRestoredFullScope: true };
+}
+
+async function verifyNarrowViewport(cdp) {
+  await cdp.send("Emulation.setDeviceMetricsOverride", {
+    width: 720,
+    height: 900,
+    deviceScaleFactor: 1,
+    mobile: false,
+  });
+  await sleep(250);
+  const result = await cdp.evaluate(`(() => {
+    const wrap = document.querySelector('.task-table-wrap');
+    const details = wrap?.closest('.agent-card');
+    if (details) details.open = true;
+    if (wrap) {
+      wrap.scrollLeft = Math.min(240, Math.max(1, wrap.scrollWidth - wrap.clientWidth));
+      wrap.focus({ preventScroll: true });
+    }
+    const before = wrap?.scrollLeft ?? 0;
+    window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', {
+      data: window.__codexLiveUiQa.snapshotData,
+    }));
+    return {
+      innerWidth: window.innerWidth,
+      overflow: Boolean(wrap && wrap.scrollWidth > wrap.clientWidth),
+      before,
+      after: wrap?.scrollLeft ?? 0,
+      focused: document.activeElement === wrap,
+      detailsOpen: Boolean(details?.open),
+    };
+  })()`);
+  assert(result.innerWidth === 720, `narrow viewport is ${result.innerWidth}px instead of 720px`);
+  assert(result.overflow, "narrow task table lost horizontal overflow");
+  assert(result.before > 0 && result.after === result.before, "narrow snapshot changed task-table scrollLeft");
+  assert(result.focused, "narrow snapshot dropped task-table focus");
+  assert(result.detailsOpen, "narrow snapshot changed Agent expansion state");
+  return result;
 }
 
 function resolveChromePath() {
