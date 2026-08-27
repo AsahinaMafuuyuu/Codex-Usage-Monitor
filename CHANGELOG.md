@@ -6,6 +6,8 @@
 
 ### Added
 
+- Phase 18 Canonical Request Ownership：native-first Request identity、deterministic reconstruction、fork provenance、`canonical_requests` shadow projection、`verified_zero`、background indexer health 与真实 legacy-session reconciliation CLI。
+- Phase 18 unknown-record audit CLI：把真实污染 session 的 1,978 条历史 unknown 精确聚类为 message/tool/session-state non-accounting events，并保留未来未知格式继续触发 warning 的能力。
 - Phase 17 Subscription Standard-Rate Equivalent：历史模型/价格有效期、逐 Request Ledger usage unit 定价、272K long-context、Fast/service-tier evidence、coverage 与只读 reconciliation CLI。
 - 逐任务模型和 reasoning effort 展示。
 - 基于版本化官方标准 API 价目的 USD 短上下文等值估算、分项、覆盖状态与价目复核提示。
@@ -21,6 +23,9 @@
 
 ### Changed
 
+- SQLite 升级到 schema v14：`model_usage_events` 明确作为 raw observed evidence，新增 `canonical_requests`、`task_ownership`、`event_ownership` 和 projection generation。Task/Agent/Session/Day/Cost 只消费 canonical Request；fork copied history 只保留 provenance，Time 只按 canonical Request `observedAt` 分日。
+- Timeline/Session 点击从同步 parse/reprice 路径改为 cached projection read；stale/dirty session 由 background indexer 增量 rebuild 并通过 SSE 切换 generation。source missing 保留历史 verified canonical usage；关闭流程等待 active index job 后再关闭 SQLite。
+- Phase 18 收紧恢复与持久化边界：persisted reconstructed Request identity 不在 restore 时漂移；v13→v14 backfill identity；present source 做 source-scoped authoritative replace、missing source 保留历史 evidence；Agent aggregate 与 Timeline unattributed fallback 不再读取 raw fork copies。parser semantics version 独立于 schema v14，使旧 cursor diagnostics 能通过真实后台 reindex 更新。
 - SQLite 升级到 schema v13：`model_usage_events` 新增最小 `model / service_tier / pricing_context_quality`，`ingest_cursors` 保存当前 pricing context 以支持增量 tail；v12→v13 保持 classification 与六字段 usage 不变，原 rollout 存在时只读 enrichment，缺源则保留 unknown。
 - Snapshot/Timeline USD 从旧 Task-level 当前 API 短上下文 estimator 切换为 `Σ requestCost(event)`。历史价按 `model + observedAt` 选择；Sol 临时 API promotion 不进入订阅标准价 policy；Terra/Luna 7/30 历史切价、长上下文与 Fast 只在 event evidence 可证明时应用。partial 金额不再用 `≥` 改写主数值。
 - 额度刷新按钮的手写 SVG 替换为本地安装的 Lucide `refresh-cw` 图标；Lucide UMD 资源由 loopback 服务固定映射并受现有 `script-src 'self'` CSP 约束，不引入 CDN 或外部运行时请求。

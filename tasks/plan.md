@@ -1160,36 +1160,38 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 
 ### Task 1: Ownership resolver + evidence reconciliation
 
-- [ ] 用 turn identity + lineage 选 canonical Task owner；nested descendants 的 copied turns 不形成新 Task/Request。
-- [ ] ownership 冲突显式 unresolved，raw verified evidence 必须满足 canonical + inherited + unresolved 守恒。
-- [ ] 覆盖无 ordinal / 无 history-start 的真实 legacy fork fixture。
+- [x] 用 native-first / deterministic Request identity + turn lineage 选 canonical Task owner；nested descendants 的 copied turns 不形成新 Task/Request。
+- [x] ownership 冲突显式 unresolved，raw verified evidence 必须满足 canonical + inherited + unresolved 六字段守恒。
+- [x] 覆盖无 ordinal / 无 history-start 的真实 legacy fork fixture，并完成真实 20-rollout native identity 调查。
 
 ### Task 2: Request-day projection + verified-zero
 
-- [ ] Time 只按 canonical Request observed day 聚合并按 Task 分组；Project 保留完整 Task。
-- [ ] lifecycle-only Task 不污染另一天；fork copy 的重写 timestamp 不污染 day ledger。
-- [ ] 无 Request Task 仅在严格 cumulative equality proof 下显示 `0 token / $0.00`。
+- [x] Time 只按 canonical Request observed day 聚合并按 Task 分组；Project 保留完整 Task。
+- [x] lifecycle-only Task 不污染另一天；fork copy 的重写 timestamp 不污染 day ledger。
+- [x] 无 Request Task 仅在严格 cumulative equality proof 下显示 `0 token / $0.00`。
 
 ### Task 3: Versioned SQL projection
 
-- [ ] schema 持久化 ownership/projection version 与 day cost/coverage，旧 raw rows 保留审计但退出 runtime aggregate。
-- [ ] Timeline 直接查询 day projection，不再加载全部 Task/Event 后现场定价。
-- [ ] projection/pricing version 变化可重建，且重建不修改 rollout。
+- [x] schema v14 持久化 raw evidence、canonical Request、ownership provenance、projection version/generation 与 day cost/coverage；旧 raw rows 保留审计但退出 runtime aggregate。
+- [x] Timeline 直接查询 day projection，不再加载全部 Task/Event 后现场定价。
+- [x] projection generation 原子更新，重建不修改 rollout。
 
 ### Task 4: Background indexer
 
-- [ ] 初始化/文件变化只把 stale session 入队，低并发后台同步 parse→ownership→projection。
-- [ ] cached session 点击只读 DB snapshot；dirty 状态通过 health/SSE 披露，不阻塞 UI。
-- [ ] watcher/tail/restart 仍保持增量正确性。
+- [x] 初始化/文件变化只把 stale session 入队，低并发后台同步 parse→identity/ownership→projection。
+- [x] cached session 点击只读 DB snapshot；dirty 状态通过 health/SSE 披露，不阻塞 UI。
+- [x] watcher/tail/restart/portable relocation/graceful shutdown 保持增量正确性。
 
 ### Task 5: Shadow rebuild / delivery
 
-- [ ] 对真实污染历史执行 canonical/inherited/unresolved reconciliation，禁止 verified evidence 无归宿。
-- [ ] 真实 warm Timeline <200ms、day detail <300ms（开发机目标）；源 `.codex` hash 不变。
-- [ ] 全量 tests/check/diff/browser QA 通过后更新 DELIVERY/VERIFICATION/API/ARCHITECTURE/OPERATIONS/README/CHANGELOG。
+- [x] 对真实污染历史执行 canonical/inherited/unresolved reconciliation，禁止 verified evidence 无归宿。
+- [x] 真实 warm Timeline <200ms、day detail <300ms；源 `.codex` combined manifest 前后完全一致。
+- [x] 全量 tests/check/diff/browser QA 通过并更新 DELIVERY/VERIFICATION/API/ARCHITECTURE/OPERATIONS/README/CHANGELOG。
 
 ### Checkpoint
 
-- [ ] Task/Request/Day 语义与 ADR-0020 一致。
-- [ ] 任何“Token 下降”都能由 inherited-copy 去重解释，不能来自静默删除。
-- [ ] 页面点击不再是索引器入口。
+- [x] Task/Request/Day 语义与 ADR-0020 一致。
+- [x] 任何“Token 下降”都能由 inherited-copy provenance 解释，不能来自静默删除。
+- [x] 页面点击不再是索引器入口。
+
+**Delivered evidence (2026-08-27):** 真实污染 session 的 639 raw Task 收敛为 67 canonical + 572 inherited + 0 unresolved；12,783 verified Request evidence 收敛为 1,464 canonical + 11,319 inherited + 0 unresolved，六字段守恒。canonical total token `175,379,870`，重复 provenance `1,564,379,574`。52,552 条 JSONL record 中原 1,978 unknown 已审计为 1,104 patch end + 610 user message + 183 thread rollback + 81 web-search end，均为 non-accounting；allowlist 后 `unknownRecords=0` 且 Request/Token reconciliation 不变。最终 warm Timeline P95 `19.76ms`、Session-Day P95 `65.43ms`；20-file SHA-256 manifest before/after 均为 `3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`。新增 restore identity、migration backfill、source-scoped replace、canonical Agent/unattributed 与 parser-semantics regressions 后，`npm test` 109 / 108 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 和 1440px/720px Chrome/CDP 全部通过。

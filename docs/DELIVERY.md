@@ -187,6 +187,40 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - `input >272K` 的 verified usage unit 共 `571` 个，input token `166,551,689`。真实可比较的 `1,792` 个 task 上，旧 current API equivalent `$2703.97106036` 经 subscription-policy `+$155.09507810`、historical-rate `+$50.84818823`、long-context `+$106.61941600`、Fast `+$0` 后得到 `$3016.53374269`；重建 delta 为 `$0`。所有可定价 usage unit 的已知新金额合计 `$3087.22782329`，其中部分 task 因旧 estimator 或历史证据不可比较而不进入 additive subset。
 - 真实 Chrome/CDP 桌面与 720px 验收通过；snapshot 更新保持任务表横向滚动、focus、Agent 展开和 visual anchor，Project↔Time scope 仍正常。
 
+## Phase 18 交付：Canonical Request Ownership / Request-Day Projection / schema v14
+
+**状态：已实现并通过交付门槛。** 本阶段把运行时计量模型冻结为：Rollout 是只读 evidence；`canonical_requests` 是 Token/Cost 唯一业务事实；Task、Agent、Session、Day 都是 canonical Request projection；fork history 只能产生 provenance。
+
+### 已实现边界
+
+- Native Request Identity 只接受 `token_count` 自身可证明的 `request_id/model_request_id/response_id`；`call_id` 明确属于工具调用。当前真实 legacy 样本无 native Request ID，因此使用 `turnId + generation + cumulative verified usage + last verified usage` 确定性重建，thread/source/line/timestamp 不参与 identity。
+- schema v14 保留 `model_usage_events` raw evidence，新建 `canonical_requests`、`task_ownership`、`event_ownership`；inherited evidence 通过 `canonical_request_id` 指向唯一业务 Request，raw evidence 不删除。
+- Time 模式严格按 canonical Request 原始 `observedAt` 本地日切片；Task lifecycle 本身不创建日期记录。跨午夜 Task 仅在对应日期真正发生 Request 时出现。
+- `verified_zero` 只在 Task 后首个 cumulative checkpoint 可严格证明零增量时成立；无法证明仍保持 partial/unknown。
+- Timeline/Session hot path 读取 cached SQL projection；dirty source 由 background indexer restore/tail/replay 后生成新 generation。Parser restore 使用 raw session，避免 incremental tail 丢失 inherited provenance。
+- source present 以当前 rollout authoritative replace 派生结果；source missing 保留已验证 historical canonical usage，不因当前文件集合缩小而静默删除。
+- source authority 已进一步收紧为 source-scoped replace：present source 的 stale Task/Event 会先删除再重建；missing source 的 historical evidence 保留。持久化 Agent aggregate 与 Timeline `unattributed` fallback 也只消费 canonical ownership。
+- reconstructed Request identity 在 restore 时保留已持久化 identity；v13→v14 migration/rebuild 会从既有 Request Ledger backfill identity。parser semantics version 与 schema v14 独立，事件分类更新会触发后台 reindex cursor diagnostics，而不是手工清除旧 warning。
+- ownership/canonical request/day/cost/`projection_generation` 在同一 SQLite transaction 中切换；graceful close 取消 queued job、等待 active parse/write 后才允许关闭 SQLite。
+
+### 真实污染 Session reconciliation
+
+对 `019fbb2b-5db4-7410-bc55-41bbf5a6afc1` 的 20 个 rollout 执行只读 `npm run reconcile:phase18`：
+
+- `13,593` 条 `token_count`；`12,783` verified increment、`790` duplicate、`20` unverified。
+- 同一 20-rollout 中共读取 `52,552` 条 JSONL record；原 `1,978 unknownRecords` 已精确审计为 `patch_apply_end=1,104`、`user_message=610`、`thread_rolled_back=183`、`web_search_end=81`。四类均不生成 model Request/Task usage；allowlist 后 `unknownRecords=0`，parser health=`healthy`。
+- Native canonical Request `0`，deterministic reconstructed canonical Request `1,464`。
+- Task：`639 raw = 67 canonical + 572 inherited + 0 unresolved`。
+- Request evidence：`12,783 raw verified = 1,464 canonical + 11,319 inherited + 0 unresolved`。
+- 六字段逐项守恒；total token 为 `1,739,759,444 raw = 175,379,870 canonical business + 1,564,379,574 inherited provenance + 0 unresolved`。
+- 20 个参与 rollout before/after SHA-256 全部一致，`hashChangedFiles=0`。
+- 临时 schema v14 shadow projection：`13,593` raw evidence rows、`1,464` canonical request rows、2 个 session-day rows；最终 warm Timeline P95 `19.76ms`，warm Session-Day P95 `65.43ms`，满足 `<200ms / <300ms` 门槛。完整 shadow persist `1,306.58ms`，位于后台索引路径。
+- 最终 20-file SHA-256 manifest：before=`3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`，after 完全相同。
+
+### 浏览器验收
+
+最终真实 Chrome/CDP 1440×900 与 720×900 均通过：普通 snapshot 更新保持同一 task-table/Agent DOM、`scrollLeft=354`、focus、展开与手工折叠状态；结构变化 `scrollDelta=66px` 时 visual-anchor top delta `0px`，Project 恢复 full scope。最终复验选中的 live session 只有一个 Timeline day，因此 cross-day 子检查自然 skipped；此前多日真实 session 已实际通过 `2026-08-27 → 2026-08-26`。720px 下独立横向 overflow、`scrollLeft=240`、focus 和 Agent 状态保持。
+
 ## 交付核对
 
 - [x] 源码、静态页面和测试在独立项目目录中。
@@ -198,3 +232,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] Request Ledger 已在 reconciliation、增量 tail、重启、schema v9→v10 迁移和真实历史回放门槛通过后成为正式主统计事实源；schema v11 已结束迁移期并退役 Boundary Ledger，旧实现由 `usage-boundary-ledger-v1` 保存。
 - [x] Phase 16 Day-scoped Snapshot 已按 ADR-0018 和 schema v12 交付；Timeline/detail、HTTP/SSE、前端二元选择和 live interaction 验证证据已归档。
 - [x] Phase 17 Subscription Standard-Rate Cost 已按 ADR-0019 完成交付：historical catalog、request-cost engine、long/Fast policy、schema v13、event pricing context、只读 enrichment、request-derived aggregation、API/UI coverage 与真实历史 reconciliation 均已闭环。
+- [x] Phase 18 Canonical Request Ownership / Request-Day / schema v14 已完成：最终 `npm test` 为 109 tests / 108 passed / 0 failed / 1 optional skip；`npm run check`、`git diff --check`、真实 unknown-record audit、canonical reconciliation、read-only hash、性能与桌面/窄屏浏览器门槛均通过。

@@ -291,6 +291,24 @@ npm test
 - 真实 Chrome/CDP：1440px 常规 snapshot 前后 task wrap/Agent details DOM identity、`scrollLeft=357`、focus、展开状态保持；结构变化 visual-anchor top delta `0px`。720px 下横向 overflow 保持，`scrollLeft=240`、focus 与展开状态不变；同 session Time 跨日和 Project full-scope 恢复通过。
 - 最终全量门槛：`npm test` 为 `86 tests / 85 passed / 0 failed / 1 skipped`；唯一 skipped 是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选五任务样本。`npm run check` 与 `git diff --check` 均通过；真实历史只读证据由上面的 425-file reconciliation 独立满足。
 
+### Phase 18：Canonical Request Ownership / Request-Day Projection / schema v14
+
+日期：2026-08-27。按 `DESIGN-CANONICAL-REQUEST-PROJECTION.md`、`TEST-CANONICAL-REQUEST-PROJECTION.md` 与 ADR-0020 完成 legacy fork-history 去重、Request identity、canonical projection、background indexer 与 graceful shutdown。
+
+- Native Request Identity 调查覆盖真实污染 root session `019fbb2b-5db4-7410-bc55-41bbf5a6afc1` 的 20 个 rollout / 13,593 条 `token_count`。`request_id/response_id/model_request_id/trace_id/span_id/generation_id` 在计量事件上均未出现；`token_count` 携带 `call_id` / `turn_id` 均为 0。`call_id` 只出现在 MCP/patch/web-search/function/custom-tool call 链，因此不能作为模型 Request identity。
+- T-ID-001~007：native identity 只从 `token_count` 强字段提取；当前格式缺失时使用 `turnId + generation + cumulative verified usage + last verified usage` 确定性 reconstruction。thread/source/line/envelope timestamp 不参与 identity，同一 fork copy 可稳定映射同一 `reqr_*`。新增回归证明 persisted reconstructed identity 在 restore 时保持 authoritative，且 v13→v14 可仅凭持久化 Request Ledger backfill identity。
+- schema v14 将 `model_usage_events` 固定为 raw evidence，新建 `canonical_requests`、`task_ownership`、`event_ownership`；inherited copy 的 provenance 持久化 `canonical_request_id`。Parser restart/portable relocation 恢复时读取 raw session，不把 UI canonical projection 回灌为 raw evidence。
+- T-OWN/T-PROJ：真实污染 session Task 为 `639 raw = 67 canonical + 572 inherited + 0 unresolved`；verified Request evidence 为 `12,783 raw = 1,464 canonical + 11,319 inherited + 0 unresolved`。业务 Request 不随 20 个 Agent/fork copy 倍增。
+- 六字段 evidence conservation 全部成立。total token：`1,739,759,444 raw observed = 175,379,870 canonical business + 1,564,379,574 inherited provenance + 0 unresolved`；input/cached/cache-write/output/reasoning 字段也逐项满足同一恒等式。
+- Request-Day：Time scope 只消费 canonical Request 原始 `observedAt`；lifecycle-only Task 不进入日期页，fork copy 重写 timestamp 不改变原 Request 日期。`verified_zero` 只有严格 unchanged cumulative post-checkpoint 才产生 `0 Token / $0.00`。
+- Background indexer：首次空 projection 可等待首轮构建；已有 projection 的 Timeline/Session 点击只读 SQLite cache。append 只消费 dirty session；restart/portable source key 不 replay 无变化历史。present source 采用 source-scoped authoritative replace，source missing 保留 historical verified evidence；Agent persisted aggregate 与 Timeline unattributed fallback 也已回归锁定 canonical-only。parser semantics 与 schema version 分离，旧 cursor diagnostics 会通过后台 reindex 重建。T-INDEX-005 证明 close 会取消 queued job 并等待 active index job，生产 `server.close()` 在此后才关闭 SQLite。
+- projection generation：ownership、`canonical_requests`、day/cost rows 与 `projection_generation` 在 SQLite transaction 内切换；Health 暴露 projection version/generation、canonical/inherited/unresolved Request/Task、dirty queue 和 active jobs；`unresolvedRequests > 0` 会降低 health。
+- unknown-record 审计：52,552 条真实 JSONL record 中，原 `1,978 unknownRecords` 精确聚类为 `patch_apply_end=1,104`、`user_message=610`、`thread_rolled_back=183`、`web_search_end=81`。四类均为 non-accounting event；显式 allowlist 后同一只读样本 `unknownRecords=0 / parser health=healthy`，Request/Token reconciliation 数值完全不变。
+- 最终真实 shadow benchmark：临时 SQLite 写入 `13,593` raw evidence rows、`1,464` canonical request rows、2 个 day rows；background persist `1,306.58ms`。20 次 warm 查询 P95：Timeline `19.76ms`（门槛 `<200ms`），Session-Day `65.43ms`（门槛 `<300ms`）。临时 DB `21,057,536` bytes，WAL `21,506,432` bytes。
+- `.codex` read-only gate：20 个参与 rollout 的 combined SHA-256 manifest before=`3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`，after 完全相同；`hashChangedFiles=0`。
+- 最终 Chrome/CDP 复验：1440×900 下 task-table `scrollLeft=354`、focus、Agent 展开/手工折叠与 DOM identity 在 snapshot 后保持，结构插入 `scrollDelta=66px` 时 visual-anchor top delta=`0px`；Project 恢复 full scope。当前复验选中的 live session 只有 `2026-08-27` 一个 Timeline day，因此 cross-day 子检查自然 skipped；前一轮多日真实 session 已实际通过 `2026-08-27 → 2026-08-26`。720×900 下横向 overflow、`scrollLeft=240`、focus 与 Agent 状态保持。
+- 最终全量门槛：`npm test` 为 `109 tests / 108 passed / 0 failed / 1 skipped`；唯一 skipped 为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选五任务 fixture。`npm run check` 与 `git diff --check` 均通过。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。

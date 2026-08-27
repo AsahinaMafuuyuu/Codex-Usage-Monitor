@@ -26,11 +26,13 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 | `src/rollout-parser.js` | 读取完整 JSONL 行、识别任务边界、快照、quota、ordinal 和预览位置 |
 | `src/usage.js` | 规范化六类 token，并以相邻累计快照验证/去重/识别 model-usage event generation |
 | `src/request-ledger.js` | 将 verified model-usage events 按 task 聚合为唯一运行时 `deltaUsage`、质量、coverage 和 request-count 指标 |
+| `src/request-identity.js` | 优先提取原生 Request identity；缺失时仅用稳定 usage evidence 做 deterministic reconstruction，拒绝 source/timestamp/call-id 参与身份 |
+| `src/request-ownership.js` | 结合 Task lineage、temporal evidence 与 Request identity，将 raw evidence 分为 canonical / inherited_copy / unresolved，并生成 reconciliation |
 | `src/snapshot-scope.js` | 统一解析本地自然日边界，并从 Request Ledger 物化 full/day Task Slice、Agent lineage、Session summary 与 Calendar Slice |
 | `src/pricing.js` | 用历史订阅标准价逐 verified Request Ledger usage unit 计算 request cost，并合并 Task/Agent/Session/Day coverage |
 | `src/source-locator.js` | 在当前 Codex home 的绝对 runtime path 与可持久化 `.codex` 相对 source key 之间做安全转换和旧路径恢复 |
-| `src/database.js` | 管理 schema v13、WAL、幂等 upsert、工程元数据、portable source key、Request Ledger、event pricing context、可恢复 ingest cursor 和 event-observed session-day 物化索引 |
-| `src/monitor.js` | 管理当前选择、增量 tail、1 秒轮询、10 秒全局 reconciliation、Timeline dirty-session 同步和事件发布 |
+| `src/database.js` | 管理 schema v14、raw Request evidence、canonical request/ownership provenance、versioned request-day/cost projection、WAL 与可恢复 cursor |
+| `src/monitor.js` | 管理 cached selection、低并发 background indexer、dirty-session queue、增量 tail、SSE 和 graceful shutdown |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
 | `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、按 session/agent/task 稳定 key 增量 reconcile 的任务明细、额度与健康状态 |
 
@@ -38,17 +40,17 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 
 启动时先读取 `session_index.jsonl` 和以 `PRAGMA query_only=ON` 打开的最新 `state_*.sqlite`，再扫描 `sessions` 与 `archived_sessions` 下 rollout 的首条 `session_meta`。父子关系优先采用 `thread_spawn_edges`；缺失时由 rollout 的 `parent_thread_id` 和 `source.subagent` 回退推断。根线程的 `cwd` 作为 `projectPath`，子智能体目录不得覆盖它。
 
-会话列表只保存索引级派生元数据，并按完整 `projectPath` 分组；浏览器将 Windows `\\?\` 扩展路径前缀视为同一目录的语法别名，缺少根目录时保持“未归类”。用户选择根会话后，才完整解析该会话及递归子智能体文件；切换选择会替换实时监听范围，数据库中已经导入的任务不会被删除。
+会话列表只保存索引级派生元数据，并按完整 `projectPath` 分组；浏览器将 Windows `\\?\` 扩展路径前缀视为同一目录的语法别名，缺少根目录时保持“未归类”。Phase 18 起选择根会话只读取 SQLite cached canonical projection；文件是否需要解析由启动扫描、watcher/stat reconciliation 标记到 background indexer。已有 projection 的 UI 点击不承担 restore/tail/parse；dirty session 完成新 generation 后通过 SSE 更新。
 
 ## 日期用量账页
 
-`GET /api/timeline` 是独立于当前选择会话的全局只读聚合。schema v12 的唯一 token 事实源仍是 verified Request Ledger，但日期归属改为 event-observed day：已归属 event 按 `observedAt` 所在监控器本地自然日进入 Task Day Slice；跨午夜 task 可在多个日期出现。每个日期 slice 独立重算 token、verified model request count、task quality 和 USD，最终返回 `month -> day -> session`。Request Ledger 中 unresolved 的 task 只报告已验证下限，未归属 event 只保留诊断，不进入主统计。
+`GET /api/timeline` 是独立于当前选择会话的全局只读聚合。schema v14 的唯一业务计量事实是 `canonical_requests`：每个 canonical Request 按其原始 `observedAt` 所在本地自然日进入 request-day projection，再按 Task/Agent/Session 分组。Task lifecycle 不再单独创建日期 slice；一个跨午夜 Task 只有在两天都确实发生 canonical Request 时才同时出现在两天。fork copy 的 envelope timestamp 即使被改写，也不能改变 canonical Request 日期。
 
-schema v7 把查询热路径改为持久化派生索引；schema v8 保留这套索引，同时把文件身份从绝对路径改为 portable source key。schema v12 的 `tasks` 仍只保存任务身份、时间、模型与来源定位元数据；`session_day_usage` 以 `(day, root_session_id)` 保存由 `tasks + model_usage_events` 可重算的轻量物化合计，并新增 `(root_session_id, observed_at, classification)` Request Ledger 范围索引。写入时 `observed_at` 统一规范为 UTC ISO；v11→v12 会同样规范化历史值后内部重建 calendar。启动时 `UsageMonitor` 仍按 rollout 元数据与 cursor 标记 dirty root session；Request-ready v11 session 的语义迁移不回放 rollout。无 dirty session 时 Timeline 只查询 session-day 数据。
+schema v7 把查询热路径改为持久化派生索引；schema v8 把文件身份改为 portable source key；schema v9–v13 建立 Request Ledger、day scope 与 request-level pricing。schema v14 在此基础上明确区分四层：`model_usage_events` 保存 raw observed evidence；`task_ownership/event_ownership` 保存 canonical/inherited/unresolved provenance；`canonical_requests` 保存唯一业务 Request；`session_day_usage` 保存 request-day/cost projection。ownership、canonical request、day/cost 与 `projection_generation` 在同一 SQLite transaction 内切换，读路径只能看到旧 generation 或新 generation，不会看到混合 Token/Cost/Task count。
 
-schema v9 建立 `model_usage_events` 并完成双账本 backfill；schema v10 按 [ADR-0015](decisions/0015-request-ledger-primary-aggregation.md) 将 verified Request Ledger 提升为页面与 Timeline 主聚合来源。schema v11 按 [ADR-0016](decisions/0016-retire-boundary-ledger.md) 删除旧 Boundary parser 计算、task delta/quality 存储、API 审计字段与 reconciliation CLI，只保留 Request Ledger。旧 v8 session 仍必须安全 replay 建立完整 Request Ledger；已有 v9/v10 ledger 升到 v11 只迁移 schema 并重建 calendar/agent aggregate，不因退役旧方案重新读取 rollout。
+schema v9 建立 `model_usage_events` 并完成双账本 backfill；schema v10 按 [ADR-0015](decisions/0015-request-ledger-primary-aggregation.md) 将 verified Request Ledger 提升为页面与 Timeline 主聚合来源。schema v11 按 [ADR-0016](decisions/0016-retire-boundary-ledger.md) 删除旧 Boundary parser 计算、task delta/quality 存储、API 审计字段与 reconciliation CLI，只保留 Request Ledger。旧 v8 session 仍必须安全 replay 建立完整 Request Ledger；已有 v9/v10 ledger 升到 v11 只迁移 schema 并重建 calendar/agent aggregate，不因退役旧方案重新读取 rollout。Phase 18 后 parser 语义版本与 SQLite schema version 独立：当前 schema 仍为 v14，但 parser semantics 提升后会把旧 session 标记 dirty 并后台重索引 cursor diagnostics，而不是通过 schema 迁移或手工清零 `unknown_records` 伪造健康状态。
 
-schema v12 按 [ADR-0018](decisions/0018-day-scoped-request-ledger-snapshot.md) 将 Timeline 和时间模式详情统一到 Request Ledger event `observedAt` 日期。`src/snapshot-scope.js` 是日期边界、Task Day Slice、Agent Day Slice 与 Session day summary 的唯一语义实现；Timeline 的持久化重建和 `/api/sessions/:id?day=` 详情都复用它，避免 `startedAt` 与 `observedAt` 两套规则漂移。
+schema v12 按 [ADR-0018](decisions/0018-day-scoped-request-ledger-snapshot.md) 首次将日期切到 event `observedAt`；schema v14 再由 [ADR-0020](decisions/0020-canonical-request-ownership-and-projections.md) 收紧为 **canonical Request observed-day**。`src/snapshot-scope.js` 负责本地日/DST 和 scoped grouping，但它消费的是 ownership resolver 输出，不再允许 lifecycle-only Task 进入 Time ledger。
 
 `derived_state` 保存建立日历索引时的本地时区；运行环境时区发生变化时，只从已持久化 task + Request Ledger 重新物化日期，而不回放 JSONL。本地日边界由连续两个日历午夜构造，DST 日可以是 23/25 小时，不能固定按 24 小时加法。日期分组仍不能与 `.codex/sessions/YYYY/MM/DD` 文件夹或服务端订阅账单直接等同。
 
@@ -58,7 +60,7 @@ schema v12 按 [ADR-0018](decisions/0018-day-scoped-request-ledger-snapshot.md) 
 
 parser 把每条 `token_count` 建模为独立审计事件。`last_token_usage` 只作为“本次新增 usage”的候选值，必须由相邻 `total_token_usage` 逐字段验证：累计不变先判 `duplicate`；累计增量与 `last` 一致才是 `verified_increment`；累计回退只有在新累计快照本身与 `last` 一致、可证明 generation 起点时才是 `generation_start`；缺前序累计快照/关键字段保留 `unverified`，无法解释的矛盾保留 `anomaly`。Task / Agent / Session / Timeline 只聚合 verified event；duplicate、unverified、anomaly 和未归属 event 都保持独立 coverage。历史 schema 缺少 cache-write 字段时，仅该字段保持不可验证，不把整条记录强制判错。
 
-Request Ledger 的 durable identity 是 portable `(source_key, line_number)`，另保存 thread/turn、event ordinal、时间、generation、classification/quality/reason 与六类经验证 usage。它表示“经累计快照证明的模型 usage 单元”，**不保证与底层 HTTP 请求一一对应**。历史 Phase 13 双账本 reconciliation 已证明迁移一致性；schema v11 不再维护第二套运行时账本。旧实现被固定在 annotated tag `usage-boundary-ledger-v1`。
+Phase 18 把“raw evidence locator”和“业务 Request identity”正式分离。`(source_key, line_number)` 仍是 raw evidence 的 durable locator，但不再被称为 Request identity。Request identity 优先读取 `token_count` 自身的 `request_id/model_request_id/response_id`；当前真实 legacy 样本均不存在，因此 fallback 使用 `turnId + generation + cumulative verified usage + last verified usage` 做确定性 hash。thread/source/line/envelope timestamp 均不参与 identity，`call_id` 只属于工具调用。相同 identity 的 fork copy 只形成 provenance，并通过 `canonical_request_id` 指向唯一 canonical Request。已持久化 reconstructed identity 在 restore 时是 authoritative derived evidence，不能因 source 缺失、部分 replay 或排序变化被再次生成不同 ID；v13→v14 projection rebuild 会把从既有 Request Ledger 重建出的 identity 回填到 raw event 派生列。
 
 缓存命中率只做展示层确定性派生：`cachedInputTokens / inputTokens`。会话使用 request-derived `summary.totalUsage`，智能体使用 request-derived `ownUsage`，任务使用 request-derived `deltaUsage`；输入非正、字段缺失或缓存大于输入时不输出百分比。
 
@@ -93,7 +95,7 @@ Historical Rate Resolver 使用 `model + observedAt` 选择唯一有效期记录
 
 ## 持久化边界
 
-SQLite schema v13 包含 `sessions`、`agents`、`tasks`、`model_usage_events`、`quota_snapshots`、`ingest_cursors`、`session_day_usage` 和 `derived_state`。`tasks` 只保存任务定位与展示元数据；`model_usage_events` 是唯一 token 审计事实，并额外保存最小 `model/service_tier/pricing_context_quality` 供费用重算；最终 USD 不持久化。`agents` 保存 full-session request-derived aggregate，`session_day_usage` 保存可由 Request Ledger 重建的 day aggregate。day snapshot 不读取持久化 Agent usage，而从目标日 Task Slice 重新沿 `parentThreadId` lineage 计算 own/subtree usage/request/cost。
+SQLite schema v14 包含 `sessions`、`agents`、`tasks`、`model_usage_events`、`canonical_requests`、`task_ownership`、`event_ownership`、`quota_snapshots`、`ingest_cursors`、`session_day_usage` 和 `derived_state`。`model_usage_events` 是完整 raw evidence archive；`canonical_requests` 是 Token/Cost 主业务事实；ownership 表保留 copy/unresolved provenance；`session_day_usage` 持久化 canonical request-day Token/Cost/coverage。USD 仍是可重建 derived projection，不是 billing truth。
 
 旧 schema 的 `rollout_path` / `source_path` 只作为迁移兼容列存在：能够确定映射到 `.codex` 内 rollout 的路径会提取相对 key，随后绝对 locator 置空；无法安全映射的 cursor 不被猜测，而是在后续需要时安全 replay。quota JSON 中的绝对 `sourcePath` 同样被移除。`project_path` 不做这种转换，因为它描述的是会话发生时的工程 `cwd`，不是源文件身份。
 
@@ -105,11 +107,11 @@ SQLite schema v13 包含 `sessions`、`agents`、`tasks`、`model_usage_events`�
 
 ## 实时更新
 
-`fs.watch` 提供快速通知，1 秒 stat 轮询补偿 Windows 丢失通知，10 秒 reconciliation 发现新增或移动到归档目录的文件。tail cursor 停在最后一个完整换行处并持久化；重启时只有通过大小/mtime 校验的 append-only 文件才从该 offset 继续，不可验证文件会安全全量回放。未完成尾行保留到下一次读取。选择会话的变化通过 `snapshot` SSE 推送，账号额度和健康状态使用独立事件。账号 current quota 在内存中按 primary/secondary 各自的 `windowMinutes + resetsAt` 做窗口级 reconciliation：同一窗口使用观测到的最大 `usedPercent` 抵抗并发旧响应回退，不同 reset 则优先更新后的窗口；SQLite `quota_snapshots` 继续保存单条规范化观测，不把派生 current state 伪装成原始快照。手动额度刷新会重新发现 rollout，并按实时文件 mtime 重排候选后读取最近来源；它仍严格位于只读 `.codex` 边界内，不向模型或远端额度服务发起请求。
+`fs.watch` 提供快速通知，1 秒 stat 轮询补偿 Windows 丢失通知，10 秒 reconciliation 发现新增或移动到归档目录的文件；这些入口只把 root session 标记 dirty。background indexer 顺序执行 restore/tail/replay → identity/ownership → canonical request → day/cost projection → generation commit。source present 时只对当前仍存在 source 做 authoritative replace：该 source 旧 Task/Event 会被删除后以最新 parse 结果重建；source missing 时保留已验证 historical raw/canonical evidence，不因当前文件集合缩小而静默删除。Agent 持久化 aggregate、Timeline `unattributed` fallback、full/day snapshot 都只消费 canonical ownership，raw fork evidence 只服务审计与 projection rebuild。graceful shutdown 停止接收新 job、取消 queued dirty session、等待 active parse/write，再关闭 watcher 与 SQLite。
 
 SSE listener 保存建立连接时的 scope：无 `day` 时每次重建 full-session snapshot，带 `day` 时每次只重建该日 snapshot，禁止把一个预构造 full snapshot 广播给 day listener。浏览器端仍按 [ADR-0017](decisions/0017-live-interaction-stable-rendering.md) 将“传输快照”与“DOM 重建”解耦。Agent 以 `threadId`、Task 以 `turnId` 做 keyed reconciliation；time scope 收到更新后会重新读取 SQL Timeline 并用既有导航 interaction capture/restore 保留 month/day 展开、滚动与焦点，同时右侧任务表横向滚动、Agent 展开和 visible anchor 保持稳定。
 
-Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 record/event 和缺少必需任务 ID 的记录分别计入 `unknownRecords`、`skippedRecords` 并触发 warning。这样既容忍新字段，又不会把格式变化静默伪装为健康。
+Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 record/event 和缺少必需任务 ID 的记录分别计入 `unknownRecords`、`skippedRecords` 并触发 warning。真实 Phase 18 审计已确认 `patch_apply_end(1104)`、`user_message(610)`、`thread_rolled_back(183)`、`web_search_end(81)` 共 1,978 条均为 non-accounting record：它们不生成 model Request，也不直接改变 Task usage。`thread_rolled_back` 只改变会话上下文，不反向撤销已经发生的模型 usage。显式 allowlist 后同一 20-rollout 样本 `unknownRecords=0`，而 canonical Request/Token 数值保持完全一致。
 
 ## 界面信息架构
 
