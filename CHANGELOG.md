@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [1.0.0] - 2026-08-27
+
+这是首个正式稳定版本。`v1.0.0` 冻结当前经真实 rollout reconciliation、桌面/窄屏浏览器回归和全量自动化验证后的 Canonical Request 统计架构，作为后续功能迭代的稳定基线。
+
 ### Added
 
 - Phase 18 Canonical Request Ownership：native-first Request identity、deterministic reconstruction、fork provenance、`canonical_requests` shadow projection、`verified_zero`、background indexer health 与真实 legacy-session reconciliation CLI。
@@ -68,4 +72,5 @@
 - 项目级多智能体协作规范、交付文档和架构决策记录。
 
 [Unreleased]: docs/ROADMAP.md
+[1.0.0]: docs/DELIVERY.md
 [0.1.0]: docs/DELIVERY.md
