@@ -13,8 +13,8 @@ import {
   scanLatestQuota,
   SessionRolloutParser,
 } from "./rollout-parser.js";
-import { materializeRequestLedgerTasks } from "./request-ledger.js";
-import { addUsage, reconcileRateLimitSnapshots, zeroUsage } from "./usage.js";
+import { materializeScopedSnapshot, resolveLocalDayRange } from "./snapshot-scope.js";
+import { reconcileRateLimitSnapshots } from "./usage.js";
 
 export class UsageMonitor extends EventEmitter {
   constructor({ repository, database }) {
@@ -200,9 +200,9 @@ export class UsageMonitor extends EventEmitter {
     return { replayedFiles, tailedFiles };
   }
 
-  async selectSession(sessionId) {
+  async selectSession(sessionId, scope = { type: "session" }) {
     if (this.selectionPromise) await this.selectionPromise;
-    if (this.selectedSessionId === sessionId && this.parser) return this.snapshot(sessionId);
+    if (this.selectedSessionId === sessionId && this.parser) return this.snapshot(sessionId, scope);
     const session = this.repository.getSession(sessionId) ?? this.database.getSession(sessionId)?.session;
     if (!session) return null;
     const files = this.repository.getFilesForRoot(sessionId);
@@ -210,7 +210,7 @@ export class UsageMonitor extends EventEmitter {
       this.selectedSessionId = sessionId;
       this.parser = null;
       this.selectedEntries = [];
-      return this.snapshot(sessionId);
+      return this.snapshot(sessionId, scope);
     }
 
     this.selectionPromise = (async () => {
@@ -251,13 +251,20 @@ export class UsageMonitor extends EventEmitter {
     } finally {
       this.selectionPromise = null;
     }
-    const snapshot = this.snapshot(sessionId);
-    this.emit("update", { sessionId, snapshot });
+    const snapshot = this.snapshot(sessionId, scope);
+    this.emit("update", { sessionId });
     return snapshot;
   }
 
-  snapshot(sessionId = this.selectedSessionId) {
-    const stored = sessionId ? this.database.getSession(sessionId) : null;
+  snapshot(sessionId = this.selectedSessionId, scope = { type: "session" }) {
+    const normalizedScope = scope?.type === "day"
+      ? { type: "day", day: scope.day, range: scope.range ?? resolveLocalDayRange(scope.day) }
+      : { type: "session" };
+    const stored = sessionId
+      ? normalizedScope.type === "day"
+        ? this.database.getSessionDay(sessionId, normalizedScope.range)
+        : this.database.getSession(sessionId)
+      : null;
     if (!stored) return null;
     stored.session = {
       ...stored.session,
@@ -267,80 +274,9 @@ export class UsageMonitor extends EventEmitter {
       agentCount: stored.session.agentCount,
       taskCount: stored.session.taskCount,
     };
-    const tasks = materializeRequestLedgerTasks(stored.tasks, stored.modelUsageEvents).map((task) => ({
-      ...task,
-      costEstimate: estimateTaskCost(task.model, task.deltaUsage),
-    }));
-    const agentsById = new Map(stored.agents.map((agent) => [agent.threadId, { ...agent, tasks: [] }]));
-    for (const task of tasks) agentsById.get(task.threadId)?.tasks.push(task);
-    const agents = [...agentsById.values()];
-    for (const agent of agents) {
-      agent.ownCostEstimate = summarizeTaskCosts(agent.tasks);
-      agent.subtreeCostEstimate = { ...agent.ownCostEstimate };
-      agent.ownModelRequestCount = agent.tasks.reduce(
-        (sum, task) => sum + (task.requestCount ?? 0),
-        0,
-      );
-      agent.subtreeModelRequestCount = agent.ownModelRequestCount;
-      agent.ownTokensPerModelRequest =
-        agent.ownModelRequestCount > 0
-          ? agent.ownUsage.totalTokens / agent.ownModelRequestCount
-          : null;
-      agent.subtreeTokensPerModelRequest = agent.ownTokensPerModelRequest;
-    }
-    for (const agent of [...agents].sort((left, right) => right.depth - left.depth)) {
-      const parent = agentsById.get(agent.parentThreadId);
-      if (parent) {
-        parent.subtreeCostEstimate = combineCostSummaries([
-          parent.subtreeCostEstimate,
-          agent.subtreeCostEstimate,
-        ]);
-        parent.subtreeModelRequestCount += agent.subtreeModelRequestCount;
-      }
-    }
-    for (const agent of agents) {
-      agent.subtreeTokensPerModelRequest =
-        agent.subtreeModelRequestCount > 0
-          ? agent.subtreeUsage.totalTokens / agent.subtreeModelRequestCount
-          : null;
-    }
-    const rootAgent = agents.find((agent) => agent.isRoot);
-    let subagentUsage = zeroUsage();
-    for (const agent of agents) {
-      if (!agent.isRoot) subagentUsage = addUsage(subagentUsage, agent.ownUsage);
-    }
-    const qualityCounts = {};
-    for (const task of tasks) qualityCounts[task.quality] = (qualityCounts[task.quality] ?? 0) + 1;
-    const totalUsage = rootAgent?.subtreeUsage ?? subagentUsage;
-    const modelRequestCount = tasks.reduce((sum, task) => sum + (task.requestCount ?? 0), 0);
-    const subagentModelRequestCount = tasks.reduce((sum, task) => {
-      const agent = agentsById.get(task.threadId);
-      return sum + (agent && !agent.isRoot ? (task.requestCount ?? 0) : 0);
-    }, 0);
+    const materialized = materializeScopedSnapshot(stored, normalizedScope);
     return {
-      session: stored.session,
-      agents,
-      summary: {
-        agentCount: agents.filter((agent) => !agent.isRoot).length,
-        taskCount: tasks.length,
-        activeTasks: tasks.filter((task) => task.status === "in_progress").length,
-        totalUsage,
-        subagentUsage,
-        modelRequestCount,
-        tokensPerModelRequest:
-          modelRequestCount > 0 ? totalUsage.totalTokens / modelRequestCount : null,
-        subagentModelRequestCount,
-        subagentTokensPerModelRequest:
-          subagentModelRequestCount > 0
-            ? subagentUsage.totalTokens / subagentModelRequestCount
-            : null,
-        qualityCounts,
-        totalCostEstimate: summarizeTaskCosts(tasks),
-        subagentCostEstimate: summarizeTaskCosts(tasks.filter((task) => {
-          const agent = agentsById.get(task.threadId);
-          return agent && !agent.isRoot;
-        })),
-      },
+      ...materialized,
       pricing: pricingCatalogSummary(),
       quota: this.quota(),
       health: this.health(),
@@ -472,8 +408,7 @@ export class UsageMonitor extends EventEmitter {
     this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
     this.saveLatestParsedQuota(parsed.quotas);
     this.lastUpdateAt = new Date().toISOString();
-    const snapshot = this.snapshot(this.selectedSessionId);
-    this.emit("update", { sessionId: this.selectedSessionId, snapshot });
+    this.emit("update", { sessionId: this.selectedSessionId });
   }
 
   async reconcile() {
@@ -590,7 +525,7 @@ export class UsageMonitor extends EventEmitter {
 function attachTimelineCosts(timeline, tasks) {
   const taskCostsBySessionDay = new Map();
   for (const task of tasks ?? []) {
-    const day = localDayKey(task.startedAt);
+    const day = task.day;
     if (!day) continue;
     const key = `${task.rootSessionId}\u0000${day}`;
     const pricedTask = {
@@ -616,13 +551,4 @@ function attachTimelineCosts(timeline, tasks) {
     );
   }
   return timeline;
-}
-
-function localDayKey(value) {
-  const date = new Date(value);
-  if (Number.isNaN(date.getTime())) return null;
-  const year = date.getFullYear();
-  const month = String(date.getMonth() + 1).padStart(2, "0");
-  const day = String(date.getDate()).padStart(2, "0");
-  return `${year}-${month}-${day}`;
 }

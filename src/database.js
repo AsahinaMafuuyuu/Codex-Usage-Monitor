@@ -2,10 +2,11 @@ import { mkdirSync } from "node:fs";
 import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { materializeRequestLedgerTasks } from "./request-ledger.js";
+import { materializeCalendarSlices } from "./snapshot-scope.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
-import { addUsage, sumTaskUsage, USAGE_FIELDS, zeroUsage } from "./usage.js";
+import { addUsage, normalizeTimestamp, sumTaskUsage, USAGE_FIELDS, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 11;
+const SCHEMA_VERSION = 12;
 const REQUEST_LEDGER_SCHEMA_VERSION = 9;
 const QUALITY_KEYS = ["complete", "provisional", "partial", "unknown"];
 
@@ -176,6 +177,8 @@ export class MonitorDatabase {
         ON session_day_usage(day DESC, total_tokens DESC, root_session_id);
       CREATE INDEX IF NOT EXISTS idx_model_usage_events_root
         ON model_usage_events(root_session_id, thread_id, turn_id, observed_at);
+      CREATE INDEX IF NOT EXISTS idx_model_usage_events_root_observed
+        ON model_usage_events(root_session_id, observed_at, classification);
       CREATE INDEX IF NOT EXISTS idx_model_usage_events_observed
         ON model_usage_events(observed_at, classification);
       CREATE INDEX IF NOT EXISTS idx_quota_observed ON quota_snapshots(observed_at DESC);
@@ -217,6 +220,7 @@ export class MonitorDatabase {
 
     if (previousVersion < 8) this.migratePortableSourceLocators();
     if (previousVersion < 11) this.retireBoundaryLedgerStorage();
+    if (previousVersion < 12) this.normalizeStoredUsageEventTimestamps();
 
     const timezone = localTimezone();
     const storedTimezone = this.db.prepare("SELECT value FROM derived_state WHERE key='calendar_timezone'").get()?.value;
@@ -698,7 +702,7 @@ export class MonitorDatabase {
           event.threadId ?? null,
           event.turnId ?? null,
           event.eventOrdinal ?? null,
-          event.observedAt ?? null,
+          normalizeTimestamp(event.observedAt) ?? null,
           event.generation ?? 0,
           event.classification,
           event.quality,
@@ -764,6 +768,48 @@ export class MonitorDatabase {
       SELECT * FROM tasks WHERE root_session_id=? ORDER BY thread_id, sequence
     `).all(id).map(mapTask);
     const modelUsageEvents = this.getModelUsageEvents(id);
+    return { session: mapSession(sessionRow), agents, tasks, modelUsageEvents };
+  }
+
+  getSessionDay(id, range) {
+    const sessionRow = this.db.prepare("SELECT * FROM sessions WHERE id=?").get(id);
+    if (!sessionRow) return null;
+    const startAt = new Date(range.startMs).toISOString();
+    const endAt = new Date(range.endMs).toISOString();
+    const agents = this.db.prepare(`
+      SELECT * FROM agents WHERE root_session_id=? ORDER BY depth, first_seen_at, thread_id
+    `).all(id).map(mapAgent);
+    const tasks = this.db.prepare(`
+      SELECT t.*
+      FROM tasks t
+      WHERE t.root_session_id=?
+        AND (
+          (
+            t.started_at IS NOT NULL
+            AND julianday(t.started_at) < julianday(?)
+            AND (t.completed_at IS NULL OR julianday(t.completed_at) > julianday(?))
+          )
+          OR EXISTS (
+            SELECT 1
+            FROM model_usage_events m
+            WHERE m.root_session_id=t.root_session_id
+              AND m.thread_id=t.thread_id
+              AND m.turn_id=t.turn_id
+              AND m.observed_at>=?
+              AND m.observed_at<?
+          )
+        )
+      ORDER BY t.thread_id, t.sequence
+    `).all(id, endAt, startAt, startAt, endAt).map(mapTask);
+    const modelUsageEvents = this.db.prepare(`
+      SELECT source_key, line_number, root_session_id, thread_id, turn_id,
+             event_ordinal, observed_at, generation, classification, quality, reason,
+             input_tokens, cached_input_tokens, cache_write_input_tokens,
+             output_tokens, reasoning_output_tokens, total_tokens
+      FROM model_usage_events
+      WHERE root_session_id=? AND observed_at>=? AND observed_at<?
+      ORDER BY observed_at, source_key, line_number
+    `).all(id, startAt, endAt).map(mapModelUsageEvent);
     return { session: mapSession(sessionRow), agents, tasks, modelUsageEvents };
   }
 
@@ -846,7 +892,18 @@ export class MonitorDatabase {
       ORDER BY day DESC, total_tokens DESC, root_session_id
     `).all();
     const unattributedTasks = this.db.prepare(`
-      SELECT * FROM tasks WHERE started_at IS NULL ORDER BY thread_id, sequence
+      SELECT t.*
+      FROM tasks t
+      WHERE t.started_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM model_usage_events attributed
+          WHERE attributed.root_session_id=t.root_session_id
+            AND attributed.thread_id=t.thread_id
+            AND attributed.turn_id=t.turn_id
+            AND attributed.observed_at IS NOT NULL
+        )
+      ORDER BY t.thread_id, t.sequence
     `).all().map(mapTask);
     const unattributedEvents = this.db.prepare(`
       SELECT m.source_key, m.line_number, m.root_session_id, m.thread_id, m.turn_id,
@@ -854,8 +911,19 @@ export class MonitorDatabase {
              m.input_tokens, m.cached_input_tokens, m.cache_write_input_tokens,
              m.output_tokens, m.reasoning_output_tokens, m.total_tokens
       FROM model_usage_events m
-      INNER JOIN tasks t ON t.thread_id=m.thread_id AND t.turn_id=m.turn_id
+      INNER JOIN tasks t
+        ON t.root_session_id=m.root_session_id
+       AND t.thread_id=m.thread_id
+       AND t.turn_id=m.turn_id
       WHERE t.started_at IS NULL
+        AND NOT EXISTS (
+          SELECT 1
+          FROM model_usage_events attributed
+          WHERE attributed.root_session_id=t.root_session_id
+            AND attributed.thread_id=t.thread_id
+            AND attributed.turn_id=t.turn_id
+            AND attributed.observed_at IS NOT NULL
+        )
       ORDER BY m.source_key, m.line_number
     `).all().map(mapModelUsageEvent);
     const unattributedRows = materializeRequestLedgerTasks(
@@ -944,66 +1012,32 @@ export class MonitorDatabase {
   }
 
   getTimelineCostTasks() {
-    const rows = this.db.prepare(`
-      SELECT t.root_session_id, t.thread_id, t.turn_id, t.started_at, t.model,
-             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start') THEN 1 ELSE 0 END)
-               AS verified_count,
-             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                       AND m.input_tokens IS NULL THEN 1 ELSE 0 END) AS missing_input_tokens,
-             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                       AND m.cached_input_tokens IS NULL THEN 1 ELSE 0 END) AS missing_cached_input_tokens,
-             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                       AND m.cache_write_input_tokens IS NULL THEN 1 ELSE 0 END) AS missing_cache_write_input_tokens,
-             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                       AND m.output_tokens IS NULL THEN 1 ELSE 0 END) AS missing_output_tokens,
-             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                       AND m.reasoning_output_tokens IS NULL THEN 1 ELSE 0 END) AS missing_reasoning_output_tokens,
-             SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                       AND m.total_tokens IS NULL THEN 1 ELSE 0 END) AS missing_total_tokens,
-             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                               THEN m.input_tokens ELSE 0 END), 0) AS input_tokens,
-             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                               THEN m.cached_input_tokens ELSE 0 END), 0) AS cached_input_tokens,
-             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                               THEN m.cache_write_input_tokens ELSE 0 END), 0) AS cache_write_input_tokens,
-             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                               THEN m.output_tokens ELSE 0 END), 0) AS output_tokens,
-             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                               THEN m.reasoning_output_tokens ELSE 0 END), 0) AS reasoning_output_tokens,
-             COALESCE(SUM(CASE WHEN m.classification IN ('verified_increment', 'generation_start')
-                               THEN m.total_tokens ELSE 0 END), 0) AS total_tokens
-      FROM tasks t
-      LEFT JOIN model_usage_events m
-        ON m.root_session_id=t.root_session_id
-       AND m.thread_id=t.thread_id
-       AND m.turn_id=t.turn_id
-      WHERE t.started_at IS NOT NULL
-      GROUP BY t.root_session_id, t.thread_id, t.turn_id, t.started_at, t.model
-      ORDER BY t.root_session_id, t.started_at, t.thread_id, t.turn_id
-    `).all();
-    return rows.map((row) => {
-      const verifiedCount = Number(row.verified_count ?? 0);
-      const usage = verifiedCount > 0 ? {
-        inputTokens: row.missing_input_tokens ? null : Number(row.input_tokens ?? 0),
-        cachedInputTokens: row.missing_cached_input_tokens ? null : Number(row.cached_input_tokens ?? 0),
-        cacheWriteInputTokens: row.missing_cache_write_input_tokens
-          ? null
-          : Number(row.cache_write_input_tokens ?? 0),
-        outputTokens: row.missing_output_tokens ? null : Number(row.output_tokens ?? 0),
-        reasoningOutputTokens: row.missing_reasoning_output_tokens
-          ? null
-          : Number(row.reasoning_output_tokens ?? 0),
-        totalTokens: row.missing_total_tokens ? null : Number(row.total_tokens ?? 0),
-      } : null;
-      return {
-        rootSessionId: row.root_session_id,
-        threadId: row.thread_id,
-        turnId: row.turn_id,
-        startedAt: row.started_at,
-        model: row.model ?? null,
-        deltaUsage: usage,
-      };
-    });
+    const tasks = this.db.prepare(`
+      SELECT * FROM tasks ORDER BY root_session_id, thread_id, sequence
+    `).all().map(mapTask);
+    const events = this.db.prepare(`
+      SELECT source_key, line_number, root_session_id, thread_id, turn_id,
+             event_ordinal, observed_at, generation, classification, quality, reason,
+             input_tokens, cached_input_tokens, cache_write_input_tokens,
+             output_tokens, reasoning_output_tokens, total_tokens
+      FROM model_usage_events
+      ORDER BY root_session_id, observed_at, source_key, line_number
+    `).all().map(mapModelUsageEvent);
+    const tasksByRoot = groupByRootSession(tasks);
+    const eventsByRoot = groupByRootSession(events);
+    const roots = new Set([...tasksByRoot.keys(), ...eventsByRoot.keys()]);
+    const result = [];
+    for (const rootSessionId of roots) {
+      for (const slice of materializeCalendarSlices({
+        tasks: tasksByRoot.get(rootSessionId) ?? [],
+        modelUsageEvents: eventsByRoot.get(rootSessionId) ?? [],
+      })) {
+        for (const task of slice.tasks) {
+          result.push({ ...task, rootSessionId, day: slice.day });
+        }
+      }
+    }
+    return result;
   }
 
   getHealthStats() {
@@ -1053,27 +1087,38 @@ export class MonitorDatabase {
     for (const row of roots) this.rebuildCalendarForSession(row.id);
   }
 
+  normalizeStoredUsageEventTimestamps() {
+    const rows = this.db.prepare(`
+      SELECT source_key, line_number, observed_at
+      FROM model_usage_events
+      WHERE observed_at IS NOT NULL
+    `).all();
+    const update = this.db.prepare(`
+      UPDATE model_usage_events SET observed_at=? WHERE source_key=? AND line_number=?
+    `);
+    this.transaction(() => {
+      for (const row of rows) {
+        const normalized = normalizeTimestamp(row.observed_at);
+        if (normalized && normalized !== row.observed_at) {
+          update.run(normalized, row.source_key, row.line_number);
+        }
+      }
+    });
+  }
+
   rebuildCalendarForSession(rootId) {
     this.db.prepare("DELETE FROM session_day_usage WHERE root_session_id=?").run(rootId);
     const storedTasks = this.db.prepare(`
-      SELECT * FROM tasks WHERE root_session_id=? AND started_at IS NOT NULL
+      SELECT * FROM tasks WHERE root_session_id=?
       ORDER BY thread_id, sequence
     `).all(rootId).map(mapTask);
-    const tasks = materializeRequestLedgerTasks(storedTasks, this.getModelUsageEvents(rootId));
-    const days = new Map();
-    for (const task of tasks) {
-      const dayKey = localDayKey(task.startedAt);
-      if (!dayKey) continue;
-      const aggregate = days.get(dayKey) ?? createCalendarAggregate();
-      aggregate.taskCount += 1;
-      aggregate.modelRequestCount += task.requestCount ?? 0;
-      if (task.status === "in_progress") aggregate.activeTaskCount += 1;
-      const quality = QUALITY_KEYS.includes(task.quality) ? task.quality : "unknown";
-      aggregate.qualityCounts[quality] += 1;
-      const usage = task.deltaUsage ?? null;
-      if (usage) aggregate.usage = addUsage(aggregate.usage, usage);
-      days.set(dayKey, aggregate);
-    }
+    const stored = {
+      session: this.db.prepare("SELECT * FROM sessions WHERE id=?").get(rootId),
+      agents: this.db.prepare("SELECT * FROM agents WHERE root_session_id=?").all(rootId).map(mapAgent),
+      tasks: storedTasks,
+      modelUsageEvents: this.getModelUsageEvents(rootId),
+    };
+    const slices = materializeCalendarSlices(stored);
     const insert = this.db.prepare(`
       INSERT INTO session_day_usage (
         day, root_session_id,
@@ -1084,9 +1129,9 @@ export class MonitorDatabase {
         complete_count, provisional_count, partial_count, unknown_count
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
-    for (const [day, aggregate] of days) {
+    for (const aggregate of slices) {
       insert.run(
-        day,
+        aggregate.day,
         rootId,
         aggregate.usage.inputTokens ?? 0,
         aggregate.usage.cachedInputTokens ?? 0,
@@ -1310,6 +1355,18 @@ function createCalendarDay(key) {
 
 function emptyQualityCounts() {
   return Object.fromEntries(QUALITY_KEYS.map((key) => [key, 0]));
+}
+
+function groupByRootSession(rows) {
+  const groups = new Map();
+  for (const row of rows) {
+    const rootSessionId = row.rootSessionId;
+    if (!rootSessionId) continue;
+    const group = groups.get(rootSessionId) ?? [];
+    group.push(row);
+    groups.set(rootSessionId, group);
+  }
+  return groups;
 }
 
 function addQualityCounts(target, source) {

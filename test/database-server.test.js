@@ -22,6 +22,8 @@ const GRANDCHILD_TURN = "11111111-1111-4111-8111-111111111111";
 const OTHER_ROOT = "22222222-2222-4222-8222-222222222222";
 const OTHER_TURN = "33333333-3333-4333-8333-333333333333";
 
+process.env.TZ = "America/Los_Angeles";
+
 test("calendar aggregate includes unselected sessions and local-day quality", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-calendar-"));
   const codexHome = join(directory, ".codex");
@@ -306,7 +308,7 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(calendar.months[0].days[0].sessions[0].tokensPerModelRequest, 42);
   assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
   assert.equal(reopened.getHealthStats().calendarRows, 1);
-  assert.equal(reopened.getHealthStats().schemaVersion, 11);
+  assert.equal(reopened.getHealthStats().schemaVersion, 12);
   assert.equal(reopened.getHealthStats().modelUsageEventRows, 1);
   assert.equal(reopened.getHealthStats().cacheSize, -2000);
   assert.equal(reopened.getHealthStats().mmapSize, 0);
@@ -356,6 +358,111 @@ test("request ledger exclusively drives snapshot, agent, cost, and calendar usag
   assert.equal(calendar.usage.totalTokens, 42);
   assert.equal(calendar.modelRequestCount, 1);
   assert.equal(calendar.tokensPerModelRequest, 42);
+});
+
+test("T-DAY-040/042/043 schema v12 persists observedAt day slices and restart parity", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-v12-"));
+  const path = join(directory, "usage.sqlite");
+  let database = new MonitorDatabase(path);
+  t.after(async () => {
+    database?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  database.replaceSession(crossMidnightSnapshot());
+  const first = database.getTimeline();
+  assertDayTimeline(first, "2026-08-26", 100, 1, 1);
+  assertDayTimeline(first, "2026-08-27", 200, 2, 2);
+  const indexColumns = database.db.prepare("PRAGMA index_info(idx_model_usage_events_root_observed)")
+    .all().map((row) => row.name);
+  assert.deepEqual(indexColumns, ["root_session_id", "observed_at", "classification"]);
+  database.close();
+
+  database = new MonitorDatabase(path);
+  const restarted = database.getTimeline();
+  assertDayTimeline(restarted, "2026-08-26", 100, 1, 1);
+  assertDayTimeline(restarted, "2026-08-27", 200, 2, 2);
+  assert.equal(database.getHealthStats().schemaVersion, 12);
+});
+
+test("T-DAY-022 event-backed task without lifecycle timestamps is day-attributed only once", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-no-lifecycle-"));
+  const path = join(directory, "usage.sqlite");
+  const database = new MonitorDatabase(path);
+  t.after(async () => {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const stored = crossMidnightSnapshot();
+  const turnId = "44444444-4444-4444-8444-444444444444";
+  stored.tasks.push({
+    rootSessionId: ROOT,
+    threadId: CHILD,
+    turnId,
+    sequence: 3,
+    status: "completed",
+    startedAt: null,
+    completedAt: null,
+    model: "gpt-5.6-terra",
+    effort: "high",
+    sourceKey: "sessions/2026/08/26/rollout-day-scope.jsonl",
+  });
+  stored.modelUsageEvents.push(directUsageEvent({
+    lineNumber: 30,
+    threadId: CHILD,
+    turnId,
+    totalTokens: 25,
+    observedAt: "2026-08-27T00:12:00-07:00",
+    classification: "generation_start",
+  }));
+  database.replaceSession(stored);
+
+  const timeline = database.getTimeline();
+  assertDayTimeline(timeline, "2026-08-27", 225, 3, 3);
+  assert.equal(timeline.usage.totalTokens, 325);
+  assert.equal(timeline.unattributed.taskCount, 0);
+  assert.equal(timeline.unattributed.usage.totalTokens, 0);
+});
+
+test("T-DAY-041 v11 to v12 rebuilds calendar from persisted ledger without rollout replay", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v11-day-migration-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `rollout-v11-${ROOT}.jsonl`),
+    makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"),
+  );
+  let booted = await bootMonitor(codexHome, databasePath);
+  t.after(async () => {
+    booted?.monitor.close();
+    booted?.database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  await booted.monitor.timeline();
+  booted.monitor.close();
+  booted.database.close();
+
+  const legacy = new DatabaseSync(databasePath);
+  legacy.exec(`
+    UPDATE session_day_usage
+    SET total_tokens=0, input_tokens=0, output_tokens=0, model_request_count=0
+    WHERE root_session_id='${ROOT}';
+    UPDATE sessions SET parser_version=11 WHERE id='${ROOT}';
+    PRAGMA user_version=11;
+  `);
+  legacy.close();
+
+  booted = await bootMonitor(codexHome, databasePath);
+  assert.equal(booted.database.db.prepare("PRAGMA user_version").get().user_version, 12);
+  assert.equal(booted.monitor.health().timeline.dirtySessions, 0);
+  const timeline = await booted.monitor.timeline();
+  assert.equal(timeline.usage.totalTokens, 100);
+  assert.equal(timeline.modelRequestCount, 1);
+  assert.equal(booted.monitor.health().timeline.replayedFiles, 0);
+  assert.equal(booted.monitor.health().timeline.tailedFiles, 0);
 });
 
 test("calendar-only persistence does not archive historical quota snapshots", async (t) => {
@@ -455,7 +562,7 @@ test("manual quota refresh re-stats existing rollout files and reads the newest 
   assert.equal(refreshed.secondary.usedPercent, 31);
 });
 
-test("schema v1 ingest cursors migrate to portable resumable schema v11", async (t) => {
+test("schema v1 ingest cursors migrate to portable resumable schema v12", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-migration-"));
   const path = join(directory, "usage.sqlite");
   let migrated = null;
@@ -493,7 +600,7 @@ test("schema v1 ingest cursors migrate to portable resumable schema v11", async 
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
   assert.equal(columns.some((column) => column.name === "source_key"), true);
   assert.equal(columns.some((column) => column.name === "path"), false);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 11);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 12);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].sourceKey, "sessions/2026/08/24/rollout-fixture.jsonl");
@@ -542,7 +649,7 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 11);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 12);
 });
 
 test("schema v8 sessions replay once to backfill the request ledger", async (t) => {
@@ -586,7 +693,7 @@ test("schema v8 sessions replay once to backfill the request ledger", async (t) 
   assert.equal(database.getModelUsageEvents(ROOT)[0].usage.totalTokens, 100);
 });
 
-test("schema v10 retires boundary storage in v11 without replaying rollout", async (t) => {
+test("schema v10 retires boundary storage and reaches v12 without replaying rollout", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-v10-retire-boundary-"));
   const codexHome = join(directory, ".codex");
   const sessions = join(codexHome, "sessions", "2026", "08", "24");
@@ -634,7 +741,7 @@ test("schema v10 retires boundary storage in v11 without replaying rollout", asy
 
   ({ monitor, database } = await bootMonitor(codexHome, databasePath));
   assert.equal(database.getSessionIndexState(ROOT).requestLedgerReady, true);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 11);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 12);
   const taskColumns = database.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(taskColumns.includes("quality"), false);
   assert.equal(taskColumns.includes("baseline_usage"), false);
@@ -963,6 +1070,142 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assertSecurityHeaders(missingStatic.headers);
 });
 
+test("T-DAY-050..054 API keeps full and day snapshots distinct and aligned with Timeline", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-api-"));
+  const codexHome = join(directory, ".codex");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(codexHome, { recursive: true });
+  const seed = new MonitorDatabase(databasePath);
+  seed.replaceSession(crossMidnightSnapshot());
+  seed.close();
+  const app = await startApplication({
+    codexHome,
+    databasePath,
+    port: 49_170,
+    openBrowser: false,
+  });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { base, cookie } = await authenticateApplication(app);
+
+  const fullResponse = await fetch(`${base}/api/sessions/${ROOT}`, { headers: { Cookie: cookie } });
+  assert.equal(fullResponse.status, 200);
+  const full = await fullResponse.json();
+  assert.deepEqual(full.scope, { type: "session" });
+  assert.equal(full.summary.totalUsage.totalTokens, 300);
+
+  const day1Response = await fetch(`${base}/api/sessions/${ROOT}?day=2026-08-26`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(day1Response.status, 200);
+  const day1 = await day1Response.json();
+  assert.equal(day1.scope.type, "day");
+  assert.equal(day1.scope.day, "2026-08-26");
+  assert.equal(day1.scope.timezone, "America/Los_Angeles");
+  assert.equal(day1.summary.totalUsage.totalTokens, 100);
+  assert.equal(day1.summary.taskCount, 1);
+
+  const day2Response = await fetch(`${base}/api/sessions/${ROOT}?day=2026-08-27`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(day2Response.status, 200);
+  const day2 = await day2Response.json();
+  assert.equal(day2.summary.totalUsage.totalTokens, 200);
+  assert.equal(day2.summary.taskCount, 2);
+  assert.equal(day2.summary.agentCount, 1);
+
+  const invalidResponse = await fetch(`${base}/api/sessions/${ROOT}?day=2026-02-31`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(invalidResponse.status, 400);
+  const invalidPayload = await invalidResponse.json();
+  assert.match(invalidPayload.error, /YYYY-MM-DD/u);
+
+  const timelineResponse = await fetch(`${base}/api/timeline`, { headers: { Cookie: cookie } });
+  assert.equal(timelineResponse.status, 200);
+  const timeline = await timelineResponse.json();
+  const timelineDay1 = findTimelineSession(timeline, ROOT, "2026-08-26");
+  const timelineDay2 = findTimelineSession(timeline, ROOT, "2026-08-27");
+  assert.equal(timelineDay1.usage.totalTokens, day1.summary.totalUsage.totalTokens);
+  assert.equal(timelineDay2.usage.totalTokens, day2.summary.totalUsage.totalTokens);
+  assert.equal(timelineDay1.modelRequestCount, day1.summary.modelRequestCount);
+  assert.equal(timelineDay2.modelRequestCount, day2.summary.modelRequestCount);
+  assert.equal(timelineDay1.costEstimate.amountUsd, day1.summary.totalCostEstimate.amountUsd);
+  assert.equal(timelineDay2.costEstimate.amountUsd, day2.summary.totalCostEstimate.amountUsd);
+});
+
+test("T-DAY-060..062 scoped SSE rematerializes the listener scope after updates", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-sse-"));
+  const codexHome = join(directory, ".codex");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(codexHome, { recursive: true });
+  const seed = new MonitorDatabase(databasePath);
+  seed.replaceSession(crossMidnightSnapshot());
+  seed.close();
+  const app = await startApplication({
+    codexHome,
+    databasePath,
+    port: 49_180,
+    openBrowser: false,
+  });
+  const controller = new AbortController();
+  t.after(async () => {
+    controller.abort();
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { base, cookie } = await authenticateApplication(app);
+  const response = await fetch(`${base}/api/sessions/${ROOT}/events?day=2026-08-26`, {
+    headers: { Cookie: cookie },
+    signal: controller.signal,
+  });
+  assert.equal(response.status, 200);
+  const reader = response.body.getReader();
+  const stream = { reader, buffer: "", decoder: new TextDecoder() };
+  const initial = await readNextSnapshotEvent(stream);
+  assert.equal(initial.scope.day, "2026-08-26");
+  assert.equal(initial.summary.totalUsage.totalTokens, 100);
+
+  const day2Only = crossMidnightSnapshot();
+  day2Only.modelUsageEvents.push(directUsageEvent({
+    lineNumber: 20,
+    threadId: CHILD,
+    turnId: OTHER_TURN,
+    totalTokens: 25,
+    observedAt: "2026-08-27T00:09:30-07:00",
+  }));
+  app.monitor.database.replaceSession(day2Only);
+  app.monitor.emit("update", { sessionId: ROOT });
+  const afterDay2 = await readNextSnapshotEvent(stream);
+  assert.equal(afterDay2.summary.totalUsage.totalTokens, 100);
+
+  const day1AndDay2 = crossMidnightSnapshot();
+  day1AndDay2.modelUsageEvents.push(
+    directUsageEvent({
+      lineNumber: 21,
+      threadId: ROOT,
+      turnId: TURN,
+      totalTokens: 10,
+      observedAt: "2026-08-26T23:59:30-07:00",
+    }),
+    directUsageEvent({
+      lineNumber: 22,
+      threadId: CHILD,
+      turnId: OTHER_TURN,
+      totalTokens: 25,
+      observedAt: "2026-08-27T00:09:30-07:00",
+    }),
+  );
+  app.monitor.database.replaceSession(day1AndDay2);
+  app.monitor.emit("update", { sessionId: ROOT });
+  const afterDay1 = await readNextSnapshotEvent(stream);
+  assert.equal(afterDay1.summary.totalUsage.totalTokens, 110);
+  assert.equal(app.monitor.snapshot(ROOT).summary.totalUsage.totalTokens, 335);
+  await reader.cancel();
+});
+
 async function bootMonitor(codexHome, databasePath) {
   const database = new MonitorDatabase(databasePath);
   const repository = new CodexRepository(codexHome, database);
@@ -1230,6 +1473,177 @@ function assertSecurityHeaders(headers) {
   assert.equal(headers.get("x-content-type-options"), "nosniff");
   assert.equal(headers.get("referrer-policy"), "no-referrer");
   assert.match(headers.get("content-security-policy"), /default-src 'self'/u);
+}
+
+async function authenticateApplication(app) {
+  const base = `http://127.0.0.1:${app.port}`;
+  const exchange = await fetch(app.accessUrl, { redirect: "manual" });
+  assert.equal(exchange.status, 302);
+  const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
+  assert.ok(cookie);
+  return { base, cookie };
+}
+
+async function readNextSnapshotEvent(stream) {
+  while (true) {
+    const boundary = stream.buffer.indexOf("\n\n");
+    if (boundary !== -1) {
+      const block = stream.buffer.slice(0, boundary);
+      stream.buffer = stream.buffer.slice(boundary + 2);
+      const event = block.match(/^event:\s*(.+)$/mu)?.[1];
+      const data = block.match(/^data:\s*(.+)$/mu)?.[1];
+      if (event === "snapshot" && data) return JSON.parse(data);
+      continue;
+    }
+    const { value, done } = await stream.reader.read();
+    if (done) throw new Error("SSE stream ended before next snapshot");
+    stream.buffer += stream.decoder.decode(value, { stream: true });
+  }
+}
+
+function findTimelineSession(timeline, sessionId, dayKey) {
+  for (const month of timeline.months ?? []) {
+    const day = month.days.find((candidate) => candidate.key === dayKey);
+    const session = day?.sessions.find((candidate) => candidate.id === sessionId);
+    if (session) return session;
+  }
+  return null;
+}
+
+function assertDayTimeline(timeline, dayKey, totalTokens, taskCount, requestCount) {
+  const session = findTimelineSession(timeline, ROOT, dayKey);
+  assert.ok(session, `expected ${ROOT} in ${dayKey}`);
+  assert.equal(session.usage.totalTokens, totalTokens);
+  assert.equal(session.taskCount, taskCount);
+  assert.equal(session.modelRequestCount, requestCount);
+}
+
+function crossMidnightSnapshot() {
+  const sourceKey = "sessions/2026/08/26/rollout-day-scope.jsonl";
+  const rootTask = {
+    rootSessionId: ROOT,
+    threadId: ROOT,
+    turnId: TURN,
+    sequence: 1,
+    status: "completed",
+    startedAt: "2026-08-26T23:50:00-07:00",
+    completedAt: "2026-08-27T00:20:00-07:00",
+    durationMs: 30 * 60_000,
+    model: "gpt-5.6-terra",
+    effort: "xhigh",
+    sourceKey,
+  };
+  const childTask = {
+    rootSessionId: ROOT,
+    threadId: CHILD,
+    turnId: OTHER_TURN,
+    sequence: 2,
+    status: "completed",
+    startedAt: "2026-08-27T00:05:00-07:00",
+    completedAt: "2026-08-27T00:10:00-07:00",
+    durationMs: 5 * 60_000,
+    model: "gpt-5.6-terra",
+    effort: "high",
+    sourceKey,
+  };
+  return {
+    session: {
+      id: ROOT,
+      title: "Cross midnight fixture",
+      projectPath: "C:\\workspace\\day-scope",
+      createdAt: "2026-08-26T23:45:00-07:00",
+      updatedAt: "2026-08-27T00:20:00-07:00",
+      cliVersion: "fixture",
+    },
+    agents: [
+      {
+        rootSessionId: ROOT,
+        threadId: ROOT,
+        parentThreadId: null,
+        depth: 0,
+        isRoot: true,
+        ownUsage: zeroUsage(),
+        subtreeUsage: zeroUsage(),
+        taskCount: 1,
+      },
+      {
+        rootSessionId: ROOT,
+        threadId: CHILD,
+        parentThreadId: ROOT,
+        depth: 1,
+        isRoot: false,
+        ownUsage: zeroUsage(),
+        subtreeUsage: zeroUsage(),
+        taskCount: 1,
+      },
+      {
+        rootSessionId: ROOT,
+        threadId: SIBLING,
+        parentThreadId: ROOT,
+        depth: 1,
+        isRoot: false,
+        ownUsage: zeroUsage(),
+        subtreeUsage: zeroUsage(),
+        taskCount: 0,
+      },
+    ],
+    tasks: [rootTask, childTask],
+    modelUsageEvents: [
+      directUsageEvent({ lineNumber: 1, threadId: ROOT, turnId: TURN, totalTokens: 100, observedAt: "2026-08-26T23:58:00-07:00", classification: "generation_start" }),
+      directUsageEvent({ lineNumber: 2, threadId: ROOT, turnId: TURN, totalTokens: 50, observedAt: "2026-08-27T00:02:00-07:00" }),
+      directUsageEvent({ lineNumber: 3, threadId: CHILD, turnId: OTHER_TURN, totalTokens: 150, observedAt: "2026-08-27T00:06:00-07:00", classification: "generation_start" }),
+      {
+        ...directUsageEvent({ lineNumber: 4, threadId: CHILD, turnId: OTHER_TURN, totalTokens: 0, observedAt: "2026-08-27T00:07:00-07:00", classification: "duplicate" }),
+        usage: zeroUsage(),
+      },
+      {
+        ...directUsageEvent({ lineNumber: 5, threadId: CHILD, turnId: OTHER_TURN, totalTokens: 0, observedAt: "2026-08-27T00:08:00-07:00", classification: "anomaly" }),
+        usage: null,
+      },
+      directUsageEvent({
+        lineNumber: 6,
+        threadId: CHILD,
+        turnId: GRANDCHILD_TURN,
+        totalTokens: 999,
+        observedAt: "2026-08-27T00:09:00-07:00",
+      }),
+    ],
+    cursors: [],
+    quotas: [],
+    health: { status: "healthy" },
+  };
+}
+
+function directUsageEvent({
+  lineNumber,
+  threadId,
+  turnId,
+  totalTokens,
+  observedAt,
+  classification = "verified_increment",
+}) {
+  const usage = {
+    inputTokens: totalTokens,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 0,
+    reasoningOutputTokens: 0,
+    totalTokens,
+  };
+  return {
+    rootSessionId: ROOT,
+    sourceKey: "sessions/2026/08/26/rollout-day-scope.jsonl",
+    threadId,
+    turnId,
+    lineNumber,
+    eventOrdinal: lineNumber,
+    observedAt,
+    generation: 1,
+    classification,
+    quality: classification === "anomaly" ? "anomaly" : "verified",
+    reason: "fixture",
+    usage,
+  };
 }
 
 function snapshot() {
