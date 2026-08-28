@@ -986,7 +986,8 @@ summary:focus-visible,
   background: var(--paper);
   border-top: 1px solid var(--line);
   container-type: inline-size;
-  overscroll-behavior: contain;
+  overscroll-behavior-x: contain;
+  overscroll-behavior-y: auto;
 }
 .task-table-wrap[data-scope-kind="day"] { max-height: 482px; }
 .task-table {
@@ -1370,6 +1371,7 @@ summary:focus-visible,
 .request-pagination {
   margin-top: 10px;
   border: 1px solid var(--line);
+  animation: pagination-enter 170ms cubic-bezier(.22, .8, .28, 1) both;
 }
 .page-controls,
 .page-numbers {
@@ -1396,13 +1398,34 @@ summary:focus-visible,
   font-size: var(--text-utility);
   line-height: 1;
   text-align: center;
-  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, transform 110ms ease;
+  transition: color 140ms ease, background 140ms ease, border-color 140ms ease, box-shadow 140ms ease, transform 110ms ease;
 }
 .page-edge {
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  width: 32px;
   min-width: 32px;
-  padding: 0 7px;
-  font-size: 19px;
-  font-weight: 650;
+  padding: 0;
+  line-height: 0;
+}
+.page-nav-icon {
+  display: block;
+  width: 17px;
+  height: 17px;
+  flex: 0 0 17px;
+  stroke-width: 2;
+}
+.page-ellipsis {
+  display: inline-grid;
+  place-items: center;
+  width: 28px;
+  height: 28px;
+  color: var(--quiet);
+  font-family: var(--body);
+  font-size: var(--text-label);
+  line-height: 1;
+  user-select: none;
 }
 .page-edge:hover:not(:disabled),
 .page-number:hover,
@@ -1477,6 +1500,10 @@ summary:focus-visible,
 }
 .page-jump-submit { min-width: 42px; color: var(--clay-dark); font-weight: 700; }
 
+.request-audit-scroll {
+  animation: request-page-enter 190ms cubic-bezier(.22, .8, .28, 1) both;
+}
+
 .empty-agent { padding: 24px; color: var(--quiet); text-align: center; }
 
 .empty-state,
@@ -1541,6 +1568,14 @@ summary:focus-visible,
 
 @keyframes scan { from { transform: translateX(-100%); } to { transform: translateX(390%); } }
 @keyframes pulse { 50% { opacity: .35; transform: scale(.82); } }
+@keyframes request-page-enter {
+  from { opacity: .72; transform: translateY(3px); }
+  to { opacity: 1; transform: translateY(0); }
+}
+@keyframes pagination-enter {
+  from { opacity: .72; transform: translateY(2px); }
+  to { opacity: 1; transform: translateY(0); }
+}
 @keyframes workspace-in {
   from { opacity: 0; transform: translateY(7px); }
   to { opacity: 1; transform: translateY(0); }

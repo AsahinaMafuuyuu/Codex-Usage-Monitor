@@ -336,9 +336,9 @@ npm test
 
 日期：2026-08-28。按 ADR-0024 将 Task 与 Request 的浏览策略拆开：Task 取消页码并改为约 5 行高的纵向滚动视口；Request 默认 10 条、可切 5/10 条，少于 10 条不显示分页条。
 
-- Chrome/CDP synthetic 23 Task 验证全部 Task row 保留，视口 `clientHeight=513 / scrollHeight=2287`，`scrollTop 80→240` 可滚动且不存在 Task pager。
+- Chrome/CDP synthetic 23 Task 验证全部 Task row 保留，视口 `clientHeight=513 / scrollHeight=2287`，`scrollTop 80→240` 可滚动且不存在 Task pager。真实 wheel 注入进一步证明 edge chaining：Task 已到底时 wrap 保持 `1774/1774`，外层 workspace `931→1251`；Task 无纵向 overflow 时向上滚轮由 workspace `639→319` 接管，不再吞掉滚动操作。
 - 普通 snapshot 前后 `.task-table-wrap` DOM identity、focus、`scrollLeft=473`、`scrollTop=120` 全部保持；可见“任务记录”标题横向位移 `0px`。
-- 真实 24 Request drill-down 默认 10 行，切 5 条后为 5 行与 `第 1 / 5 页 · 共 24 Requests`；分页条居中，jump input 为 text（无 number spinner），5/10 两档切换和父/子 scrollbar 隔离通过。
+- 真实 24 Request drill-down 默认 10 行，切 5 条后为 5 行与 `第 1 / 5 页 · 共 24 Requests`；分页条居中，jump input 为 text（无 number spinner），5/10 两档切换和父/子 scrollbar 隔离通过。前后导航使用 Lucide chevron，浏览器测得图标相对按钮中心 `x=0 / y=0`；pagination animation=`pagination-enter`。展开第二个有 Request 的 Task 后 `openCount=1`，旧 Task `aria-expanded=false`、新 Task=`true`，single-open 语义通过。
 - 最终 `npm test` 为 `125 tests / 124 passed / 0 failed / 1 skipped`；`npm run check`、`git diff --check` 与 720px 浏览器回归通过。
 
 ### Phase 21：Explicit-Fast Service Tier Policy

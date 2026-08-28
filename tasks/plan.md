@@ -1317,14 +1317,18 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 
 - [x] 移除 Agent Task 10 条分页和对应本地 page state；全部 Task 保持稳定 key reconcile。
 - [x] `.task-table-wrap` 增加约 5 行高度的纵向 overflow，并保持横向滚动、sticky 表头和 SSE DOM identity。
+- [x] Task wheel 增加 edge chaining：内部可滚时优先滚 Task；无纵向 overflow 或到达滚动方向边界时把 wheel delta 继续交给外层 workspace。
 - [x] Request 默认 10 条/页，增加 5/10 页大小切换；少于 10 条时隐藏分页条。
-- [x] Request 分页条整体居中；导航符号增大；跳页改为无 spinner 的单页码文本输入，控件文字双向居中。
-- [x] 更新静态 UI contract 与 Chrome/CDP：验证 23 Task 全量 DOM + 纵向滚动、Request 5/10 切换、分页居中、独立横向滚动和 720px 状态保持。
+- [x] Request 分页条整体居中；页码窗口限制为 5 个语义槽位；只保留前/后翻页，导航使用 Lucide chevron 严格居中；跳页改为无 spinner 的单页码文本输入。
+- [x] Request drawer 改为 single-open：展开最新 Task 时其余已展开 drawer 原位动画收起并保留已加载缓存。
+- [x] 页码导航与翻页内容增加轻量 opacity/translate 过渡，并服从 reduced-motion。
+- [x] 更新静态 UI contract 与 Chrome/CDP：验证 23 Task 全量 DOM + 纵向滚动/edge chaining、Request single-open、5/10 切换、导航 icon 居中、分页动画、独立横向滚动和 720px 状态保持。
 
 ### Checkpoint
 
 - [x] Task 保持连续业务序列，不再用页码切断；超过约 5 行后只在 Agent 自身任务视口滚动。
+- [x] Task 视口不会吞掉边界滚轮：到底/到顶或没有滚动条时继续滚动整体 workspace。
 - [x] Request 仍保持 bounded fetch/DOM；默认 10 条，必要时可切 5 条精查。
-- [x] 小结果集不展示无意义分页导航，所有分页控件沿用当前主题并保持居中。
+- [x] 小结果集不展示无意义分页导航；长分页使用边界页 + 当前页的紧凑窗口，并且同时只展示一个 Request drawer。
 
-**Delivered evidence (2026-08-28):** `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check` 与 `git diff --check` 通过。Chrome/CDP 实测 Task synthetic 23 rows 全部保留，任务视口 `clientHeight=513 / scrollHeight=2287`、纵向 `scrollTop 80→240`；普通 SSE snapshot 保持同一 `.task-table-wrap` 且 `scrollLeft=473 / scrollTop=120` 不变。真实 24-Request Task 默认 10 行，切换 5 条后变为 `第 1 / 5 页`，恢复 10 条正常；分页 `justify-content=center`，jump input 为 `type=text`，父/子横向滚动继续独立，720px 回归通过。
+**Delivered evidence (2026-08-28):** `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check` 与 `git diff --check` 通过。Chrome/CDP 实测 Task synthetic 23 rows 全部保留，任务视口 `clientHeight=513 / scrollHeight=2287`、纵向 `scrollTop 80→240`；普通 SSE snapshot 保持同一 `.task-table-wrap` 且 `scrollLeft=473 / scrollTop=120` 不变。Task 到底时真实 wheel 使 workspace `931→1251` 而 wrap 保持 `1774/1774`；无纵向 overflow 时 workspace `639→319` 接管。真实 24-Request Task 默认 10 行，切换 5 条后变为 `第 1 / 5 页`；分页 `justify-content=center`，jump input=`type=text`，Lucide nav icon center delta=`0/0`，pagination animation=`pagination-enter`。展开第二个有 Request 的 Task 后 `openCount=1`，旧 Task `aria-expanded=false`、新 Task=`true`；父/子横向滚动和 720px 回归继续通过。

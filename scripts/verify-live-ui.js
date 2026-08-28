@@ -220,6 +220,10 @@ async function verifyRequestDrilldown(cdp) {
     const outer = detail?.closest('.agent-card')?.querySelector(':scope > .task-table-wrap');
     const heading = detail?.querySelector('.request-audit-heading');
     const requestScroll = detail?.querySelector('.request-audit-scroll');
+    const pageEdge = detail?.querySelector('.page-edge:not(:disabled)') ?? detail?.querySelector('.page-edge');
+    const pageIcon = pageEdge?.querySelector('.page-nav-icon');
+    const edgeRect = pageEdge?.getBoundingClientRect();
+    const iconRect = pageIcon?.getBoundingClientRect();
     if (outer) outer.scrollLeft = 0;
     if (requestScroll) requestScroll.scrollLeft = 0;
     return {
@@ -234,6 +238,11 @@ async function verifyRequestDrilldown(cdp) {
       pageSizeOptions: [...(detail?.querySelectorAll('[data-request-page-size]') ?? [])].map((button) => button.textContent.trim()),
       jumpInputType: detail?.querySelector('[data-request-page-jump]')?.getAttribute('type') ?? null,
       paginationAlignment: detail?.querySelector('.request-pagination') ? getComputedStyle(detail.querySelector('.request-pagination')).justifyContent : null,
+      navIconCenterDelta: edgeRect && iconRect ? {
+        x: (iconRect.left + iconRect.width / 2) - (edgeRect.left + edgeRect.width / 2),
+        y: (iconRect.top + iconRect.height / 2) - (edgeRect.top + edgeRect.height / 2),
+      } : null,
+      paginationAnimation: detail?.querySelector('.request-pagination') ? getComputedStyle(detail.querySelector('.request-pagination')).animationName : '',
       independentOverflow: Boolean(requestScroll && requestScroll.scrollWidth > requestScroll.clientWidth),
       headingLeft: heading?.getBoundingClientRect().left ?? null,
     };
@@ -252,6 +261,9 @@ async function verifyRequestDrilldown(cdp) {
   assert(before.pageSizeOptions.join(',') === '5,10', `Request pagination page-size options are wrong: ${before.pageSizeOptions.join(',')}`);
   assert(before.jumpInputType === 'text', `Request jump still exposes numeric spinner semantics: ${before.jumpInputType}`);
   assert(before.paginationAlignment === 'center', `Request pagination is not centered: ${before.paginationAlignment}`);
+  assert(before.navIconCenterDelta && Math.abs(before.navIconCenterDelta.x) < 1 && Math.abs(before.navIconCenterDelta.y) < 1,
+    `Request navigation icon is not centered: ${JSON.stringify(before.navIconCenterDelta)}`);
+  assert(before.paginationAnimation && before.paginationAnimation !== 'none', "Request pagination has no transition animation");
   assert(before.independentOverflow, "Request table does not own an independent horizontal scrollbar");
 
   await cdp.evaluate(`window.__codexLiveUiQa.requestDetail?.querySelector('[data-request-page-size="5"]')?.click()`);
@@ -341,14 +353,49 @@ async function verifyRequestDrilldown(cdp) {
     openState: window.__codexLiveUiQa.requestDetail?.dataset.open ?? null,
   }))()`);
   assert(reopened.sameDetail && reopened.openState === "true", "Request drawer did not reopen in place after collapse");
-  return { target, before, fivePerPage, scrollIsolation, after, collapsedDetail, reopened };
+
+  const exclusiveOpen = await cdp.evaluate(`(() => {
+    const targetRow = [...document.querySelectorAll('.task-row')]
+      .find((row) => row.dataset.threadId === ${JSON.stringify(target.threadId)} && row.dataset.taskId === ${JSON.stringify(target.turnId)});
+    const alternate = [...document.querySelectorAll('.task-request-toggle')].find((button) => {
+      const row = button.closest('.task-row');
+      return row && row !== targetRow && Number.parseInt(button.querySelector('.request-count-pill')?.textContent ?? '0', 10) > 0;
+    });
+    if (!alternate) return { skipped: true, reason: 'no second task with Requests available' };
+    const alternateRow = alternate.closest('.task-row');
+    const alternateThreadId = alternateRow?.dataset.threadId ?? null;
+    const alternateTurnId = alternateRow?.dataset.taskId ?? null;
+    alternate.click();
+    const openDrawers = [...document.querySelectorAll('.task-request-row[data-open="true"]')];
+    const targetExpanded = targetRow?.querySelector('.task-request-toggle')?.getAttribute('aria-expanded') === 'true';
+    const freshAlternate = [...document.querySelectorAll('.task-row')]
+      .find((row) => row.dataset.threadId === alternateThreadId && row.dataset.taskId === alternateTurnId)
+      ?.querySelector('.task-request-toggle');
+    const alternateExpanded = freshAlternate?.getAttribute('aria-expanded') === 'true';
+    const result = {
+      skipped: false,
+      openCount: openDrawers.length,
+      targetExpanded,
+      alternateExpanded,
+      alternateTurnId,
+    };
+    targetRow?.querySelector('.task-request-toggle')?.click();
+    return result;
+  })()`);
+  if (!exclusiveOpen.skipped) {
+    assert(exclusiveOpen.openCount === 1, `opening a second Request drawer left ${exclusiveOpen.openCount} drawers open`);
+    assert(!exclusiveOpen.targetExpanded && exclusiveOpen.alternateExpanded, "latest Request drawer did not exclusively own the expanded state");
+  }
+  return { target, before, fivePerPage, scrollIsolation, after, collapsedDetail, reopened, exclusiveOpen };
 }
 
 async function verifyTaskScroll(cdp) {
-  const result = await cdp.evaluate(`(() => {
+  const setup = await cdp.evaluate(`(() => {
     const original = JSON.parse(window.__codexLiveUiQa.snapshotData);
     const agent = original.agents.find((item) => item.tasks?.length);
     if (!agent) return { skipped: true, reason: 'no task agent available' };
+    window.__codexLiveUiQa.taskScrollOriginal = original;
+    window.__codexLiveUiQa.taskScrollAgentId = agent.threadId;
     const seed = structuredClone(agent.tasks[0]);
     agent.tasks = Array.from({ length: 23 }, (_, index) => ({
       ...structuredClone(seed),
@@ -364,22 +411,107 @@ async function verifyTaskScroll(cdp) {
     const before = wrap?.scrollTop ?? 0;
     if (wrap) wrap.scrollTop = Math.min(240, wrap.scrollHeight - wrap.clientHeight);
     const after = wrap?.scrollTop ?? 0;
+    const workspace = document.querySelector('.workspace');
+    const spacer = document.createElement('div');
+    spacer.dataset.taskScrollQaSpacer = 'true';
+    spacer.style.height = '1200px';
+    branch?.after(spacer);
+    if (wrap) {
+      wrap.scrollTop = wrap.scrollHeight - wrap.clientHeight;
+      wrap.scrollIntoView({ block: 'center' });
+    }
+    const rect = wrap?.getBoundingClientRect();
     const metrics = wrap ? {
       clientHeight: wrap.clientHeight,
       scrollHeight: wrap.scrollHeight,
       overflowY: getComputedStyle(wrap).overflowY,
+      overscrollBehaviorY: getComputedStyle(wrap).overscrollBehaviorY,
     } : null;
     const hasPager = Boolean(branch?.querySelector('.task-pagination'));
-    window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', { data: window.__codexLiveUiQa.snapshotData }));
-    return { skipped: false, rows, before, after, metrics, hasPager };
+    return {
+      skipped: false,
+      rows,
+      before,
+      after,
+      metrics,
+      hasPager,
+      x: rect ? rect.left + Math.min(120, rect.width / 2) : 0,
+      y: rect ? Math.min(window.innerHeight - 20, rect.top + rect.height / 2) : 0,
+      workspaceBefore: workspace?.scrollTop ?? 0,
+      wrapBottom: wrap ? wrap.scrollTop : 0,
+    };
   })()`);
-  assert(!result.skipped, result.reason || "task scroll QA was skipped");
-  assert(result.rows === 23, `Task scroll rendered ${result.rows} rows instead of all 23`);
-  assert(!result.hasPager, "Task list still renders pagination instead of vertical scrolling");
-  assert(result.metrics?.scrollHeight > result.metrics?.clientHeight, "Task list does not overflow vertically after five-row viewport");
-  assert(result.metrics?.clientHeight <= 530, `Task viewport is taller than the intended five-row size: ${result.metrics?.clientHeight}`);
-  assert(result.after > result.before, "Task list vertical scrollbar did not move");
-  return result;
+  assert(!setup.skipped, setup.reason || "task scroll QA was skipped");
+  assert(setup.rows === 23, `Task scroll rendered ${setup.rows} rows instead of all 23`);
+  assert(!setup.hasPager, "Task list still renders pagination instead of vertical scrolling");
+  assert(setup.metrics?.scrollHeight > setup.metrics?.clientHeight, "Task list does not overflow vertically after five-row viewport");
+  assert(setup.metrics?.clientHeight <= 530, `Task viewport is taller than the intended five-row size: ${setup.metrics?.clientHeight}`);
+  assert(setup.after > setup.before, "Task list vertical scrollbar did not move");
+  assert(setup.metrics?.overscrollBehaviorY === 'auto', `Task vertical overscroll does not chain: ${setup.metrics?.overscrollBehaviorY}`);
+
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x: setup.x,
+    y: setup.y,
+    deltaX: 0,
+    deltaY: 320,
+  });
+  await sleep(120);
+  const bottomChain = await cdp.evaluate(`(() => {
+    const branch = document.querySelector('[data-agent-id="' + CSS.escape(window.__codexLiveUiQa.taskScrollAgentId) + '"]');
+    const wrap = branch?.querySelector('.task-table-wrap');
+    const workspace = document.querySelector('.workspace');
+    return {
+      workspaceAfter: workspace?.scrollTop ?? 0,
+      wrapAfter: wrap?.scrollTop ?? 0,
+      wrapMax: wrap ? wrap.scrollHeight - wrap.clientHeight : 0,
+    };
+  })()`);
+  assert(bottomChain.workspaceAfter > setup.workspaceBefore, "wheel at Task bottom was swallowed instead of scrolling the workspace");
+  assert(Math.abs(bottomChain.wrapAfter - bottomChain.wrapMax) < 1, "Task wrap moved past its bottom boundary during scroll chaining");
+
+  const noOverflowSetup = await cdp.evaluate(`(() => {
+    const original = structuredClone(window.__codexLiveUiQa.taskScrollOriginal);
+    const agent = original.agents.find((item) => item.threadId === window.__codexLiveUiQa.taskScrollAgentId);
+    agent.tasks = agent.tasks.slice(0, Math.min(2, agent.tasks.length));
+    agent.taskCount = agent.tasks.length;
+    window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', { data: JSON.stringify(original) }));
+    const branch = document.querySelector('[data-agent-id="' + CSS.escape(agent.threadId) + '"]');
+    const wrap = branch?.querySelector('.task-table-wrap');
+    const workspace = document.querySelector('.workspace');
+    wrap?.scrollIntoView({ block: 'center' });
+    const rect = wrap?.getBoundingClientRect();
+    const workspaceMax = workspace ? Math.max(0, workspace.scrollHeight - workspace.clientHeight) : 0;
+    const deltaY = workspace && workspaceMax - workspace.scrollTop > 360 ? 320 : -320;
+    return {
+      noOverflow: Boolean(wrap && wrap.scrollHeight <= wrap.clientHeight),
+      x: rect ? rect.left + Math.min(120, rect.width / 2) : 0,
+      y: rect ? Math.min(window.innerHeight - 20, rect.top + rect.height / 2) : 0,
+      workspaceBefore: workspace?.scrollTop ?? 0,
+      workspaceMax,
+      deltaY,
+    };
+  })()`);
+  assert(noOverflowSetup.noOverflow, "Task no-overflow fixture unexpectedly has a vertical scrollbar");
+  await cdp.send("Input.dispatchMouseEvent", {
+    type: "mouseWheel",
+    x: noOverflowSetup.x,
+    y: noOverflowSetup.y,
+    deltaX: 0,
+    deltaY: noOverflowSetup.deltaY,
+  });
+  await sleep(120);
+  const noOverflowChain = await cdp.evaluate(`document.querySelector('.workspace')?.scrollTop ?? 0`);
+  const noOverflowMoved = noOverflowSetup.deltaY > 0
+    ? noOverflowChain > noOverflowSetup.workspaceBefore
+    : noOverflowChain < noOverflowSetup.workspaceBefore;
+  assert(noOverflowMoved, "wheel over a Task list without vertical overflow was swallowed");
+
+  await cdp.evaluate(`(() => {
+    document.querySelector('[data-task-scroll-qa-spacer]')?.remove();
+    window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', { data: window.__codexLiveUiQa.snapshotData }));
+  })()`);
+  return { ...setup, bottomChain, noOverflowSetup, noOverflowChain };
 }
 
 async function verifyScopedNavigation(cdp) {

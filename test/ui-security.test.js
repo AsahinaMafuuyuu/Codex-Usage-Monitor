@@ -101,6 +101,11 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.doesNotMatch(script, /data-task-page-jump/u);
   assert.match(script, /data-request-page-size/u);
   assert.match(script, /pagination\.totalItems < REQUEST_PAGE_SIZE/u);
+  assert.match(script, /function paginationItems\(page, totalPages\)/u);
+  assert.match(script, /return \[1, 2, 3, "ellipsis", totalPages\]/u);
+  assert.match(script, /return \[1, "ellipsis", totalPages - 2, totalPages - 1, totalPages\]/u);
+  assert.match(script, /data-lucide="chevron-left"/u);
+  assert.match(script, /data-lucide="chevron-right"/u);
   assert.match(script, /limit: String\(pageSize\), page: String\(requestedPage\)/u);
   assert.match(script, /type="text" value="\$\{page\}" inputmode="numeric" pattern="\[0-9\]\*"/u);
   assert.match(script, /return "standard"/u);
@@ -112,6 +117,11 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /function requestCostEstimateTitle\(/u);
   assert.match(script, /data-task-toggle/u);
   assert.match(script, /requestDetails:\s*new Map\(\)/u);
+  assert.match(script, /function collapseOtherRequestDetails\(activeKey\)/u);
+  assert.match(script, /if \(nextOpen\) collapseOtherRequestDetails\(key\)/u);
+  assert.match(script, /addEventListener\("wheel", routeTaskWheelToWorkspace, \{ passive: false \}\)/u);
+  assert.match(script, /function routeTaskWheelToWorkspace\(event\)/u);
+  assert.match(script, /workspace\.scrollTop \+= event\.deltaY \* deltaScale/u);
   assert.match(script, /\/tasks\/\$\{encodeURIComponent\(threadId\)\}\/\$\{encodeURIComponent\(turnId\)\}\/requests/u);
   assert.match(script, /refreshStaleOpenRequestDetails/u);
   assert.match(script, /projectionGeneration/u);
@@ -166,6 +176,7 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\*::?-webkit-scrollbar-button\s*\{[^}]*display:\s*none;[^}]*width:\s*0;[^}]*height:\s*0/isu);
   assert.match(styles, /\.task-table-wrap:focus-visible/iu);
   assert.match(styles, /\.task-table-wrap\s*\{[^}]*max-height:\s*524px;[^}]*overflow:\s*auto;[^}]*container-type:\s*inline-size/isu);
+  assert.match(styles, /\.task-table-wrap\s*\{[^}]*overscroll-behavior-x:\s*contain;[^}]*overscroll-behavior-y:\s*auto/isu);
   assert.match(styles, /\.task-table tbody tr\.task-row\s*\{[^}]*height:\s*88px/isu);
   assert.match(styles, /\.task-table th\s*\{[^}]*position:\s*sticky;[^}]*top:\s*0/isu);
   assert.match(styles, /\.task-table-heading\s*\{[^}]*position:\s*sticky;[^}]*left:\s*0;[^}]*width:\s*100%/isu);
@@ -178,7 +189,11 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.task-request-toggle \.request-count-pill\s*\{[^}]*border-radius:\s*999px/isu);
   assert.match(styles, /\.pagination-bar\s*\{[^}]*justify-content:\s*center/isu);
   assert.match(styles, /\.page-size-control\s*\{/u);
-  assert.match(styles, /\.page-edge\s*\{[^}]*font-size:\s*19px/isu);
+  assert.match(styles, /\.page-edge\s*\{[^}]*display:\s*inline-flex;[^}]*align-items:\s*center;[^}]*justify-content:\s*center/isu);
+  assert.match(styles, /\.page-nav-icon\s*\{[^}]*width:\s*17px;[^}]*height:\s*17px/isu);
+  assert.match(styles, /\.page-ellipsis\s*\{[^}]*place-items:\s*center/isu);
+  assert.match(styles, /@keyframes\s+request-page-enter/iu);
+  assert.match(styles, /@keyframes\s+pagination-enter/iu);
   assert.match(styles, /\.page-jump input\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /font-variant-numeric:\s*tabular-nums/iu);
   assert.match(styles, /prefers-reduced-motion/u);

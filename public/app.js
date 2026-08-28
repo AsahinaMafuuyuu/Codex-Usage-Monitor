@@ -34,12 +34,16 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
   month: "2-digit", day: "2-digit", hour: "2-digit", minute: "2-digit", second: "2-digit",
 });
 
-window.lucide?.createIcons({
-  attrs: {
-    "aria-hidden": "true",
-    "stroke-width": 1.8,
-  },
-});
+refreshLucideIcons();
+
+function refreshLucideIcons() {
+  window.lucide?.createIcons({
+    attrs: {
+      "aria-hidden": "true",
+      "stroke-width": 1.8,
+    },
+  });
+}
 
 elements["session-search"].addEventListener("input", (event) => {
   state.search = event.target.value;
@@ -104,7 +108,28 @@ elements["agent-tree"].addEventListener("keydown", (event) => {
     void jumpRequestPageFromInput(requestJump);
   }
 });
+elements["agent-tree"].addEventListener("wheel", routeTaskWheelToWorkspace, { passive: false });
 elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
+
+function routeTaskWheelToWorkspace(event) {
+  const wrap = event.target.closest?.(".task-table-wrap");
+  if (!wrap || !event.deltaY || Math.abs(event.deltaY) < Math.abs(event.deltaX)) return;
+  const maxScrollTop = Math.max(0, wrap.scrollHeight - wrap.clientHeight);
+  const canScrollVertically = maxScrollTop > 1;
+  const atTop = wrap.scrollTop <= 1;
+  const atBottom = wrap.scrollTop >= maxScrollTop - 1;
+  const shouldChain = !canScrollVertically || (event.deltaY < 0 && atTop) || (event.deltaY > 0 && atBottom);
+  if (!shouldChain) return;
+  const workspace = wrap.closest(".workspace") ?? document.querySelector(".workspace");
+  if (!workspace) return;
+  const deltaScale = event.deltaMode === WheelEvent.DOM_DELTA_LINE
+    ? 16
+    : event.deltaMode === WheelEvent.DOM_DELTA_PAGE
+      ? workspace.clientHeight
+      : 1;
+  event.preventDefault();
+  workspace.scrollTop += event.deltaY * deltaScale;
+}
 
 await initialize();
 
@@ -719,21 +744,23 @@ function renderTasks(agent) {
 function renderPageButtons(kind, page, totalPages, contextAttributes) {
   const actionAttribute = `data-${kind}-page-action`;
   const pageAttribute = `data-${kind}-page-number`;
-  const pages = paginationWindow(page, totalPages);
-  const numbered = pages.map((candidate) => `<button class="page-number${candidate === page ? " active" : ""}" type="button" ${pageAttribute}="${candidate}" ${contextAttributes} aria-current="${candidate === page ? "page" : "false"}">${candidate}</button>`).join("");
+  const items = paginationItems(page, totalPages);
+  const numbered = items.map((candidate) => {
+    if (typeof candidate !== "number") return '<span class="page-ellipsis" aria-hidden="true">…</span>';
+    return `<button class="page-number${candidate === page ? " active" : ""}" type="button" ${pageAttribute}="${candidate}" ${contextAttributes} aria-current="${candidate === page ? "page" : "false"}">${candidate}</button>`;
+  }).join("");
   return `<div class="page-controls">
-    <button class="page-edge" type="button" ${actionAttribute}="first" ${contextAttributes} ${page <= 1 ? "disabled" : ""} aria-label="第一页">«</button>
-    <button class="page-edge" type="button" ${actionAttribute}="prev" ${contextAttributes} ${page <= 1 ? "disabled" : ""} aria-label="上一页">‹</button>
+    <button class="page-edge" type="button" ${actionAttribute}="prev" ${contextAttributes} ${page <= 1 ? "disabled" : ""} aria-label="上一页"><i class="page-nav-icon" data-lucide="chevron-left" aria-hidden="true">‹</i></button>
     <span class="page-numbers">${numbered}</span>
-    <button class="page-edge" type="button" ${actionAttribute}="next" ${contextAttributes} ${page >= totalPages ? "disabled" : ""} aria-label="下一页">›</button>
-    <button class="page-edge" type="button" ${actionAttribute}="last" ${contextAttributes} ${page >= totalPages ? "disabled" : ""} aria-label="最后一页">»</button>
+    <button class="page-edge" type="button" ${actionAttribute}="next" ${contextAttributes} ${page >= totalPages ? "disabled" : ""} aria-label="下一页"><i class="page-nav-icon" data-lucide="chevron-right" aria-hidden="true">›</i></button>
   </div>`;
 }
 
-function paginationWindow(page, totalPages) {
-  const count = Math.min(5, totalPages);
-  const start = clamp(page - Math.floor(count / 2), 1, Math.max(1, totalPages - count + 1));
-  return Array.from({ length: count }, (_, index) => start + index);
+function paginationItems(page, totalPages) {
+  if (totalPages <= 5) return Array.from({ length: totalPages }, (_, index) => index + 1);
+  if (page <= 3) return [1, 2, 3, "ellipsis", totalPages];
+  if (page >= totalPages - 2) return [1, "ellipsis", totalPages - 2, totalPages - 1, totalPages];
+  return [1, "ellipsis-left", page, "ellipsis-right", totalPages];
 }
 
 function pageFromAction(action, currentPage, totalPages) {
@@ -932,6 +959,7 @@ function patchTaskRequestDetail(host, task) {
   const signature = requestDetailRenderSignature(detail, task);
   if (detailRow.dataset.contentSignature !== signature) {
     detailRow.innerHTML = `<div class="task-request-panel" aria-hidden="${detail?.open ? "false" : "true"}" ${detail?.open ? "" : "inert"}><div class="task-request-panel-clip">${renderRequestDetail(detail, task)}</div></div>`;
+    refreshLucideIcons();
     detailRow.dataset.contentSignature = signature;
   } else {
     const panel = detailRow.querySelector(":scope > .task-request-panel");
@@ -1002,13 +1030,16 @@ async function toggleTaskRequests(threadId, turnId, { forceOpen = null } = {}) {
   const key = requestDetailKey(threadId, turnId);
   const existing = state.requestDetails.get(key);
   if (existing) {
-    existing.open = forceOpen == null ? !existing.open : Boolean(forceOpen);
+    const nextOpen = forceOpen == null ? !existing.open : Boolean(forceOpen);
+    if (nextOpen) collapseOtherRequestDetails(key);
+    existing.open = nextOpen;
     patchVisibleTaskDetail(threadId, turnId);
     if (existing.open && !existing.loaded && !existing.loading) {
       await loadTaskRequests(threadId, turnId);
     }
     return;
   }
+  collapseOtherRequestDetails(key);
   state.requestDetails.set(key, {
     threadId,
     turnId,
@@ -1024,6 +1055,14 @@ async function toggleTaskRequests(threadId, turnId, { forceOpen = null } = {}) {
   });
   patchVisibleTaskDetail(threadId, turnId);
   await loadTaskRequests(threadId, turnId);
+}
+
+function collapseOtherRequestDetails(activeKey) {
+  for (const [key, detail] of state.requestDetails) {
+    if (key === activeKey || !detail.open) continue;
+    detail.open = false;
+    patchVisibleTaskDetail(detail.threadId, detail.turnId);
+  }
 }
 
 async function loadTaskRequests(threadId, turnId, { page = null } = {}) {
