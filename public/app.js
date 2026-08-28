@@ -10,6 +10,7 @@ const state = {
   sessionView: localStorage.getItem("codex-monitor-session-view") === "time" ? "time" : "project",
   connected: false,
   quotaRefreshing: false,
+  requestDetails: new Map(),
 };
 
 const elements = Object.fromEntries(
@@ -17,7 +18,7 @@ const elements = Object.fromEntries(
     "session-search", "session-count", "session-list", "health-dot", "health-label",
     "health-detail", "mobile-session-toggle", "connection-label", "last-update",
     "empty-state", "loading-state", "dashboard", "session-title", "session-project", "session-id",
-    "session-version", "hero-total", "agent-count", "task-count", "active-task-count",
+    "session-version", "hero-total", "agent-count", "task-count-label", "task-count", "active-task-count",
     "input-total", "cached-total", "cache-hit-rate", "output-total", "session-cost",
     "session-cost-coverage", "quota-plan", "quota-refresh", "quota-windows",
     "agent-tree", "toast",
@@ -66,6 +67,15 @@ elements["session-list"].addEventListener("click", (event) => {
   const button = event.target.closest("[data-session-id]");
   if (button) void selectSession(button.dataset.sessionId, button.dataset.sessionDay ?? null);
 });
+elements["agent-tree"].addEventListener("click", (event) => {
+  const toggle = event.target.closest("[data-task-toggle]");
+  if (toggle) {
+    void toggleTaskRequests(toggle.dataset.threadId, toggle.dataset.turnId);
+    return;
+  }
+  const more = event.target.closest("[data-request-more]");
+  if (more) void loadTaskRequests(more.dataset.threadId, more.dataset.turnId, { append: true });
+});
 elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
 
 await initialize();
@@ -108,6 +118,9 @@ async function selectSession(sessionId, requestedDay = null) {
     return;
   }
   const selectionVersion = ++state.selectionVersion;
+  const previousSelectionKey = `${state.selectedId ?? ""}|${state.selectedDay ?? ""}`;
+  const nextSelectionKey = `${sessionId}|${day ?? ""}`;
+  if (previousSelectionKey !== nextSelectionKey) state.requestDetails.clear();
   state.selectedId = sessionId;
   state.selectedDay = day;
   localStorage.setItem("codex-monitor-session", sessionId);
@@ -153,6 +166,7 @@ function connectEvents(sessionId, day, selectionVersion) {
     ) return;
     state.snapshot = JSON.parse(event.data);
     renderDashboard();
+    void refreshStaleOpenRequestDetails();
     if (state.sessionView === "time") void refreshTimelineNavigation(selectionVersion);
   });
   source.addEventListener("quota", (event) => {
@@ -437,9 +451,11 @@ function renderDashboard() {
   elements["hero-total"].textContent = formatTokens(snapshot.summary.totalUsage?.totalTokens);
   elements["agent-count"].textContent = tokenFormatter.format(snapshot.summary.agentCount);
   elements["task-count"].textContent = tokenFormatter.format(snapshot.summary.taskCount);
-  elements["active-task-count"].textContent = snapshot.summary.activeTasks
-    ? `${snapshot.summary.activeTasks} 个任务运行中`
-    : "无活动任务";
+  const dayScope = snapshot.scope?.type === "day";
+  elements["task-count-label"].textContent = dayScope ? "活动任务" : "任务记录";
+  elements["active-task-count"].textContent = `${tokenFormatter.format(snapshot.summary.modelRequestCount ?? 0)} Requests${
+    snapshot.summary.activeTasks ? ` · ${snapshot.summary.activeTasks} 运行中` : ""
+  }`;
   const sessionUsage = snapshot.summary.totalUsage;
   elements["input-total"].textContent = formatTokens(sessionUsage?.inputTokens);
   elements["cached-total"].textContent = formatTokens(sessionUsage?.cachedInputTokens);
@@ -645,6 +661,7 @@ function renderAgent(agent) {
 
 function renderAgentSummary(agent) {
   const role = agentRole(agent);
+  const dayScope = isDayScope();
   return `<div class="agent-name">
       <div class="agent-title-line">
         <span class="role-badge ${agentRoleClass(role)}">${escapeHtml(role.toLocaleUpperCase())}</span>
@@ -653,7 +670,8 @@ function renderAgentSummary(agent) {
       <code>${escapeHtml(agent.agentPath || agent.threadId)}</code>
     </div>
     <div class="agent-stats">
-      <div class="agent-stat task-count"><span>任务</span><strong>${agent.taskCount}</strong></div>
+      <div class="agent-stat task-count"><span>${dayScope ? "活动任务" : "任务"}</span><strong>${agent.taskCount}</strong></div>
+      <div class="agent-stat requests"><span>Requests</span><strong>${agent.ownModelRequestCount ?? 0}</strong></div>
       <div class="agent-stat tokens"><span>自身 tokens</span><strong>${formatTokens(agent.ownUsage?.totalTokens)}</strong></div>
       <div class="agent-stat subtree"><span>含后代</span><strong>${formatTokens(agent.subtreeUsage?.totalTokens)}</strong></div>
       <div class="agent-stat cache-hit"><span>缓存命中</span><strong>${formatCacheHitRate(agent.ownUsage)}</strong></div>
@@ -669,29 +687,49 @@ function renderTasks(agent) {
 }
 
 function renderTaskTableShell(rows = "") {
-  return `<div class="task-table-wrap" role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 13 列"><table class="task-table">
-    <colgroup>
-      <col class="col-task"><col class="col-status"><col class="col-start"><col class="col-duration">
-      <col class="col-model"><col class="col-effort"><col class="col-input"><col class="col-cache">
-      <col class="col-hit"><col class="col-output"><col class="col-total">
-      <col class="col-cost"><col class="col-quality">
-    </colgroup>
-    <thead><tr>
-      <th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>
-    </tr></thead>
+  const dayScope = isDayScope();
+  const columnCount = dayScope ? 13 : 14;
+  const columns = dayScope
+    ? `<col class="col-task"><col class="col-status"><col class="col-request-time"><col class="col-request-time"><col class="col-requests"><col class="col-model"><col class="col-input"><col class="col-cache"><col class="col-hit"><col class="col-output"><col class="col-total"><col class="col-cost"><col class="col-quality">`
+    : `<col class="col-task"><col class="col-status"><col class="col-start"><col class="col-duration"><col class="col-requests"><col class="col-model"><col class="col-effort"><col class="col-input"><col class="col-cache"><col class="col-hit"><col class="col-output"><col class="col-total"><col class="col-cost"><col class="col-quality">`;
+  const headings = dayScope
+    ? `<th class="task-name-head">Task</th><th class="task-status-head">状态</th><th>当日首请求</th><th>当日末请求</th><th>Requests</th><th>模型</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`
+    : `<th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>Requests</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`;
+  return `<div class="task-table-wrap" data-scope-kind="${dayScope ? "day" : "session"}" role="region" tabindex="0" aria-label="${dayScope ? "当日任务活动" : "任务记录"}；任务与状态列固定，可横向滚动查看完整 ${columnCount} 列"><table class="task-table ${dayScope ? "day-scope" : "session-scope"}">
+    <caption>${dayScope ? "当日任务活动" : "任务记录"}</caption>
+    <colgroup>${columns}</colgroup>
+    <thead><tr>${headings}</tr></thead>
     <tbody>${rows}</tbody>
   </table></div>`;
 }
 
 function renderTaskRow(task) {
-  return `<tr class="task-row" data-task-id="${escapeHtml(task.turnId)}">${renderTaskCells(task)}</tr>`;
+  return `<tr class="task-row" data-task-id="${escapeHtml(task.turnId)}" data-thread-id="${escapeHtml(task.threadId)}">${renderTaskCells(task)}</tr>`;
 }
 
 function renderTaskCells(task) {
-  return `<td class="task-name-cell"><strong>Task ${task.sequence}</strong><code title="${escapeHtml(task.turnId)}">${escapeHtml(shortId(task.turnId))}</code></td>
+  const detail = requestDetailState(task.threadId, task.turnId);
+  const taskCell = `<td class="task-name-cell"><button class="task-request-toggle" type="button" data-task-toggle data-thread-id="${escapeHtml(task.threadId)}" data-turn-id="${escapeHtml(task.turnId)}" aria-expanded="${detail?.open ? "true" : "false"}"><strong>Task ${task.sequence}</strong><code title="${escapeHtml(task.turnId)}">${escapeHtml(shortId(task.turnId))}</code><span>${task.requestCount ?? 0} Requests</span></button></td>`;
+  if (isDayScope()) {
+    return `${taskCell}
+    <td class="task-status-cell"><span class="status-chip ${escapeHtml(task.status)}">${statusLabel(task.status)}</span></td>
+    <td title="${escapeHtml(task.firstRequestAt || "")}">${formatDate(task.firstRequestAt)}</td>
+    <td title="${escapeHtml(task.lastRequestAt || "")}">${formatDate(task.lastRequestAt)}</td>
+    <td><strong>${tokenFormatter.format(task.requestCount ?? 0)}</strong></td>
+    <td class="model-cell"><code title="${escapeHtml(task.model || "模型未知")}">${escapeHtml(task.model || "未知")}</code></td>
+    <td>${formatTokens(task.deltaUsage?.inputTokens)}</td>
+    <td>${formatTokens(task.deltaUsage?.cachedInputTokens)}</td>
+    <td>${formatCacheHitRate(task.deltaUsage)}</td>
+    <td>${formatTokens(task.deltaUsage?.outputTokens)}</td>
+    <td><strong>${formatTokens(task.deltaUsage?.totalTokens)}</strong></td>
+    <td class="cost-cell" title="${escapeHtml(costEstimateTitle(task.costEstimate))}"><strong>${formatUsdEstimate(task.costEstimate)}</strong><span>${costEstimateLabel(task.costEstimate)}</span></td>
+    <td><span class="quality-chip ${escapeHtml(task.quality)}">${qualityLabel(task.quality)}</span></td>`;
+  }
+  return `${taskCell}
     <td class="task-status-cell"><span class="status-chip ${escapeHtml(task.status)}">${statusLabel(task.status)}</span></td>
     <td title="${escapeHtml(task.startedAt || "")}">${formatDate(task.startedAt)}</td>
     <td>${formatDuration(task.durationMs, task.startedAt, task.completedAt)}</td>
+    <td><strong>${tokenFormatter.format(task.requestCount ?? 0)}</strong></td>
     <td class="model-cell"><code title="${escapeHtml(task.model || "模型未知")}">${escapeHtml(task.model || "未知")}</code></td>
     <td><span class="effort-chip">${escapeHtml(effortLabel(task.effort))}</span></td>
     <td>${formatTokens(task.deltaUsage?.inputTokens)}</td>
@@ -727,6 +765,12 @@ function patchAgentTasks(details, tasks) {
     empty.remove();
     structuralChanged = true;
   }
+  const desiredScopeKind = isDayScope() ? "day" : "session";
+  if (tableWrap && tableWrap.dataset.scopeKind !== desiredScopeKind) {
+    tableWrap.remove();
+    tableWrap = null;
+    structuralChanged = true;
+  }
   if (!tableWrap) {
     tableWrap = createElementFromHtml(renderTaskTableShell());
     details.append(tableWrap);
@@ -738,12 +782,13 @@ function patchAgentTasks(details, tasks) {
 function patchTaskRows(tableWrap, tasks) {
   const tbody = tableWrap.querySelector("tbody");
   const existing = new Map(
-    [...tbody.children].map((row) => [row.dataset.taskId, row]),
+    [...tbody.querySelectorAll(":scope > tr.task-row")].map((row) => [row.dataset.taskId, row]),
   );
   const desiredIds = new Set(tasks.map((task) => task.turnId));
   let structuralChanged = false;
+  let insertionPoint = tbody.firstElementChild;
 
-  tasks.forEach((task, index) => {
+  tasks.forEach((task) => {
     let row = existing.get(task.turnId);
     if (!row) {
       row = document.createElement("tr");
@@ -751,22 +796,199 @@ function patchTaskRows(tableWrap, tasks) {
       row.dataset.taskId = task.turnId;
       structuralChanged = true;
     }
+    row.dataset.threadId = task.threadId;
     row.innerHTML = renderTaskCells(task);
-    const currentAtIndex = tbody.children[index] ?? null;
-    if (currentAtIndex !== row) {
-      tbody.insertBefore(row, currentAtIndex);
+    if (insertionPoint !== row) {
+      tbody.insertBefore(row, insertionPoint);
       structuralChanged = true;
     }
+    structuralChanged = patchTaskRequestDetail(tbody, row, task) || structuralChanged;
+    const detailRow = findTaskDetailRow(tbody, task.turnId);
+    insertionPoint = (detailRow ?? row).nextElementSibling;
   });
 
   for (const [taskId, row] of existing) {
     if (!desiredIds.has(taskId)) {
       row.remove();
+      findTaskDetailRow(tbody, taskId)?.remove();
       structuralChanged = true;
     }
   }
   return structuralChanged;
 }
+
+function patchTaskRequestDetail(tbody, taskRow, task) {
+  const detail = requestDetailState(task.threadId, task.turnId);
+  let detailRow = findTaskDetailRow(tbody, task.turnId);
+  if (!detail?.open) {
+    if (!detailRow) return false;
+    detailRow.remove();
+    return true;
+  }
+  let structuralChanged = false;
+  if (!detailRow) {
+    detailRow = document.createElement("tr");
+    detailRow.className = "task-request-row";
+    detailRow.dataset.taskDetailId = task.turnId;
+    structuralChanged = true;
+  }
+  detailRow.innerHTML = `<td colspan="${taskColumnCount()}">${renderRequestDetail(detail)}</td>`;
+  if (taskRow.nextElementSibling !== detailRow) {
+    taskRow.after(detailRow);
+    structuralChanged = true;
+  }
+  return structuralChanged;
+}
+
+function findTaskDetailRow(tbody, turnId) {
+  return [...tbody.querySelectorAll(":scope > tr.task-request-row")]
+    .find((row) => row.dataset.taskDetailId === turnId) ?? null;
+}
+
+function taskColumnCount() {
+  return isDayScope() ? 13 : 14;
+}
+
+function isDayScope() {
+  return state.snapshot?.scope?.type === "day";
+}
+
+function requestDetailKey(threadId, turnId) {
+  return `${state.selectedId ?? ""}\u0000${state.selectedDay ?? ""}\u0000${threadId}\u0000${turnId}`;
+}
+
+function requestDetailState(threadId, turnId) {
+  return state.requestDetails.get(requestDetailKey(threadId, turnId)) ?? null;
+}
+
+function currentTask(threadId, turnId) {
+  for (const agent of state.snapshot?.agents ?? []) {
+    const task = agent.tasks?.find((candidate) =>
+      candidate.threadId === threadId && candidate.turnId === turnId
+    );
+    if (task) return task;
+  }
+  return null;
+}
+
+async function toggleTaskRequests(threadId, turnId) {
+  const task = currentTask(threadId, turnId);
+  if (!task) return;
+  const key = requestDetailKey(threadId, turnId);
+  const existing = state.requestDetails.get(key);
+  if (existing) {
+    existing.open = !existing.open;
+    patchVisibleTaskDetail(threadId, turnId);
+    if (existing.open && !existing.loaded && !existing.loading) {
+      await loadTaskRequests(threadId, turnId);
+    }
+    return;
+  }
+  state.requestDetails.set(key, {
+    threadId,
+    turnId,
+    open: true,
+    loaded: false,
+    loading: false,
+    requests: [],
+    nextCursor: null,
+    projectionGeneration: null,
+    error: null,
+  });
+  patchVisibleTaskDetail(threadId, turnId);
+  await loadTaskRequests(threadId, turnId);
+}
+
+async function loadTaskRequests(threadId, turnId, { append = false } = {}) {
+  const key = requestDetailKey(threadId, turnId);
+  const detail = state.requestDetails.get(key);
+  if (!detail || detail.loading || !detail.open) return;
+  const selectionVersion = state.selectionVersion;
+  detail.loading = true;
+  detail.error = null;
+  patchVisibleTaskDetail(threadId, turnId);
+  try {
+    const query = new URLSearchParams({ limit: "200" });
+    if (state.selectedDay) query.set("day", state.selectedDay);
+    if (append && detail.nextCursor) query.set("cursor", detail.nextCursor);
+    const payload = await fetchJson(
+      `/api/sessions/${encodeURIComponent(state.selectedId)}/tasks/${encodeURIComponent(threadId)}/${encodeURIComponent(turnId)}/requests?${query}`,
+    );
+    if (selectionVersion !== state.selectionVersion || state.requestDetails.get(key) !== detail) return;
+    const merged = append ? [...detail.requests, ...payload.requests] : payload.requests;
+    detail.requests = [...new Map(merged.map((request) => [request.requestId, request])).values()];
+    detail.nextCursor = payload.nextCursor;
+    detail.projectionGeneration = payload.projectionGeneration;
+    detail.loaded = true;
+  } catch (error) {
+    if (selectionVersion === state.selectionVersion && state.requestDetails.get(key) === detail) {
+      detail.error = error.message;
+    }
+  } finally {
+    if (state.requestDetails.get(key) === detail) {
+      detail.loading = false;
+      patchVisibleTaskDetail(threadId, turnId);
+    }
+  }
+}
+
+function patchVisibleTaskDetail(threadId, turnId) {
+  const row = [...elements["agent-tree"].querySelectorAll("tr.task-row")].find((candidate) =>
+    candidate.dataset.threadId === threadId && candidate.dataset.taskId === turnId
+  );
+  if (!row) return;
+  row.innerHTML = renderTaskCells(currentTask(threadId, turnId));
+  patchTaskRequestDetail(row.parentElement, row, currentTask(threadId, turnId));
+}
+
+async function refreshStaleOpenRequestDetails() {
+  const generation = Number(state.snapshot?.health?.projectionGeneration ?? 0);
+  const jobs = [];
+  for (const detail of state.requestDetails.values()) {
+    if (!detail.open || !detail.loaded || detail.loading || detail.projectionGeneration === generation) continue;
+    detail.loaded = false;
+    detail.nextCursor = null;
+    jobs.push(loadTaskRequests(detail.threadId, detail.turnId));
+  }
+  await Promise.all(jobs);
+}
+
+function renderRequestDetail(detail) {
+  if (detail.error) {
+    return `<div class="request-detail-state error">Request 明细读取失败：${escapeHtml(detail.error)}</div>`;
+  }
+  if (!detail.loaded && detail.loading) {
+    return '<div class="request-detail-state">正在读取 canonical Requests…</div>';
+  }
+  if (!detail.requests.length) {
+    return '<div class="request-detail-state">这个 Task 没有可展示的 canonical Request。</div>';
+  }
+  return `<div class="request-audit">
+    <div class="request-audit-heading"><strong>Canonical Requests</strong><span>${detail.requests.length}${detail.nextCursor ? "+" : ""} 条已加载</span></div>
+    <div class="request-audit-scroll"><table class="request-table">
+      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>Tier</th><th>USD</th><th>Coverage</th></tr></thead>
+      <tbody>${detail.requests.map(renderRequestRow).join("")}</tbody>
+    </table></div>
+    ${detail.nextCursor ? `<button class="request-more" type="button" data-request-more data-thread-id="${escapeHtml(detail.threadId)}" data-turn-id="${escapeHtml(detail.turnId)}" ${detail.loading ? "disabled" : ""}>${detail.loading ? "加载中…" : "加载更多"}</button>` : ""}
+  </div>`;
+}
+
+function renderRequestRow(request) {
+  return `<tr>
+    <td title="${escapeHtml(request.observedAt || "")}">${formatDate(request.observedAt)}</td>
+    <td>${formatTokens(request.usage?.inputTokens)}</td>
+    <td>${formatTokens(request.usage?.cachedInputTokens)}</td>
+    <td>${formatTokens(request.usage?.cacheWriteInputTokens)}</td>
+    <td>${formatTokens(request.usage?.outputTokens)}</td>
+    <td>${formatTokens(request.usage?.reasoningOutputTokens)}</td>
+    <td><strong>${formatTokens(request.usage?.totalTokens)}</strong></td>
+    <td><code title="${escapeHtml(request.model || "模型未知")}">${escapeHtml(request.model || "未知")}</code></td>
+    <td>${escapeHtml(request.serviceTier || "未知")}</td>
+    <td title="${escapeHtml(costEstimateTitle(request.costEstimate))}">${formatUsdEstimate(request.costEstimate)}</td>
+    <td>${escapeHtml(costEstimateLabel(request.costEstimate))}</td>
+  </tr>`;
+}
+
 
 function captureVisualAnchor(root) {
   const viewportHeight = window.innerHeight || document.documentElement.clientHeight;

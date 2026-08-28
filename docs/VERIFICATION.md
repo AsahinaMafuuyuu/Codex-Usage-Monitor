@@ -319,6 +319,19 @@ npm test
 - 正式 `data/usage.sqlite` 的临时副本执行真实 v1→v2 migration：`PRAGMA user_version=14` 保持不变，projection=`v2`，一次性 rebuild `2766ms`。随后在该副本导入当前故障 root：104 canonical verified Request / 278 inherited verified Request / 0 unresolved；37 canonical Task / 12 inherited Task；canonical Token=`12,808,314`。参与的 2 个真实 rollout SHA-256 before/after 完全一致。
 - 最终门槛：`npm test` 为 `115 tests / 114 passed / 0 failed / 1 skipped`；唯一 skip 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
 
+### Phase 19：Request Fact / Task Day Slice / lazy Request audit
+
+日期：2026-08-28。按 `DESIGN-REQUEST-FACT-TASK-DAY-SLICE.md`、`TEST-REQUEST-FACT-TASK-DAY-SLICE.md` 与 ADR-0021 完成 Request accounting unit、Full Task business unit 与 Task Day Slice presentation unit 的最终分离；SQLite schema 保持 v14，projection semantics 保持 v2。
+
+- 业务 scope：`test/request-scope-business.test.js` 最终 8 / 8 Green。跨午夜 Task 在 Session scope 仍只有一个完整 Task；Time 只聚合目标日 canonical Request；无当日 Request 的 Task 不出现；Full=ΣDay 的六字段 usage 与 Request count 守恒。新增 `BIZ-SCOPE-005` 锁定 `scopeKind=day_slice`、`scopeDay`、`firstRequestAt`、`lastRequestAt`，同时证明原 Task identity/lifecycle 不被复制或改写。
+- Request drill-down：新增 `GET /api/sessions/:sessionId/tasks/:threadId/:turnId/requests`，支持 `?day=`、`limit=1..500` 与稳定 `(observedAt, requestId)` cursor。DB/API 定向测试证明只返回 `canonical_requests`、full/day scope 一致、分页不重不漏、非法 cursor/limit 返回 400；缺少 event-level model 时 cost 保持 `unavailable/missing_model`，不从 Task metadata 猜价格。
+- SQL hot path：新增 covering index `idx_canonical_requests_task_observed(root_session_id, thread_id, turn_id, observed_at, request_id)`。正式 `data/usage.sqlite` 选择 canonical Request 数最多的真实 Task（314 Requests）测量：Timeline 300 次 warm P95=`191.237ms`；完整 Session 200 次 P95=`47.652ms`；Day detail 300 次 P95=`34.626ms`；Request drill-down 首批 200 rows、500 次 P95=`4.498ms`。`EXPLAIN QUERY PLAN` 明确命中该 covering index，无临时排序。
+- UI：Project 表标题/summary 为“任务记录”，保留完整 Task `开始/耗时` 并显式显示 Requests；Time 为“活动任务 / 当日任务活动”，列改为 `当日首请求 / 当日末请求 / Requests`，不把 full Task lifecycle 冒充日内计量。Task 名称成为可访问的 Request 展开按钮；明细表显示时间、Input/Cached/Cache Write/Output/Reasoning/Total、Model、Tier、USD、Coverage。初始 snapshot 不携带 Request detail。
+- SSE interaction：Request detail state 以 selected session/day + thread/turn 作为本地 key；已加载明细保存 `projectionGeneration`，generation 变化只刷新当前展开项。真实 Chrome/CDP 1440×900 下 task table `scrollLeft=463`、focus、Agent 展开/折叠、existing Task identity 与 visual-anchor top delta=`0px`；真实 Task 懒加载 24 条 canonical Request，snapshot replay 后 detail row DOM identity、展开状态和 24-row 内容保持。720×900 下横向 overflow、`scrollLeft=240`、focus 与 Agent 展开状态保持。
+- 真实 reconciliation：session `019f1635-022f-7191-9d80-c83d4d3eec6a` 的 1,029 model-usage evidence 中 1,022 verified canonical Request、7 duplicate、0 inherited、0 unresolved；34 canonical Task。六字段 raw observed 与 canonical business 完全相等，`conserved=true`。同一正式 SQLite 中 canonical Request、`session_day_usage` 求和、full snapshot 对 input/cached/cache-write/output/reasoning/total 六字段及 Request count 全部相等；Request count 均为 `1,022`，total token 均为 `171,536,696`。
+- `.codex` read-only gate：上述真实 reconciliation 的 rollout manifest before/after 均为 `5d684e43b671aeb19b92bdbfca1a7b2b02e335774f43c952ae1b6843ea8ef379`，`hashChangedFiles=0`。
+- 自动化门槛：业务 8 / 8、ownership/DB/API 46 / 46、UI static/stability 2 / 2 均 Green；最终全量 `npm test` 为 `124 tests / 123 passed / 0 failed / 1 skipped`，唯一 skip 为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。

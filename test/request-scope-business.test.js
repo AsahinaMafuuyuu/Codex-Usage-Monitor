@@ -179,6 +179,24 @@ test("BIZ-SCOPE-004 a task with no request on the selected day stays in full ses
   );
 });
 
+test("BIZ-SCOPE-005 day slice exposes request-window metadata without changing task identity", () => {
+  const day2 = materializeScopedSnapshot(storedFixture(), {
+    type: "day",
+    day: DAY2,
+    range: resolveLocalDayRange(DAY2),
+  });
+
+  const taskRow = onlyTask(day2);
+  assert.equal(taskRow.turnId, "turn-a");
+  assert.equal(taskRow.scopeKind, "day_slice");
+  assert.equal(taskRow.scopeDay, DAY2);
+  assert.equal(taskRow.requestCount, 2);
+  assert.equal(taskRow.firstRequestAt, localIso(DAY2, 0, 5));
+  assert.equal(taskRow.lastRequestAt, localIso(DAY2, 0, 20));
+  assert.equal(taskRow.startedAt, localIso(DAY1, 23, 45));
+  assert.equal(taskRow.completedAt, localIso(DAY2, 0, 30));
+});
+
 test("BIZ-OWN-001 inherited history and a new request in the same turn keep only the new accounting usage", () => {
   const externalRequestId = `reqr_${"a".repeat(64)}`;
   const rootId = "root-b";

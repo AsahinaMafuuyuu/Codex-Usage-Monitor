@@ -1222,28 +1222,30 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 
 ### Task 2: Expose Task Day Slice metadata
 
-- [ ] Day scope 补充 `scopeKind/scopeDay/firstRequestAt/lastRequestAt/requestCount`；不复制 Task identity，不改变 canonical Request accounting。
-- [ ] Project scope 保持完整 Task lifecycle 与完整 Request 汇总。
+- [x] Day scope 补充 `scopeKind/scopeDay/firstRequestAt/lastRequestAt/requestCount`；不复制 Task identity，不改变 canonical Request accounting。
+- [x] Project scope 保持完整 Task lifecycle 与完整 Request 汇总。
 
 ### Task 3: Add lazy Request audit drill-down
 
-- [ ] 增加 task-scoped canonical Request read API，Project 返回完整 Task Request，Time `?day=` 只返回当天 Request。
-- [ ] 初始 snapshot 不内嵌 Request detail；增加定向 SQL index 与稳定分页，避免长 Task 放大 payload/DOM。
+- [x] 增加 task-scoped canonical Request read API，Project 返回完整 Task Request，Time `?day=` 只返回当天 Request。
+- [x] 初始 snapshot 不内嵌 Request detail；增加定向 SQL index 与稳定分页，避免长 Task 放大 payload/DOM。
 
 ### Task 4: Recompose Project/Time task presentation
 
-- [ ] Project 继续“任务记录”；Time 使用“当日任务活动 / 活动任务 / Requests”。
-- [ ] Time 表使用当日 Request window/count，不能把 full Task startedAt/duration 冒充日内计量。
-- [ ] Task 展开按需加载 Request，继续保护 ADR-0017 的滚动/展开/focus/visual-anchor。
+- [x] Project 继续“任务记录”；Time 使用“当日任务活动 / 活动任务 / Requests”。
+- [x] Time 表使用当日 Request window/count，不能把 full Task startedAt/duration 冒充日内计量。
+- [x] Task 展开按需加载 Request，继续保护 ADR-0017 的滚动/展开/focus/visual-anchor。
 
 ### Task 5: Reconcile correctness and performance
 
-- [ ] raw=canonical+inherited+unresolved 六字段守恒；Full canonical=ΣDay；Session/Agent/Task rollup 对账。
-- [ ] warm Timeline <200ms、day/session <300ms、request drill-down 首批 <100ms；cached scope switch 不 replay rollout。
-- [ ] `npm test`、`npm run check`、`git diff --check`、真实 hash/reconciliation、1440/720 browser gate 全通过后才更新 Delivery 为 Implemented。
+- [x] raw=canonical+inherited+unresolved 六字段守恒；Full canonical=ΣDay；Session/Agent/Task rollup 对账。
+- [x] warm Timeline <200ms、day/session <300ms、request drill-down 首批 <100ms；cached scope switch 不 replay rollout。
+- [x] `npm test`、`npm run check`、`git diff --check`、真实 hash/reconciliation、1440/720 browser gate 全通过后才更新 Delivery 为 Implemented。
 
 ### Checkpoint
 
-- [ ] Session 回答“做了什么”，Time 回答“什么时候发生消耗”，二者共享同一 canonical Request 事实源。
-- [ ] UI 展示单位和 accounting unit 不再混淆。
-- [ ] 不通过 root-local identity、Task-start day 或 eager Request payload 换取表面简化。
+- [x] Session 回答“做了什么”，Time 回答“什么时候发生消耗”，二者共享同一 canonical Request 事实源。
+- [x] UI 展示单位和 accounting unit 不再混淆。
+- [x] 不通过 root-local identity、Task-start day 或 eager Request payload 换取表面简化。
+
+**Delivered evidence (2026-08-28):** Phase 19 保持 schema v14 / projection v2，不重放 rollout 来制造 UI 数据。业务 unit 8/8、ownership/DB/API 46/46、UI contract 2/2 Green；全量 `npm test` 124 / 123 passed / 0 failed / 1 optional skip。真实正式 SQLite P95：Timeline `191.237ms`、Session `47.652ms`、Day detail `34.626ms`、Request drill-down `4.498ms`，后者命中 `idx_canonical_requests_task_observed` covering index。真实 session 1,022 canonical Request / 0 inherited / 0 unresolved，六字段 canonical=Σday=full；rollout manifest SHA-256 前后均为 `5d684e43b671aeb19b92bdbfca1a7b2b02e335774f43c952ae1b6843ea8ef379`。Chrome/CDP 1440/720 通过，真实 Task 懒加载 24 条 canonical Request 且 SSE 后展开/DOM/scroll/focus/anchor 保持。

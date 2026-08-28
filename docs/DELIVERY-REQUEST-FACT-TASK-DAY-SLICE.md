@@ -1,6 +1,6 @@
 # Phase 19：Request Fact / Task Day Slice 交付契约
 
-**状态：** Design Complete / Implementation Pending
+**状态：** Implemented
 **日期：** 2026-08-28
 
 ## 交付目标
@@ -30,41 +30,41 @@
 
 ## 数据正确性验收
 
-- [ ] global `request_id` 唯一性继续成立。
-- [ ] cross-root copy 不重复 accounting。
-- [ ] 同 turn mixed inherited/new Request 不误删新 usage。
-- [ ] raw = canonical + inherited + unresolved，六字段逐项守恒。
-- [ ] Full Session = Σ Task = Σ canonical Request。
-- [ ] Full canonical = Σ local-day Request。
-- [ ] copied timestamp 不改变 canonical Request day。
-- [ ] `.codex` 源文件 before/after hash 完全不变。
+- [x] global `request_id` 唯一性继续成立。
+- [x] cross-root copy 不重复 accounting。
+- [x] 同 turn mixed inherited/new Request 不误删新 usage。
+- [x] raw = canonical + inherited + unresolved，六字段逐项守恒。
+- [x] Full Session = Σ Task = Σ canonical Request。
+- [x] Full canonical = Σ local-day Request。
+- [x] copied timestamp 不改变 canonical Request day。
+- [x] `.codex` 源文件 before/after hash 完全不变。
 
 ## 后端 / 性能验收
 
-- [ ] 初始 snapshot 不携带全部 Request 明细。
-- [ ] Request drill-down 使用 task/day 定向 SQL，并有对应索引。
-- [ ] Timeline warm P95 `<200ms`。
-- [ ] Session/Day detail warm P95 `<300ms`。
-- [ ] Request drill-down 首批 warm P95 `<100ms`。
-- [ ] cached Project/Time 切换不触发 rollout replay。
-- [ ] projection rebuild 与前端读取 generation 原子隔离。
+- [x] 初始 snapshot 不携带全部 Request 明细。
+- [x] Request drill-down 使用 task/day 定向 SQL，并有对应索引。
+- [x] Timeline warm P95 `<200ms`。
+- [x] Session/Day detail warm P95 `<300ms`。
+- [x] Request drill-down 首批 warm P95 `<100ms`。
+- [x] cached Project/Time 切换不触发 rollout replay。
+- [x] projection rebuild 与前端读取 generation 原子隔离。
 
 ## UI 验收
 
-- [ ] Project 与 Time 的 Task 语义在标题、列名和摘要上明确区分。
-- [ ] Time 不显示误导性的 full-task “开始/耗时”作为日内计量字段。
-- [ ] Request detail 在 Task 展开时懒加载，Project=全量，Time=当日。
-- [ ] 1440px 与 720px 横向审计表可用。
-- [ ] SSE 后滚动、Agent 展开、Task 展开、focus、visual anchor 不丢失。
+- [x] Project 与 Time 的 Task 语义在标题、列名和摘要上明确区分。
+- [x] Time 不显示误导性的 full-task “开始/耗时”作为日内计量字段。
+- [x] Request detail 在 Task 展开时懒加载，Project=全量，Time=当日。
+- [x] 1440px 与 720px 横向审计表可用。
+- [x] SSE 后滚动、Agent 展开、Task 展开、focus、visual anchor 不丢失。
 
 ## 测试验收
 
 - [x] 业务测试契约已定义：`docs/TEST-REQUEST-FACT-TASK-DAY-SLICE.md`。
 - [x] 独立业务 unit 文件已建立：`test/request-scope-business.test.js`。
-- [ ] 业务 unit 全部 Green。
-- [ ] DB/API 定向集成测试全部 Green。
-- [ ] `npm test` / `npm run check` / `git diff --check` Green。
-- [ ] 真实历史 reconciliation / performance / browser evidence 已写入 `docs/VERIFICATION.md`。
+- [x] 业务 unit 全部 Green。
+- [x] DB/API 定向集成测试全部 Green。
+- [x] `npm test` / `npm run check` / `git diff --check` Green。
+- [x] 真实历史 reconciliation / performance / browser evidence 已写入 `docs/VERIFICATION.md`。
 
 ## 实施文件边界
 
@@ -84,8 +84,14 @@ scripts/*                       # 仅必要 benchmark/reconciliation
 
 不得为了 UI 改造重新引入 Boundary Ledger、Task-start day accounting 或 root-local Request identity。
 
-## 当前交接状态
+## 已交付证据
 
-本文件现在是**交付定义**，不是“已交付证明”。工作区已有其他未提交的 Phase 18.1 cross-root hardening 改动，应保留并单独审查；Phase 19 实现必须在这些改动的真实基线上执行，不能 reset/stash/覆盖他人工作。
+- 业务测试 `test/request-scope-business.test.js`：8 / 8 Green；Full Task、Task Day Slice、Full=ΣDay、无当日 Request 不显示、cross-root mixed-turn、六字段 conservation、copied timestamp 与 day-slice Request window 全部锁定。
+- 定向 ownership/DB/API 集成：46 / 46 Green；Request drill-down 只读 `canonical_requests`，支持 `day`、稳定 `(observedAt, requestId)` cursor 与 `1..500` bounded page size。静态 UI/交互契约 2 / 2 Green。
+- 最终全量门槛：`npm test` 为 124 tests / 123 passed / 0 failed / 1 optional real-fixture skip；`npm run check`、`git diff --check` 通过。
+- 正式 SQLite 真实热路径：Timeline P95 `191.237ms`；完整 Session `47.652ms`；Day detail `34.626ms`；最大 Task 的 Request drill-down 首批 P95 `4.498ms`。查询计划命中 covering index `idx_canonical_requests_task_observed`。
+- 真实 reconciliation session：1,022 canonical verified Requests / 0 inherited / 0 unresolved；六字段 raw=canonical+inherited+unresolved 成立，且 canonical=Σday=full snapshot，Request count 同为 1,022。
+- 真实 rollout manifest before/after 均为 `5d684e43b671aeb19b92bdbfca1a7b2b02e335774f43c952ae1b6843ea8ef379`，`hashChangedFiles=0`。
+- Chrome/CDP：1440×900 下 Project/Time scope 文案与列语义正确，真实 Task 懒加载 24 条 canonical Request；SSE 后 Request detail DOM/展开状态、task-table `scrollLeft=463`、focus 与 visual-anchor 保持。720×900 下 overflow、`scrollLeft=240`、focus 与 Agent 展开状态保持。
 
-最终交付时应把本文件状态改为 `Implemented`，并填写精确测试数量、性能 P95、真实 reconciliation 数字、浏览器结果和 commit/tag；在此之前不得提前勾选实现项。
+本阶段不创建新 schema version，SQLite 仍为 v14、projection semantics 仍为 v2；实现与交付提交以仓库 Git 历史为最终版本证据。

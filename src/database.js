@@ -260,6 +260,8 @@ export class MonitorDatabase {
         ON event_ownership(root_session_id, status, owner_thread_id);
       CREATE INDEX IF NOT EXISTS idx_canonical_requests_root_day
         ON canonical_requests(root_session_id, observed_at, turn_id);
+      CREATE INDEX IF NOT EXISTS idx_canonical_requests_task_observed
+        ON canonical_requests(root_session_id, thread_id, turn_id, observed_at, request_id);
       CREATE INDEX IF NOT EXISTS idx_quota_observed ON quota_snapshots(observed_at DESC);
     `);
     const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
@@ -1110,6 +1112,63 @@ export class MonitorDatabase {
       WHERE root_session_id=?
       ORDER BY observed_at, request_id
     `).all(rootSessionId).map(mapModelUsageEvent);
+  }
+
+  getCanonicalTaskRequests(rootSessionId, threadId, turnId, {
+    range = null,
+    limit = 200,
+    after = null,
+  } = {}) {
+    const conditions = [
+      "root_session_id=?",
+      "thread_id=?",
+      "turn_id=?",
+    ];
+    const parameters = [rootSessionId, threadId, turnId];
+    if (range) {
+      conditions.push("observed_at>=?", "observed_at<?");
+      parameters.push(
+        new Date(range.startMs).toISOString(),
+        new Date(range.endMs).toISOString(),
+      );
+    }
+    if (after) {
+      conditions.push("(observed_at>? OR (observed_at=? AND request_id>?))");
+      parameters.push(after.observedAt, after.observedAt, after.requestId);
+    }
+    parameters.push(limit + 1);
+    const rows = this.db.prepare(`
+      SELECT
+        request_id,
+        origin_source_key AS source_key,
+        origin_line_number AS line_number,
+        root_session_id, thread_id, turn_id, event_ordinal, observed_at,
+        generation, classification, quality, reason,
+        input_tokens, cached_input_tokens, cache_write_input_tokens,
+        output_tokens, reasoning_output_tokens, total_tokens,
+        model, service_tier, pricing_context_quality,
+        request_id AS request_identity,
+        identity_kind AS request_identity_kind,
+        'canonical_projection' AS request_identity_reason,
+        native_field AS request_native_field
+      FROM canonical_requests
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY observed_at, request_id
+      LIMIT ?
+    `).all(...parameters);
+    const hasMore = rows.length > limit;
+    const visibleRows = hasMore ? rows.slice(0, limit) : rows;
+    const requests = visibleRows.map((row) => ({
+      requestId: row.request_id,
+      ...mapModelUsageEvent(row),
+    }));
+    const last = requests.at(-1) ?? null;
+    return {
+      requests,
+      nextAfter: hasMore && last
+        ? { observedAt: last.observedAt, requestId: last.requestId }
+        : null,
+    };
   }
 
   getLatestQuota() {

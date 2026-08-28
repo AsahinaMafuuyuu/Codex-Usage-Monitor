@@ -2,6 +2,10 @@ import { USAGE_FIELDS, zeroUsage } from "./usage.js";
 
 const VERIFIED_CLASSIFICATIONS = new Set(["verified_increment", "generation_start"]);
 
+export function isVerifiedRequestEvent(event) {
+  return VERIFIED_CLASSIFICATIONS.has(event?.classification) && Boolean(event?.usage);
+}
+
 export function materializeRequestLedgerTasks(tasks = [], events = []) {
   const states = buildTaskEventStates(events);
   return tasks.map((task) => {
@@ -51,7 +55,7 @@ export function materializeRequestLedgerTasks(tasks = [], events = []) {
 export function aggregateVerifiedUsageByLocalDay(events = []) {
   const days = new Map();
   for (const event of events) {
-    if (!VERIFIED_CLASSIFICATIONS.has(event.classification) || !event.usage) continue;
+    if (!isVerifiedRequestEvent(event)) continue;
     const day = localDay(event.observedAt);
     if (!day) continue;
     const state = days.get(day) ?? createUsageAccumulator();
@@ -89,7 +93,7 @@ function buildTaskEventStates(events) {
       unverifiedCount: 0,
       anomalyCount: 0,
     };
-    if (VERIFIED_CLASSIFICATIONS.has(event.classification) && event.usage) {
+    if (isVerifiedRequestEvent(event)) {
       accumulateUsage(state, event.usage);
       state.verifiedCount += 1;
     } else if (event.classification === "duplicate") {

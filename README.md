@@ -66,7 +66,8 @@ codex-usage-monitor\
 ## 页面能力
 
 - 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话；已有 SQLite projection 时点击只读 cached canonical snapshot，不在请求路径同步解析 rollout。新增/变化 session 由后台 indexer 处理；目录缺失时明确归入“未归类”。
-- 左侧可切换“工程”和“时间”两种导航；工程模式打开完整 session，时间模式以 `(sessionId, local day)` 为选择身份，右侧 Task / Agent / Token / Request / Cost 只统计当天。时间视图按月→日→session 展开，并展示与右侧同口径的 total token 和订阅标准价 USD 等值。
+- 左侧可切换“工程”和“时间”两种导航；工程模式打开完整 session，并以“任务记录”展示完整 Task lifecycle；时间模式以 `(sessionId, local day)` 为选择身份，使用“当日任务活动”展示当天真正发生的 canonical Request，再按 Task Day Slice 分组。Time 表显示“当日首请求 / 当日末请求 / Requests”，不会把完整 Task 的开始时间或耗时冒充为当天计量时间。
+- Task 可按需展开 canonical Request 审计表，查看每个 Request 的时间、Input/Cached/Cache Write/Output/Reasoning/Total、模型、service tier、USD 与 coverage。Project 展开完整 Task Request；Time 只展开当天 Request。明细使用稳定 cursor 分页，初始 snapshot/SSE 不内嵌全部 Request。
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
@@ -101,6 +102,7 @@ codex-usage-monitor\
 - Request identity 优先使用 `token_count` 可证明的原生 `request_id/model_request_id/response_id`；当前真实 legacy 样本没有这些字段，因此确定性使用 `turnId + generation + cumulative usage + last usage` 重建。`thread/source/timestamp/call_id` 不参与 identity。
 - cross-root legacy history 也只保留 provenance：Task 明确早于 root session 创建时间时不会重新取得 accounting ownership；即使 copied Task 时间戳被改写，只要相同 request identity 已由其他 root 占有，也不会重复生成 canonical Request。该修复使用 projection v2，SQLite schema 仍保持 v14，旧 projection 只从已持久化 raw evidence 重建，不回放 `.codex`。
 - `modelRequestCount` 表示 canonical verified model usage Request；这是本地 rollout 可证明的 model-sampling Request identity，仍不宣称与服务端 invoice/HTTP 请求一一对应。
+- Task Day Slice 只是 Time 查询 projection，同一 Task 可以出现在多个日期但仍只有一个 Task identity；day-scope API 提供 `scopeDay/firstRequestAt/lastRequestAt/requestCount` 描述当日 Request 子集。
 - 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
 - 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度；页面显示的是剩余比例，底层仍保留 Codex 原始 `used_percent` 语义。只有 `resetsAt + windowMinutes` 能确认处于同一窗口时才做单调收敛，进入新 reset 后允许比例重新降低。
 - 美元值是 **Subscription Standard-Rate Equivalent**：逐 verified usage unit 使用事件发生时的历史订阅标准价，并仅对可证明的长上下文/Fast feature 应用规则。它不是 Plus 实际扣费，也不能从 5 小时/周额度反推。Regional processing、web/image/voice/tool fee 仍不在当前 policy；partial 金额只表示当前可证明部分。

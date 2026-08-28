@@ -171,15 +171,68 @@ try {
   assert(structural.sameAnchor, "existing task row identity changed during structural update");
   assert(Math.abs(structural.topDelta) < 1, `visual anchor moved by ${structural.topDelta}px`);
 
+  const requestDrilldown = await verifyRequestDrilldown(cdp);
   const scopedNavigation = await verifyScopedNavigation(cdp);
   const narrow = await verifyNarrowViewport(cdp);
 
-  console.log(JSON.stringify({ collapsed, structural, scopedNavigation, narrow }, null, 2));
+  console.log(JSON.stringify({ collapsed, structural, requestDrilldown, scopedNavigation, narrow }, null, 2));
 } finally {
   try { socket?.close(); } catch {}
   chrome.kill();
   await sleep(250);
   await rm(profile, { recursive: true, force: true }).catch(() => {});
+}
+
+async function verifyRequestDrilldown(cdp) {
+  const target = await cdp.evaluate(`(() => {
+    const buttons = [...document.querySelectorAll('.task-request-toggle')];
+    const button = buttons.find((candidate) => Number.parseInt(candidate.querySelector('span')?.textContent ?? '0', 10) > 0);
+    if (!button) return null;
+    const row = button.closest('.task-row');
+    button.click();
+    return { threadId: row?.dataset.threadId ?? null, turnId: row?.dataset.taskId ?? null };
+  })()`);
+  assert(target?.threadId && target?.turnId, "no task with canonical Requests was available for drill-down QA");
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const detail = [...document.querySelectorAll('.task-request-row')]
+      .find((row) => row.dataset.taskDetailId === ${JSON.stringify(target.turnId)});
+    return Boolean(detail?.querySelector('.request-table tbody tr')) || Boolean(detail?.querySelector('.request-detail-state.error'));
+  })()`), "canonical Request drill-down");
+
+  const before = await cdp.evaluate(`(() => {
+    const detail = [...document.querySelectorAll('.task-request-row')]
+      .find((row) => row.dataset.taskDetailId === ${JSON.stringify(target.turnId)});
+    const toggle = [...document.querySelectorAll('.task-row')]
+      .find((row) => row.dataset.threadId === ${JSON.stringify(target.threadId)} && row.dataset.taskId === ${JSON.stringify(target.turnId)})
+      ?.querySelector('.task-request-toggle');
+    window.__codexLiveUiQa.requestDetail = detail;
+    return {
+      requestRows: detail?.querySelectorAll('.request-table tbody tr').length ?? 0,
+      expanded: toggle?.getAttribute('aria-expanded') === 'true',
+      hasError: Boolean(detail?.querySelector('.request-detail-state.error')),
+    };
+  })()`);
+  assert(before.expanded, "task Request toggle did not enter expanded state");
+  assert(!before.hasError, "task Request drill-down rendered an error");
+  assert(before.requestRows > 0, "task with Request count > 0 returned no canonical Request rows");
+
+  const after = await cdp.evaluate(`(() => {
+    window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', {
+      data: window.__codexLiveUiQa.snapshotData,
+    }));
+    const toggle = [...document.querySelectorAll('.task-row')]
+      .find((row) => row.dataset.threadId === ${JSON.stringify(target.threadId)} && row.dataset.taskId === ${JSON.stringify(target.turnId)})
+      ?.querySelector('.task-request-toggle');
+    return {
+      sameDetail: Boolean(window.__codexLiveUiQa.requestDetail?.isConnected && document.contains(window.__codexLiveUiQa.requestDetail)),
+      expanded: toggle?.getAttribute('aria-expanded') === 'true',
+      requestRows: window.__codexLiveUiQa.requestDetail?.querySelectorAll('.request-table tbody tr').length ?? 0,
+    };
+  })()`);
+  assert(after.sameDetail, "snapshot replaced the expanded Request detail row");
+  assert(after.expanded, "snapshot lost Task Request expansion state");
+  assert(after.requestRows === before.requestRows, "snapshot changed loaded Request detail without projection invalidation");
+  return { target, before, after };
 }
 
 async function verifyScopedNavigation(cdp) {
@@ -199,10 +252,18 @@ async function verifyScopedNavigation(cdp) {
       day: active?.dataset.sessionDay ?? null,
       versionLabel: document.querySelector('#session-version')?.textContent ?? '',
       sameSessionDays: [...new Set(sameSessionDays)],
+      taskCountLabel: document.querySelector('#task-count-label')?.textContent ?? '',
+      tableCaption: document.querySelector('.task-table.day-scope caption')?.textContent ?? '',
+      tableHeadings: [...document.querySelectorAll('.task-table.day-scope thead th')].map((cell) => cell.textContent.trim()),
     };
   })()`);
   assert(timeState.sessionId && timeState.day, "time navigation did not expose composite selection identity");
   assert(timeState.versionLabel.includes(timeState.day), "day snapshot label does not match active Timeline day");
+  assert(timeState.taskCountLabel === "活动任务", "Time summary does not label Task Day Slice as 活动任务");
+  assert(timeState.tableCaption === "当日任务活动", "Time task table does not identify itself as 当日任务活动");
+  assert(timeState.tableHeadings.includes("当日首请求") && timeState.tableHeadings.includes("当日末请求"), "Time task table is missing Request window columns");
+  assert(timeState.tableHeadings.includes("Requests"), "Time task table is missing explicit Requests count");
+  assert(!timeState.tableHeadings.includes("开始") && !timeState.tableHeadings.includes("耗时"), "Time task table still exposes full Task lifecycle columns as day metrics");
 
   let crossDay = { skipped: true, reason: "selected live session has only one Timeline day" };
   if (timeState.sameSessionDays.length > 1) {
@@ -225,7 +286,16 @@ async function verifyScopedNavigation(cdp) {
     document.querySelector('[data-session-view="project"].active') &&
     !document.querySelector('#session-version')?.textContent.includes('当日')
   )`), "full-session project selection");
-  return { timeState, crossDay, projectRestoredFullScope: true };
+  const projectState = await cdp.evaluate(`(() => ({
+    taskCountLabel: document.querySelector('#task-count-label')?.textContent ?? '',
+    tableCaption: document.querySelector('.task-table.session-scope caption')?.textContent ?? '',
+    tableHeadings: [...document.querySelectorAll('.task-table.session-scope thead th')].map((cell) => cell.textContent.trim()),
+  }))()`);
+  assert(projectState.taskCountLabel === "任务记录", "Project summary no longer labels full Tasks as 任务记录");
+  assert(projectState.tableCaption === "任务记录", "Project task table does not identify full Task scope");
+  assert(projectState.tableHeadings.includes("开始") && projectState.tableHeadings.includes("耗时"), "Project task table lost full Task lifecycle columns");
+  assert(projectState.tableHeadings.includes("Requests"), "Project task table is missing explicit Requests count");
+  return { timeState, crossDay, projectState, projectRestoredFullScope: true };
 }
 
 async function verifyNarrowViewport(cdp) {

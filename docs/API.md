@@ -14,7 +14,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 | 状态 | 含义 |
 |---|---|
-| `400` | ID 格式无效，或 `day` 不是合法 `YYYY-MM-DD` 本地日期 |
+| `400` | ID 格式无效，`day` 不是合法 `YYYY-MM-DD` 本地日期，或 Request drill-down 的 `limit/cursor` 无效 |
 | `401` | 缺少或错误的会话 Cookie |
 | `403` | Host 或 Origin 不受信任 |
 | `404` | 会话、任务或接口不存在 |
@@ -146,7 +146,7 @@ day scope 的 metadata 形如：
 { "scope": { "type": "day", "day": "2026-08-26", "timezone": "America/Los_Angeles" } }
 ```
 
-day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；同一跨午夜 task 可以出现在相邻两天，但前提是两天都实际发生 canonical Request。`deltaUsage`、`requestCount`、`requestLedgerCoverage`、`quality` 和 `costEstimate` 都按目标日 Request 重新计算；生命周期跨日但当天无 Request 的 Task 不进入 Time 页面。Agent 只保留当天相关节点及维持 lineage 所需祖先。
+day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；同一跨午夜 task 可以出现在相邻两天，但前提是两天都实际发生 canonical Request。`deltaUsage`、`requestCount`、`requestLedgerCoverage`、`quality` 和 `costEstimate` 都按目标日 Request 重新计算；生命周期跨日但当天无 Request 的 Task 不进入 Time 页面。Agent 只保留当天相关节点及维持 lineage 所需祖先。Phase 19 起每个 day-scope Task 还返回 `scopeKind="day_slice"`、`scopeDay`、`firstRequestAt`、`lastRequestAt`，用于明确表达当日 Request window；这些字段是查询 projection metadata，不创建第二个 Task identity。
 
 每个 `agents[].tasks[]` 任务的 `deltaUsage` 都在运行时由 Request Ledger 物化，并同时包含 rollout 的 `model`、`effort` 以及运行时派生的 `costEstimate`：
 
@@ -191,6 +191,40 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 页面从 request-derived `summary.totalUsage` 计算完整会话输入、输出和缓存命中率，从 `agents[].ownUsage` 与 `tasks[].deltaUsage` 计算对应层级命中率。统一公式为 `cachedInputTokens / inputTokens`；费用估算也消费同一套 request-derived 六字段 token。`requestCount` / `modelRequestCount` 和 `tokensPerModelRequest` 只由 verified model usage units 派生。
 
 这是有状态选择操作，但不写 `.codex`；它只更新监控器自身的解析范围和派生 SQLite。
+
+### `GET /api/sessions/:sessionId/tasks/:threadId/:turnId/requests[?day=YYYY-MM-DD&limit=N&cursor=...]`
+
+按 Task 懒加载其 **canonical Request audit detail**。无 `day` 时读取完整 Task 的 canonical Request；带 `day` 时只读取该本地自然日 `[dayStart,nextDayStart)` 内的 Request。初始 session/day snapshot 不内嵌这些明细，因此长 Task 的 Request 数量不会线性放大常规 SSE payload 或 DOM。
+
+查询只读 `canonical_requests`，不会返回 `inherited_copy` raw evidence。结果稳定按 `(observed_at, request_id)` 升序；默认 `limit=200`，允许 `1..500`。存在后续页时返回不透明 `nextCursor`，客户端只应原样回传。非法 day、limit 或 cursor 返回 `400`；Task 不属于指定 root session 时返回 `404`。
+
+```json
+{
+  "task": { "threadId": "thread-id", "turnId": "turn-id", "sequence": 1, "status": "completed" },
+  "scope": { "type": "session" },
+  "requests": [{
+    "requestId": "reqr_...",
+    "observedAt": "2026-08-28T08:05:00.000Z",
+    "usage": {
+      "inputTokens": 100,
+      "cachedInputTokens": 80,
+      "cacheWriteInputTokens": 0,
+      "outputTokens": 20,
+      "reasoningOutputTokens": 5,
+      "totalTokens": 120
+    },
+    "model": "gpt-5.6-terra",
+    "serviceTier": "default",
+    "pricingContextQuality": "verified",
+    "quality": "complete",
+    "costEstimate": { "status": "estimated", "amountUsd": 0.0 }
+  }],
+  "nextCursor": null,
+  "projectionGeneration": 42
+}
+```
+
+Request cost 继续严格使用该 Request 自身 event-level pricing evidence。若 canonical Request 缺 model/service-tier 等证据，detail 会返回既有 `partial/unavailable` 状态，而不会从 Task aggregate 反向猜值。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
 
 ### `GET /api/sessions/:id/events[?day=YYYY-MM-DD]`
 

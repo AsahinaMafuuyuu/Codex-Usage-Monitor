@@ -1249,6 +1249,16 @@ test("T-DAY-050..054 API keeps full and day snapshots distinct and aligned with 
   assert.equal(day1.scope.timezone, "America/Los_Angeles");
   assert.equal(day1.summary.totalUsage.totalTokens, 100);
   assert.equal(day1.summary.taskCount, 1);
+  assert.equal(day1.agents[0].tasks[0].scopeKind, "day_slice");
+  assert.equal(day1.agents[0].tasks[0].scopeDay, "2026-08-26");
+  assert.equal(
+    Date.parse(day1.agents[0].tasks[0].firstRequestAt),
+    Date.parse("2026-08-26T23:58:00-07:00"),
+  );
+  assert.equal(
+    Date.parse(day1.agents[0].tasks[0].lastRequestAt),
+    Date.parse("2026-08-26T23:58:00-07:00"),
+  );
 
   const day2Response = await fetch(`${base}/api/sessions/${ROOT}?day=2026-08-27`, {
     headers: { Cookie: cookie },
@@ -1277,6 +1287,80 @@ test("T-DAY-050..054 API keeps full and day snapshots distinct and aligned with 
   assert.equal(timelineDay2.modelRequestCount, day2.summary.modelRequestCount);
   assert.equal(timelineDay1.costEstimate.amountUsd, day1.summary.totalCostEstimate.amountUsd);
   assert.equal(timelineDay2.costEstimate.amountUsd, day2.summary.totalCostEstimate.amountUsd);
+});
+
+test("Phase 19 request drill-down returns only canonical task requests with stable day-scoped pagination", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-request-drilldown-"));
+  const codexHome = join(directory, ".codex");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(codexHome, { recursive: true });
+  const seed = new MonitorDatabase(databasePath);
+  seed.replaceSession(crossMidnightSnapshot());
+  const queryPlan = seed.db.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT request_id
+    FROM canonical_requests
+    WHERE root_session_id=? AND thread_id=? AND turn_id=?
+      AND (observed_at>? OR (observed_at=? AND request_id>?))
+    ORDER BY observed_at, request_id
+    LIMIT ?
+  `).all(ROOT, ROOT, TURN, "", "", "", 201);
+  assert.match(
+    queryPlan.map((row) => row.detail).join("\n"),
+    /idx_canonical_requests_task_observed/u,
+  );
+  seed.close();
+
+  const app = await startApplication({
+    codexHome,
+    databasePath,
+    port: 49_175,
+    openBrowser: false,
+  });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { base, cookie } = await authenticateApplication(app);
+  const endpoint = `${base}/api/sessions/${ROOT}/tasks/${ROOT}/${TURN}/requests`;
+
+  const firstResponse = await fetch(`${endpoint}?limit=1`, { headers: { Cookie: cookie } });
+  assert.equal(firstResponse.status, 200);
+  const first = await firstResponse.json();
+  assert.deepEqual(first.scope, { type: "session" });
+  assert.equal(first.task.turnId, TURN);
+  assert.equal(first.requests.length, 1);
+  assert.equal(Date.parse(first.requests[0].observedAt), Date.parse("2026-08-26T23:58:00-07:00"));
+  assert.equal(first.requests[0].usage.totalTokens, 100);
+  assert.equal(first.requests[0].costEstimate.status, "unavailable");
+  assert.equal(first.requests[0].costEstimate.reason, "missing_model");
+  assert.ok(first.requests[0].requestId);
+  assert.ok(first.nextCursor);
+  assert.ok(Number.isInteger(first.projectionGeneration));
+
+  const secondResponse = await fetch(`${endpoint}?limit=1&cursor=${encodeURIComponent(first.nextCursor)}`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(secondResponse.status, 200);
+  const second = await secondResponse.json();
+  assert.equal(second.requests.length, 1);
+  assert.equal(Date.parse(second.requests[0].observedAt), Date.parse("2026-08-27T00:02:00-07:00"));
+  assert.notEqual(second.requests[0].requestId, first.requests[0].requestId);
+  assert.equal(second.nextCursor, null);
+
+  const dayResponse = await fetch(`${endpoint}?day=2026-08-27`, { headers: { Cookie: cookie } });
+  assert.equal(dayResponse.status, 200);
+  const day = await dayResponse.json();
+  assert.equal(day.scope.type, "day");
+  assert.equal(day.scope.day, "2026-08-27");
+  assert.equal(day.requests.length, 1);
+  assert.equal(Date.parse(day.requests[0].observedAt), Date.parse("2026-08-27T00:02:00-07:00"));
+  assert.equal(day.requests[0].usage.totalTokens, 50);
+
+  const invalidCursor = await fetch(`${endpoint}?cursor=not-a-cursor`, { headers: { Cookie: cookie } });
+  assert.equal(invalidCursor.status, 400);
+  const invalidLimit = await fetch(`${endpoint}?limit=9999`, { headers: { Cookie: cookie } });
+  assert.equal(invalidLimit.status, 400);
 });
 
 test("T-DAY-060..062 scoped SSE rematerializes the listener scope after updates", async (t) => {

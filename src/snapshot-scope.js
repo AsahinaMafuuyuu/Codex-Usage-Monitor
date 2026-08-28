@@ -3,7 +3,7 @@ import {
   priceTasksByRequestEvents,
   summarizeTaskCosts,
 } from "./pricing.js";
-import { materializeRequestLedgerTasks } from "./request-ledger.js";
+import { isVerifiedRequestEvent, materializeRequestLedgerTasks } from "./request-ledger.js";
 import { resolveCanonicalRequestOwnership } from "./request-ownership.js";
 import { addUsage, sumTaskUsage, zeroUsage } from "./usage.js";
 
@@ -140,18 +140,37 @@ export function materializeCalendarSlices(
 function materializeTaskDaySlices(tasks, events, range) {
   const knownTasks = new Map(tasks.map((task) => [taskKey(task.threadId, task.turnId), task]));
   const scopedEvents = events.filter((event) => eventInRange(event, range));
-  const eventBackedTaskKeys = new Set();
+  const requestWindows = new Map();
   for (const event of scopedEvents) {
     const key = taskKey(event.threadId, event.turnId);
-    if (knownTasks.has(key)) eventBackedTaskKeys.add(key);
+    if (!knownTasks.has(key) || !isVerifiedRequestEvent(event)) continue;
+    const current = requestWindows.get(key) ?? { firstRequestAt: null, lastRequestAt: null };
+    const observedMs = timestampMs(event.observedAt);
+    if (!Number.isFinite(observedMs)) continue;
+    if (current.firstRequestAt == null || observedMs < timestampMs(current.firstRequestAt)) {
+      current.firstRequestAt = event.observedAt;
+    }
+    if (current.lastRequestAt == null || observedMs > timestampMs(current.lastRequestAt)) {
+      current.lastRequestAt = event.observedAt;
+    }
+    requestWindows.set(key, current);
   }
   const scopedTasks = tasks.filter((task) =>
-    eventBackedTaskKeys.has(taskKey(task.threadId, task.turnId))
+    requestWindows.has(taskKey(task.threadId, task.turnId))
   );
   return priceTasksByRequestEvents(
     materializeRequestLedgerTasks(scopedTasks, scopedEvents),
     scopedEvents,
-  );
+  ).map((task) => {
+    const window = requestWindows.get(taskKey(task.threadId, task.turnId));
+    return {
+      ...task,
+      scopeKind: "day_slice",
+      scopeDay: range.day,
+      firstRequestAt: window?.firstRequestAt ?? null,
+      lastRequestAt: window?.lastRequestAt ?? null,
+    };
+  });
 }
 
 function materializeAgents(sourceAgents, tasks, scopeType) {

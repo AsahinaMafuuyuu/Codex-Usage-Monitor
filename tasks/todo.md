@@ -105,7 +105,7 @@
 - [x] Contain asynchronous API projection failures inside the HTTP request error boundary
 - [x] Add real-failure regressions for cross-root copy, reverse indexing, timestamp rewrite, mixed-turn usage, and projection-version upgrade
 - [x] Freeze Phase 19 Request Fact / Task Day Slice business-unit contract
-- [ ] Add day-slice request-window metadata without duplicating Task identity
-- [ ] Add lazy canonical Request drill-down with task/day-scoped SQL and bounded payload
-- [ ] Differentiate Project full-task UI from Time task-day-slice UI
-- [ ] Reconcile six-field accounting/day conservation and meet SQL/UI performance gates
+- [x] Add day-slice request-window metadata without duplicating Task identity
+- [x] Add lazy canonical Request drill-down with task/day-scoped SQL and bounded payload
+- [x] Differentiate Project full-task UI from Time task-day-slice UI
+- [x] Reconcile six-field accounting/day conservation and meet SQL/UI performance gates

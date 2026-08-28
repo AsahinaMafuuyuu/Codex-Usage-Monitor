@@ -196,6 +196,27 @@ async function handleApi({ request, response, url, monitor }) {
   }
   if (url.pathname === "/api/health") return sendJson(response, 200, { health: monitor.health() });
 
+  const taskRequestsMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/tasks\/([^/]+)\/([^/]+)\/requests$/u,
+  );
+  if (taskRequestsMatch) {
+    const sessionId = decodeAndValidateId(taskRequestsMatch[1]);
+    const threadId = decodeAndValidateId(taskRequestsMatch[2]);
+    const turnId = decodeAndValidateId(taskRequestsMatch[3]);
+    if (!sessionId || !threadId || !turnId) {
+      return sendJson(response, 400, { error: "会话或任务 ID 无效" });
+    }
+    const requestPage = parseTaskRequestPage(url);
+    if (requestPage.error) return sendJson(response, 400, { error: requestPage.error });
+    const payload = monitor.taskRequests(sessionId, threadId, turnId, requestPage.value);
+    if (!payload) return sendJson(response, 404, { error: "找不到该任务" });
+    const { nextAfter, ...body } = payload;
+    return sendJson(response, 200, {
+      ...body,
+      nextCursor: nextAfter ? encodeTaskRequestCursor(nextAfter) : null,
+    });
+  }
+
   const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/u);
   if (sessionMatch) {
     const sessionId = decodeAndValidateId(sessionMatch[1]);
@@ -269,6 +290,51 @@ function parseSnapshotScope(url) {
     return { value: { type: "day", day, range }, error: null };
   } catch {
     return { value: null, error: "day 必须是合法的 YYYY-MM-DD 本地日期" };
+  }
+}
+
+function parseTaskRequestPage(url) {
+  const scope = parseSnapshotScope(url);
+  if (scope.error) return scope;
+  const limitText = url.searchParams.get("limit");
+  const limit = limitText == null || limitText === "" ? 200 : Number(limitText);
+  if (!Number.isInteger(limit) || limit < 1 || limit > 500) {
+    return { value: null, error: "limit 必须是 1 到 500 的整数" };
+  }
+  let after = null;
+  const cursor = url.searchParams.get("cursor");
+  if (cursor) {
+    after = decodeTaskRequestCursor(cursor);
+    if (!after) return { value: null, error: "cursor 无效或已损坏" };
+  }
+  return {
+    value: {
+      day: scope.value.type === "day" ? scope.value.day : null,
+      range: scope.value.type === "day" ? scope.value.range : null,
+      limit,
+      after,
+    },
+    error: null,
+  };
+}
+
+function encodeTaskRequestCursor({ observedAt, requestId }) {
+  return Buffer.from(JSON.stringify([observedAt, requestId]), "utf8").toString("base64url");
+}
+
+function decodeTaskRequestCursor(value) {
+  if (typeof value !== "string" || value.length < 4 || value.length > 1024) return null;
+  try {
+    const decoded = JSON.parse(Buffer.from(value, "base64url").toString("utf8"));
+    if (!Array.isArray(decoded) || decoded.length !== 2) return null;
+    const [observedAt, requestId] = decoded;
+    if (
+      typeof observedAt !== "string" || !Number.isFinite(Date.parse(observedAt)) ||
+      typeof requestId !== "string" || requestId.length < 1 || requestId.length > 256
+    ) return null;
+    return { observedAt, requestId };
+  } catch {
+    return null;
   }
 }
 

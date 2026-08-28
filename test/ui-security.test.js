@@ -81,7 +81,16 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /childContainer\.className = "agent-children"/u);
   assert.match(script, /role-badge/u);
   assert.match(script, /<colgroup>/u);
-  assert.match(script, /role="region" tabindex="0" aria-label="任务审计表；任务与状态列固定，可横向滚动查看完整 13 列"/u);
+  assert.match(script, /aria-label="\$\{dayScope \? "当日任务活动" : "任务记录"\}；任务与状态列固定/u);
+  assert.match(script, /task\.firstRequestAt/u);
+  assert.match(script, /task\.lastRequestAt/u);
+  assert.match(script, /task\.requestCount/u);
+  assert.match(script, /data-task-toggle/u);
+  assert.match(script, /requestDetails:\s*new Map\(\)/u);
+  assert.match(script, /\/tasks\/\$\{encodeURIComponent\(threadId\)\}\/\$\{encodeURIComponent\(turnId\)\}\/requests/u);
+  assert.match(script, /refreshStaleOpenRequestDetails/u);
+  assert.match(script, /projectionGeneration/u);
+  assert.match(script, /<caption>\$\{dayScope \? "当日任务活动" : "任务记录"\}<\/caption>/u);
   assert.doesNotMatch(script, /<th>推理<\/th>|col-reasoning/u);
   assert.match(script, /class="task-name-head"/u);
   assert.match(script, /class="task-status-head"/u);
@@ -101,7 +110,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.task-table td\s*\{[^}]*font-family:\s*var\(--mono\)/isu);
   assert.match(styles, /\.task-table td\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.activity-group \.metric-card\s*\{[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*text-align:\s*center/isu);
-  assert.match(styles, /\.task-table\s*\{[^}]*min-width:\s*1314px/isu);
+  assert.match(styles, /\.task-table\s*\{[^}]*min-width:\s*1420px/isu);
+  assert.match(styles, /\.task-table\.day-scope\s*\{[^}]*min-width:\s*1375px/isu);
   assert.match(styles, /\.agent-stat span,\s*\.agent-stat strong\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.session-identity\s*\{[^}]*min-width:\s*0/isu);
   assert.match(styles, /\.session-identity h2\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/isu);

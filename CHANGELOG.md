@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Added
+
+- Phase 19 Request Fact / Task Day Slice：Time 先按 canonical Request `observedAt` 切本地日，再按原 Task 分组；day-scope Task 增加 `scopeDay/firstRequestAt/lastRequestAt/requestCount`，不复制 Task identity。
+- 新增 task-scoped canonical Request 懒加载 API，支持 day filter、`(observedAt, requestId)` 稳定 cursor、bounded page size 和 `projectionGeneration`；新增 covering index `idx_canonical_requests_task_observed`，schema 继续保持 v14。
+- Project/Time 使用不同任务表语义：Project 保留完整 Task “开始/耗时”，Time 改为“当日任务活动 / 活动任务 / 当日首末请求 / Requests”；Task 展开可审计逐 Request Token、model/tier、USD/coverage，并保持 SSE keyed DOM/scroll/focus/anchor 稳定。
+
 ### Fixed
 
 - 修复 `history_mode=legacy` 把旧 root session 历史复制进新 root 时，`canonical_requests.request_id` 全局唯一约束触发启动/选会话崩溃的问题。cross-root copied Task/Request 现在只保留 inherited provenance；全局 request identity 继续作为重复 Token/Cost 的 accounting guard，而不是放宽为 `(root_session_id, request_id)`。
