@@ -967,7 +967,7 @@ function renderRequestDetail(detail, task) {
   return `<div class="request-audit">
     <div class="request-audit-heading"><strong>Canonical Requests</strong><span>${detail.requests.length}${detail.nextCursor ? "+" : ""} 条已加载</span></div>
     <div class="request-audit-scroll"><table class="request-table">
-      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th>Tier</th><th>USD</th></tr></thead>
+      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="Codex service_tier；default 为标准层级，fast/priority 会影响 Fast 定价。缺失时仅展示可证明的基础金额。">服务层级</th><th>USD</th></tr></thead>
       <tbody>${detail.requests.map((request) => renderRequestRow(request, task?.effort)).join("")}</tbody>
     </table></div>
     ${detail.nextCursor ? `<button class="request-more" type="button" data-request-more data-thread-id="${escapeHtml(detail.threadId)}" data-turn-id="${escapeHtml(detail.turnId)}" ${detail.loading ? "disabled" : ""}>${detail.loading ? "加载中…" : "加载更多"}</button>` : ""}
@@ -983,10 +983,10 @@ function renderRequestRow(request, effort) {
     <td>${formatTokens(request.usage?.outputTokens)}</td>
     <td>${formatTokens(request.usage?.reasoningOutputTokens)}</td>
     <td><strong>${formatTokens(request.usage?.totalTokens)}</strong></td>
-    <td><code title="${escapeHtml(request.model || "模型未知")}">${escapeHtml(request.model || "未知")}</code></td>
+    <td><code class="request-model" title="${escapeHtml(request.model || "模型未知")}">${escapeHtml(request.model || "未知")}</code></td>
     <td><span class="effort-chip">${escapeHtml(effortLabel(effort))}</span></td>
-    <td>${escapeHtml(request.serviceTier || "未知")}</td>
-    <td title="${escapeHtml(costEstimateTitle(request.costEstimate))}">${formatUsdEstimate(request.costEstimate)}</td>
+    <td><span class="tier-chip ${serviceTierClass(request.serviceTier)}">${escapeHtml(serviceTierLabel(request.serviceTier))}</span></td>
+    <td class="request-cost ${escapeHtml(request.costEstimate?.status || "unavailable")}" title="${escapeHtml(requestCostEstimateTitle(request.costEstimate))}">${formatUsdEstimate(request.costEstimate)}</td>
   </tr>`;
 }
 
@@ -1174,7 +1174,7 @@ function formatDuration(durationMs, startedAt, completedAt) {
 }
 
 function formatUsdEstimate(estimate) {
-  const value = estimate?.status === "estimated" ? estimate.amountUsd : null;
+  const value = estimate?.amountUsd;
   return formatUsdAmount(value);
 }
 
@@ -1250,6 +1250,38 @@ function costEstimateTitle(estimate) {
   const reasons = (estimate.reasons ?? []).join("、");
   const suffix = reasons ? ` 限制：${reasons}。` : "";
   return `按 ${requests} 个 verified usage unit 逐请求汇总；价目版本：${rates}。${formatFeatureCoverage(estimate.featureCoverage)}不是 Plus 实际扣费。${suffix}`;
+}
+
+function requestCostEstimateTitle(estimate) {
+  if (!estimate) return "缺少可审计的 Request pricing evidence。";
+  const amount = Number.isFinite(estimate.amountUsd) ? formatUsdAmount(estimate.amountUsd) : null;
+  const rate = estimate.rateVersion || "历史价目不可用";
+  const tier = serviceTierLabel(estimate.rawServiceTier ?? estimate.serviceTier);
+  if (estimate.status === "estimated") {
+    return `价目版本：${rate}；服务层级：${tier}。订阅标准价等值，不是 Plus 实际扣费。`;
+  }
+  if (estimate.status === "partial") {
+    const reason = estimate.reason === "service_tier_unknown"
+      ? "rollout 未证明 service_tier，因此未应用 Fast/priority 倍率"
+      : `pricing evidence 不完整${estimate.reason ? `（${estimate.reason}）` : ""}`;
+    return `${amount ? `当前可证明金额 ${amount}；` : ""}价目版本：${rate}；服务层级：${tier}。${reason}。不是 Plus 实际扣费。`;
+  }
+  return `价目版本：${rate}；服务层级：${tier}。缺少足够的 request-level pricing evidence，无法估算。`;
+}
+
+function serviceTierLabel(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  if (normalized === "default" || normalized === "standard") return "标准";
+  if (normalized === "fast") return "Fast";
+  if (normalized === "priority") return "Priority";
+  return "未知";
+}
+
+function serviceTierClass(value) {
+  const normalized = String(value ?? "").trim().toLowerCase();
+  return normalized === "default" || normalized === "standard" || normalized === "fast" || normalized === "priority"
+    ? normalized
+    : "unknown";
 }
 
 function formatFeatureCoverage(coverage) {

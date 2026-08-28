@@ -88,6 +88,12 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /<th>推理强度<\/th>/u);
   assert.match(script, /renderRequestRow\(request, task\?\.effort\)/u);
   assert.doesNotMatch(script, /<th>Coverage<\/th>/u);
+  assert.match(script, />服务层级<\/th>/u);
+  assert.match(script, /class="request-model"/u);
+  assert.match(script, /serviceTierLabel\(request\.serviceTier\)/u);
+  assert.match(script, /const value = estimate\?\.amountUsd/u);
+  assert.doesNotMatch(script, /estimate\?\.status === "estimated" \? estimate\.amountUsd : null/u);
+  assert.match(script, /function requestCostEstimateTitle\(/u);
   assert.match(script, /data-task-toggle/u);
   assert.match(script, /requestDetails:\s*new Map\(\)/u);
   assert.match(script, /\/tasks\/\$\{encodeURIComponent\(threadId\)\}\/\$\{encodeURIComponent\(turnId\)\}\/requests/u);
@@ -116,6 +122,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(styles, /\.activity-group \.metric-card\s*\{[^}]*align-items:\s*center;[^}]*justify-content:\s*center;[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.task-table\s*\{[^}]*min-width:\s*1420px/isu);
   assert.match(styles, /\.task-table\.day-scope\s*\{[^}]*min-width:\s*1447px/isu);
+  assert.match(styles, /\.model-cell code,\s*\.request-model\s*\{[^}]*var\(--blue\)[^}]*var\(--blue-soft\)/isu);
+  assert.match(styles, /\.request-cost\.partial\s*\{[^}]*var\(--gold\)/isu);
   assert.match(styles, /\.agent-stat span,\s*\.agent-stat strong\s*\{[^}]*text-align:\s*center/isu);
   assert.match(styles, /\.session-identity\s*\{[^}]*min-width:\s*0/isu);
   assert.match(styles, /\.session-identity h2\s*\{[^}]*overflow:\s*hidden;[^}]*text-overflow:\s*ellipsis;[^}]*white-space:\s*nowrap/isu);

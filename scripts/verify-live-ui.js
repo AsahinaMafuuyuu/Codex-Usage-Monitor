@@ -210,11 +210,17 @@ async function verifyRequestDrilldown(cdp) {
       requestRows: detail?.querySelectorAll('.request-table tbody tr').length ?? 0,
       expanded: toggle?.getAttribute('aria-expanded') === 'true',
       hasError: Boolean(detail?.querySelector('.request-detail-state.error')),
+      headings: [...(detail?.querySelectorAll('.request-table thead th') ?? [])].map((cell) => cell.textContent.trim()),
+      modelStyled: Boolean(detail?.querySelector('.request-model')),
     };
   })()`);
   assert(before.expanded, "task Request toggle did not enter expanded state");
   assert(!before.hasError, "task Request drill-down rendered an error");
   assert(before.requestRows > 0, "task with Request count > 0 returned no canonical Request rows");
+  assert(before.headings.includes("推理强度"), "Request drill-down is missing Task reasoning effort");
+  assert(before.headings.includes("服务层级"), "Request drill-down does not explain service tier");
+  assert(!before.headings.includes("Coverage"), "Request drill-down still exposes the removed Coverage column");
+  assert(before.modelStyled, "Request model does not use the emphasized model treatment");
 
   const after = await cdp.evaluate(`(() => {
     window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', {
@@ -244,6 +250,7 @@ async function verifyScopedNavigation(cdp) {
 
   const timeState = await cdp.evaluate(`(() => {
     const active = document.querySelector('.time-session-item.active[data-session-day]');
+    const caption = document.querySelector('.task-table.day-scope caption');
     const sameSessionDays = [...document.querySelectorAll('.time-session-item[data-session-day]')]
       .filter((button) => button.dataset.sessionId === active?.dataset.sessionId)
       .map((button) => button.dataset.sessionDay);
@@ -253,7 +260,9 @@ async function verifyScopedNavigation(cdp) {
       versionLabel: document.querySelector('#session-version')?.textContent ?? '',
       sameSessionDays: [...new Set(sameSessionDays)],
       taskCountLabel: document.querySelector('#task-count-label')?.textContent ?? '',
-      tableCaption: document.querySelector('.task-table.day-scope caption')?.textContent ?? '',
+      tableCaption: caption?.textContent ?? '',
+      captionPosition: caption ? getComputedStyle(caption).position : '',
+      captionWidth: caption ? getComputedStyle(caption).width : '',
       tableHeadings: [...document.querySelectorAll('.task-table.day-scope thead th')].map((cell) => cell.textContent.trim()),
     };
   })()`);
@@ -261,8 +270,10 @@ async function verifyScopedNavigation(cdp) {
   assert(timeState.versionLabel.includes(timeState.day), "day snapshot label does not match active Timeline day");
   assert(timeState.taskCountLabel === "活动任务", "Time summary does not label Task Day Slice as 活动任务");
   assert(timeState.tableCaption === "当日任务活动", "Time task table does not identify itself as 当日任务活动");
+  assert(timeState.captionPosition === "absolute" && timeState.captionWidth === "1px", "Time task caption is still visually occupying a table row");
   assert(timeState.tableHeadings.includes("当日首请求") && timeState.tableHeadings.includes("当日末请求"), "Time task table is missing Request window columns");
   assert(timeState.tableHeadings.includes("Requests"), "Time task table is missing explicit Requests count");
+  assert(timeState.tableHeadings.includes("推理强度"), "Time task table is missing reasoning effort");
   assert(!timeState.tableHeadings.includes("开始") && !timeState.tableHeadings.includes("耗时"), "Time task table still exposes full Task lifecycle columns as day metrics");
 
   let crossDay = { skipped: true, reason: "selected live session has only one Timeline day" };
@@ -286,6 +297,14 @@ async function verifyScopedNavigation(cdp) {
     document.querySelector('[data-session-view="project"].active') &&
     !document.querySelector('#session-version')?.textContent.includes('当日')
   )`), "full-session project selection");
+  await waitFor(async () => cdp.evaluate(`(() => {
+    try {
+      const snapshot = JSON.parse(window.__codexLiveUiQa?.snapshotData ?? 'null');
+      return snapshot?.scope?.type === 'session';
+    } catch {
+      return false;
+    }
+  })()`), "full-session project SSE snapshot");
   const projectState = await cdp.evaluate(`(() => ({
     taskCountLabel: document.querySelector('#task-count-label')?.textContent ?? '',
     tableCaption: document.querySelector('.task-table.session-scope caption')?.textContent ?? '',

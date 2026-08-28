@@ -224,7 +224,7 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 }
 ```
 
-Request cost 继续严格使用该 Request 自身 event-level pricing evidence。若 canonical Request 缺 model/service-tier 等证据，detail 会返回既有 `partial/unavailable` 状态，而不会从 Task aggregate 反向猜值。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
+Request cost 继续严格使用该 Request 自身 event-level pricing evidence。若 canonical Request 缺 model/service-tier 等证据，detail 会返回既有 `partial/unavailable` 状态，而不会从 Task aggregate 反向猜值。`partial.amountUsd` 仍是可证明的基础金额，例如 service tier 缺失时保留已知历史标准价金额、但不猜 Fast/priority multiplier；前端会显示该金额并通过 USD 悬停说明披露 evidence 缺口。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
 
 ### `GET /api/sessions/:id/events[?day=YYYY-MM-DD]`
 

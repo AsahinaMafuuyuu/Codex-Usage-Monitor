@@ -10,7 +10,14 @@
 - 新增 task-scoped canonical Request 懒加载 API，支持 day filter、`(observedAt, requestId)` 稳定 cursor、bounded page size 和 `projectionGeneration`；新增 covering index `idx_canonical_requests_task_observed`，schema 继续保持 v14。
 - Project/Time 使用不同任务表语义：Project 保留完整 Task “开始/耗时”，Time 改为“当日任务活动 / 活动任务 / 当日首末请求 / Requests”；Task 展开可审计逐 Request Token、model/tier、USD/coverage，并保持 SSE keyed DOM/scroll/focus/anchor 稳定。
 
+### Changed
+
+- Time Task 表移除可见的“当日任务活动”caption，并补充“推理强度”；Canonical Request 明细移除独立 Coverage 列、补充所属 Task 推理强度，并将 `service_tier` 显示为更明确的“服务层级”。
+- Request/Task 模型采用与现有蓝灰角色体系一致的轻量强调样式；Request pricing coverage 继续通过 USD 悬停说明保留，不增加额外宽列。
+
 ### Fixed
+
+- 修复 `partial.amountUsd` 已有可证明金额时前端仍显示 `—` 的问题。service tier 缺失现在显示部分可证明的基础 USD 金额，并明确不应用无法证明的 Fast/priority 倍率。
 
 - 修复 `history_mode=legacy` 把旧 root session 历史复制进新 root 时，`canonical_requests.request_id` 全局唯一约束触发启动/选会话崩溃的问题。cross-root copied Task/Request 现在只保留 inherited provenance；全局 request identity 继续作为重复 Token/Cost 的 accounting guard，而不是放宽为 `(root_session_id, request_id)`。
 - 修复 copy root 先索引时 provenance 指针为空的问题：原始 canonical Request 后续出现后会自动 backfill `canonical_request_id`；projection semantics 升级到 v2，SQLite schema 保持 v14，并从持久化 raw evidence 一次性重建旧 projection。
