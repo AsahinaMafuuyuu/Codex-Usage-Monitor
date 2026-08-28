@@ -329,7 +329,11 @@ export class UsageMonitor extends EventEmitter {
       agentCount: stored.session.agentCount,
       taskCount: stored.session.taskCount,
     };
-    const materialized = materializeScopedSnapshot(stored, normalizedScope);
+    const materialized = materializeScopedSnapshot(
+      stored,
+      normalizedScope,
+      { ownershipResolved: true },
+    );
     return {
       ...materialized,
       pricing: pricingCatalogSummary(),

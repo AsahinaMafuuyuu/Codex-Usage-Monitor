@@ -1195,3 +1195,14 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] 页面点击不再是索引器入口。
 
 **Delivered evidence (2026-08-27):** 真实污染 session 的 639 raw Task 收敛为 67 canonical + 572 inherited + 0 unresolved；12,783 verified Request evidence 收敛为 1,464 canonical + 11,319 inherited + 0 unresolved，六字段守恒。canonical total token `175,379,870`，重复 provenance `1,564,379,574`。52,552 条 JSONL record 中原 1,978 unknown 已审计为 1,104 patch end + 610 user message + 183 thread rollback + 81 web-search end，均为 non-accounting；allowlist 后 `unknownRecords=0` 且 Request/Token reconciliation 不变。最终 warm Timeline P95 `19.76ms`、Session-Day P95 `65.43ms`；20-file SHA-256 manifest before/after 均为 `3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`。新增 restore identity、migration backfill、source-scoped replace、canonical Agent/unattributed 与 parser-semantics regressions 后，`npm test` 109 / 108 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 和 1440px/720px Chrome/CDP 全部通过。
+
+## Phase 18.1: Cross-root ownership hardening
+
+- [x] 复现新 root 携带旧 root legacy history 时 `canonical_requests.request_id` 全局唯一冲突；禁止通过联合主键或 `INSERT OR IGNORE` 掩盖重复计量。
+- [x] 用 root 创建时间 causal evidence + 全局 request identity ownership 双层防线，把 cross-root copy 降级为 inherited provenance；真正的新 Request 即使与 inherited history 共用 turn 仍可独立 canonicalize。
+- [x] 支持当前 legacy 格式下 copy-first/original-later provenance pointer backfill；全量 rebuild 按 session 创建时间稳定排序。
+- [x] projection semantics 升级为 v2，schema 保持 v14；旧 projection 只从持久化 raw evidence 一次性重建，不 replay `.codex`。
+- [x] HTTP handler 等待异步 API Promise，使 projection/index rejection 返回受控 500 而不是悬挂/进程级 rejection。
+- [x] 新增 `T-PROJ-007~011` 与 HTTP async error-boundary regression，并用真实故障 root 做临时 SQLite 集成验证。
+
+**Delivered evidence (2026-08-28):** 正式监控 SQLite 副本从 projection v1 原地重建为 v2，schema 保持 v14，耗时 `2766ms`；真实故障 root 写入后为 104 canonical verified Request + 278 inherited verified Request + 0 unresolved，37 canonical Task + 12 inherited Task，2 个参与 rollout SHA-256 前后不变。最终 `npm test` 115 / 114 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 通过。

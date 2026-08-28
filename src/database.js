@@ -11,7 +11,7 @@ import { addUsage, normalizeTimestamp, sumTaskUsage, USAGE_FIELDS, zeroUsage } f
 const SCHEMA_VERSION = 14;
 const REQUEST_LEDGER_SCHEMA_VERSION = 9;
 const PARSER_VERSION = 15;
-const PROJECTION_VERSION = 1;
+const PROJECTION_VERSION = 2;
 const QUALITY_KEYS = ["complete", "provisional", "partial", "unknown"];
 
 export class MonitorDatabase {
@@ -153,7 +153,7 @@ export class MonitorDatabase {
         unavailable_requests INTEGER NOT NULL DEFAULT 0,
         cost_feature_coverage TEXT,
         pricing_policy_version TEXT,
-        projection_version INTEGER NOT NULL DEFAULT 1,
+        projection_version INTEGER NOT NULL DEFAULT ${PROJECTION_VERSION},
         PRIMARY KEY (day, root_session_id),
         FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
       );
@@ -310,7 +310,7 @@ export class MonitorDatabase {
       ["unavailable_requests", "INTEGER NOT NULL DEFAULT 0"],
       ["cost_feature_coverage", "TEXT"],
       ["pricing_policy_version", "TEXT"],
-      ["projection_version", "INTEGER NOT NULL DEFAULT 1"],
+      ["projection_version", `INTEGER NOT NULL DEFAULT ${PROJECTION_VERSION}`],
     ];
     for (const [name, definition] of calendarProjectionColumns) {
       if (!calendarColumns.some((column) => column.name === name)) {
@@ -356,7 +356,14 @@ export class MonitorDatabase {
 
     const timezone = localTimezone();
     const storedTimezone = this.db.prepare("SELECT value FROM derived_state WHERE key='calendar_timezone'").get()?.value;
-    if (previousVersion < 14 || storedTimezone !== timezone) {
+    const storedProjectionVersion = Number(
+      this.db.prepare("SELECT value FROM derived_state WHERE key='projection_version'").get()?.value ?? 0,
+    );
+    if (
+      previousVersion < 14 ||
+      storedTimezone !== timezone ||
+      storedProjectionVersion !== PROJECTION_VERSION
+    ) {
       this.rebuildAllCanonicalProjections();
     }
     if (previousVersion < 11) {
@@ -367,6 +374,10 @@ export class MonitorDatabase {
       INSERT INTO derived_state (key, value) VALUES ('calendar_timezone', ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value
     `).run(timezone);
+    this.db.prepare(`
+      INSERT INTO derived_state (key, value) VALUES ('projection_version', ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(String(PROJECTION_VERSION));
     this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION};`);
     // Session names can be derived from prompt text. Keep them in the live read-only
     // repository index, never in the monitor's durable archive.
@@ -520,7 +531,7 @@ export class MonitorDatabase {
       ["unavailable_requests", "INTEGER NOT NULL DEFAULT 0"],
       ["cost_feature_coverage", "TEXT"],
       ["pricing_policy_version", "TEXT"],
-      ["projection_version", "INTEGER NOT NULL DEFAULT 1"],
+      ["projection_version", `INTEGER NOT NULL DEFAULT ${PROJECTION_VERSION}`],
     ];
     for (const [name, definition] of definitions) {
       if (!calendarColumns.some((column) => column.name === name)) {
@@ -1432,12 +1443,17 @@ export class MonitorDatabase {
         DELETE FROM event_ownership;
         DELETE FROM canonical_requests;
       `);
-      const roots = this.db.prepare("SELECT id FROM sessions").all();
+      const roots = this.db.prepare(`
+        SELECT id
+        FROM sessions
+        ORDER BY created_at IS NULL, created_at, updated_at, id
+      `).all();
       for (const row of roots) this.rebuildCalendarForSession(row.id);
     });
   }
 
   rebuildOwnershipForSession(rootId) {
+    const session = this.db.prepare("SELECT created_at FROM sessions WHERE id=?").get(rootId);
     const agents = this.db.prepare(`
       SELECT * FROM agents WHERE root_session_id=? ORDER BY depth, first_seen_at, thread_id
     `).all(rootId).map(mapAgent);
@@ -1445,7 +1461,34 @@ export class MonitorDatabase {
       SELECT * FROM tasks WHERE root_session_id=? ORDER BY thread_id, sequence
     `).all(rootId).map(mapTask);
     const events = this.getModelUsageEvents(rootId);
-    const resolved = resolveCanonicalRequestOwnership({ agents, tasks, events });
+    let resolved = resolveCanonicalRequestOwnership({
+      agents,
+      tasks,
+      events,
+      rootCreatedAt: session?.created_at ?? null,
+    });
+    const findExternalCanonicalRequest = this.db.prepare(`
+      SELECT request_id
+      FROM canonical_requests
+      WHERE request_id=? AND root_session_id<>?
+    `);
+    const externalCanonicalRequestIds = new Set();
+    for (const row of resolved.provenance) {
+      const requestId = row.requestIdentity;
+      if (!requestId || externalCanonicalRequestIds.has(requestId)) continue;
+      if (findExternalCanonicalRequest.get(requestId, rootId)) {
+        externalCanonicalRequestIds.add(requestId);
+      }
+    }
+    if (externalCanonicalRequestIds.size > 0) {
+      resolved = resolveCanonicalRequestOwnership({
+        agents,
+        tasks,
+        events,
+        rootCreatedAt: session?.created_at ?? null,
+        externalCanonicalRequestIds,
+      });
+    }
 
     this.db.prepare("DELETE FROM task_ownership WHERE root_session_id=?").run(rootId);
     this.db.prepare("DELETE FROM event_ownership WHERE root_session_id=?").run(rootId);
@@ -1475,6 +1518,9 @@ export class MonitorDatabase {
         identity_kind, native_field, origin_source_key, origin_line_number
       ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
     `);
+    const findCanonicalRequest = this.db.prepare(`
+      SELECT request_id FROM canonical_requests WHERE request_id=?
+    `);
     for (const row of resolved.ownership) {
       insertTaskOwnership.run(
         rootId,
@@ -1502,7 +1548,11 @@ export class MonitorDatabase {
         rootId,
         row.ownerThreadId ?? null,
         row.status,
-        row.canonicalRequestId ?? null,
+        row.canonicalRequestId ?? (
+          row.requestIdentity && row.status === "inherited_copy"
+            ? findCanonicalRequest.get(row.requestIdentity)?.request_id ?? null
+            : null
+        ),
       );
     }
     for (const event of resolved.requests) {
@@ -1534,6 +1584,27 @@ export class MonitorDatabase {
         event.lineNumber,
       );
     }
+    this.db.exec(`
+      UPDATE event_ownership
+      SET canonical_request_id = (
+        SELECT canonical_requests.request_id
+        FROM model_usage_events
+        INNER JOIN canonical_requests
+          ON canonical_requests.request_id=model_usage_events.request_identity
+        WHERE model_usage_events.source_key=event_ownership.source_key
+          AND model_usage_events.line_number=event_ownership.line_number
+      )
+      WHERE status='inherited_copy'
+        AND canonical_request_id IS NULL
+        AND EXISTS (
+          SELECT 1
+          FROM model_usage_events
+          INNER JOIN canonical_requests
+            ON canonical_requests.request_id=model_usage_events.request_identity
+          WHERE model_usage_events.source_key=event_ownership.source_key
+            AND model_usage_events.line_number=event_ownership.line_number
+        )
+    `);
     this.db.prepare(`
       INSERT INTO derived_state (key, value) VALUES (?, ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value
@@ -1569,7 +1640,7 @@ export class MonitorDatabase {
       tasks: ownership.tasks,
       modelUsageEvents: ownership.events,
     };
-    const slices = materializeCalendarSlices(stored);
+    const slices = materializeCalendarSlices(stored, { ownershipResolved: true });
     const insert = this.db.prepare(`
       INSERT INTO session_day_usage (
         day, root_session_id,

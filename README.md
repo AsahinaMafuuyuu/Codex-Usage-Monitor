@@ -99,6 +99,7 @@ codex-usage-monitor\
 - schema v14 中 token 仍只来自经相邻 `total_token_usage` 逐字段验证的 Request Ledger；`last_token_usage` 只作为候选新增量被验证，绝不裸累加。业务聚合进一步只消费 `canonical_requests`，fork copied history 不会形成新的 Token/Cost。
 - `user_message`、`patch_apply_end`、`web_search_end`、`thread_rolled_back` 等已审计 record 只是消息/工具/会话状态证据，不生成 model Request，也不直接增加 Task usage。2026-08-27 的真实污染 session 中这四类共 1,978 条，已从 `unknownRecords` 收敛为显式 non-accounting allowlist；重新审计后 `unknownRecords=0`，Request/Token reconciliation 完全不变。
 - Request identity 优先使用 `token_count` 可证明的原生 `request_id/model_request_id/response_id`；当前真实 legacy 样本没有这些字段，因此确定性使用 `turnId + generation + cumulative usage + last usage` 重建。`thread/source/timestamp/call_id` 不参与 identity。
+- cross-root legacy history 也只保留 provenance：Task 明确早于 root session 创建时间时不会重新取得 accounting ownership；即使 copied Task 时间戳被改写，只要相同 request identity 已由其他 root 占有，也不会重复生成 canonical Request。该修复使用 projection v2，SQLite schema 仍保持 v14，旧 projection 只从已持久化 raw evidence 重建，不回放 `.codex`。
 - `modelRequestCount` 表示 canonical verified model usage Request；这是本地 rollout 可证明的 model-sampling Request identity，仍不宣称与服务端 invoice/HTTP 请求一一对应。
 - 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
 - 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度；页面显示的是剩余比例，底层仍保留 Codex 原始 `used_percent` 语义。只有 `resetsAt + windowMinutes` 能确认处于同一窗口时才做单调收敛，进入新 reset 后允许比例重新降低。

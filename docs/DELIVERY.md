@@ -217,6 +217,19 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - 临时 schema v14 shadow projection：`13,593` raw evidence rows、`1,464` canonical request rows、2 个 session-day rows；最终 warm Timeline P95 `19.76ms`，warm Session-Day P95 `65.43ms`，满足 `<200ms / <300ms` 门槛。完整 shadow persist `1,306.58ms`，位于后台索引路径。
 - 最终 20-file SHA-256 manifest：before=`3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`，after 完全相同。
 
+### v1.0.0 后 cross-root ownership hardening
+
+真实启动故障暴露了 Phase 18 原设计只覆盖同-root lineage copy、未覆盖“旧 root 历史被复制进新 root”的边界。修复不放宽 `canonical_requests.request_id` 的全局唯一性，而是补全 cross-root accounting ownership，并把 projection semantics 提升到 v2；SQLite schema 继续保持 v14。
+
+- 故障 root `01a0461a-1c38-7433-8ed8-18f6586ddc43` 的真实只读审计：49 Task、382 verified Request；其中 12 个 Task 明确早于 root 创建时间，包含 278 条 verified Request，`278/278` identity 均已存在于旧 root，真正新的 pre-root Request 为 `0`。
+- 临时 SQLite 真实数据集成：先写入旧 root 的 278 canonical Request，再写入故障 root；新 root 只产生 104 个新 canonical Request，278 个 verified cross-root copy 不重复计量，`unresolved=0`。event provenance 共有 284 条 inherited（包含同 Task 的非 verified evidence）。
+- copy-first/original-later、copied Task 时间戳被改写、stale projection rebuild 三类回归分别由 `T-PROJ-008/009/010` 锁定；原始 canonical Request 后出现时会 backfill `canonical_request_id`。
+- projection v1→v2 通过 `derived_state.projection_version` 触发一次性 raw-evidence rebuild，不升级 schema、不 replay rollout；全量 rebuild 按 session 创建时间稳定排序。
+- HTTP 异步 API rejection 现在在请求级边界被捕获并返回 500，不再形成悬挂请求或未处理 Promise rejection。
+- 正式监控库的临时副本完成 v1→v2 实际迁移：schema 仍为 v14，rebuild `2766ms`；随后导入当前故障 root 得到 104 canonical verified Request + 278 inherited verified Request + 0 unresolved，37 canonical Task + 12 inherited Task，且 2 个真实 source rollout SHA-256 前后完全不变。
+- canonical projection 后续 materialization 不再二次执行 root ownership heuristic；`T-PROJ-011` 证明 pre-root copied Task 中若同时存在真正新 Request，只剔除旧 inherited Request，新 Token/Request/Task 仍保留。
+- 最终自动化：`npm test` = `115 tests / 114 passed / 0 failed / 1 optional skip`；`npm run check`、`git diff --check` 通过。
+
 ### 浏览器验收
 
 最终真实 Chrome/CDP 1440×900 与 720×900 均通过：普通 snapshot 更新保持同一 task-table/Agent DOM、`scrollLeft=354`、focus、展开与手工折叠状态；结构变化 `scrollDelta=66px` 时 visual-anchor top delta `0px`，Project 恢复 full scope。最终复验选中的 live session 只有一个 Timeline day，因此 cross-day 子检查自然 skipped；此前多日真实 session 已实际通过 `2026-08-27 → 2026-08-26`。720px 下独立横向 overflow、`scrollLeft=240`、focus 和 Agent 状态保持。
@@ -232,4 +245,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] Request Ledger 已在 reconciliation、增量 tail、重启、schema v9→v10 迁移和真实历史回放门槛通过后成为正式主统计事实源；schema v11 已结束迁移期并退役 Boundary Ledger，旧实现由 `usage-boundary-ledger-v1` 保存。
 - [x] Phase 16 Day-scoped Snapshot 已按 ADR-0018 和 schema v12 交付；Timeline/detail、HTTP/SSE、前端二元选择和 live interaction 验证证据已归档。
 - [x] Phase 17 Subscription Standard-Rate Cost 已按 ADR-0019 完成交付：historical catalog、request-cost engine、long/Fast policy、schema v13、event pricing context、只读 enrichment、request-derived aggregation、API/UI coverage 与真实历史 reconciliation 均已闭环。
-- [x] Phase 18 Canonical Request Ownership / Request-Day / schema v14 已完成：最终 `npm test` 为 109 tests / 108 passed / 0 failed / 1 optional skip；`npm run check`、`git diff --check`、真实 unknown-record audit、canonical reconciliation、read-only hash、性能与桌面/窄屏浏览器门槛均通过。
+- [x] Phase 18 Canonical Request Ownership / Request-Day / schema v14 已完成；随后完成 cross-root ownership hardening（projection v2，schema 仍为 v14），并增加真实故障数据、反向索引顺序、timestamp rewrite、projection stale rebuild 与 HTTP async error-boundary 回归。

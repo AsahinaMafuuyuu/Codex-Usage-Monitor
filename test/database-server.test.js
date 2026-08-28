@@ -1181,6 +1181,38 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assertSecurityHeaders(missingStatic.headers);
 });
 
+test("HTTP async API failures return 500 without escaping the request error boundary", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-server-async-error-"));
+  const codexHome = join(directory, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  const app = await startApplication({
+    codexHome,
+    databasePath: join(directory, "usage.sqlite"),
+    port: 49_160,
+    openBrowser: false,
+  });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const { base, cookie } = await authenticateApplication(app);
+  const originalSelectSession = app.monitor.selectSession.bind(app.monitor);
+  app.monitor.selectSession = async () => {
+    throw new Error("synthetic async projection failure");
+  };
+
+  const failed = await fetch(`${base}/api/sessions/${ROOT}`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: "本地监控器处理请求失败" });
+
+  app.monitor.selectSession = originalSelectSession;
+  const health = await fetch(`${base}/api/health`, { headers: { Cookie: cookie } });
+  assert.equal(health.status, 200);
+});
+
 test("T-DAY-050..054 API keeps full and day snapshots distinct and aligned with Timeline", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-api-"));
   const codexHome = join(directory, ".codex");

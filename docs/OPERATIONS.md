@@ -169,3 +169,5 @@ npm run audit:unknown-records -- --session <root-session-id>
 ## 升级
 
 升级前停止服务并备份派生 SQLite。检查 [CHANGELOG](../CHANGELOG.md) 和 [ADR](decisions/README.md) 是否包含 schema/parser 变化；运行 `npm test` 和 `npm run check` 后再启动。任何升级都不应要求修改 `.codex/config.toml`。
+
+从 `v1.0.0` 基线升级到 cross-root ownership hardening 时，SQLite schema 仍为 v14，但 projection semantics 会从 v1 升到 v2。首次启动会一次性从监控库中已有 `tasks/model_usage_events` 重建 canonical/day/cost projection；这是派生数据重建，不会 replay 或改写 `.codex`。历史库较大时首次启动可能比普通重启更慢，后续恢复正常增量路径。

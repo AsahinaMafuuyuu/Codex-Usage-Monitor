@@ -98,3 +98,9 @@
 - [x] Shadow-rebuild polluted history and reconcile canonical/inherited/unresolved evidence
 - [x] Execute Phase 18 tests, real-history hashes, performance gates and browser QA
 - [x] Publish Phase 18 delivery/verification documentation
+- [x] Harden canonical ownership against cross-root legacy history copies without relaxing global request identity uniqueness
+- [x] Backfill cross-root provenance when the original canonical request is indexed later
+- [x] Add projection v2 stale rebuild on schema v14 persisted raw evidence
+- [x] Preserve genuinely new Request usage when it shares a turn with inherited cross-root history
+- [x] Contain asynchronous API projection failures inside the HTTP request error boundary
+- [x] Add real-failure regressions for cross-root copy, reverse indexing, timestamp rewrite, mixed-turn usage, and projection-version upgrade

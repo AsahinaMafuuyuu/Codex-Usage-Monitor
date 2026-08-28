@@ -30,12 +30,19 @@ export function resolveLocalDayRange(day) {
   };
 }
 
-export function materializeScopedSnapshot(stored, scope = { type: "session" }) {
+export function materializeScopedSnapshot(
+  stored,
+  scope = { type: "session" },
+  { ownershipResolved = false } = {},
+) {
   const normalized = normalizeScope(scope);
   const ownership = resolveCanonicalRequestOwnership({
     agents: stored?.agents ?? [],
     tasks: stored?.tasks ?? [],
     events: stored?.modelUsageEvents ?? [],
+    rootCreatedAt: ownershipResolved
+      ? null
+      : stored?.session?.createdAt ?? stored?.session?.created_at ?? null,
   });
   const sourceTasks = ownership.tasks;
   const sourceEvents = ownership.events;
@@ -92,11 +99,17 @@ export function materializeScopedSnapshot(stored, scope = { type: "session" }) {
   };
 }
 
-export function materializeCalendarSlices(stored, { now = Date.now() } = {}) {
+export function materializeCalendarSlices(
+  stored,
+  { now = Date.now(), ownershipResolved = false } = {},
+) {
   const ownership = resolveCanonicalRequestOwnership({
     agents: stored?.agents ?? [],
     tasks: stored?.tasks ?? [],
     events: stored?.modelUsageEvents ?? [],
+    rootCreatedAt: ownershipResolved
+      ? null
+      : stored?.session?.createdAt ?? stored?.session?.created_at ?? null,
   });
   const sourceTasks = ownership.tasks;
   const sourceEvents = ownership.events;

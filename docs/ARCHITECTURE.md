@@ -48,6 +48,8 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 
 schema v7 把查询热路径改为持久化派生索引；schema v8 把文件身份改为 portable source key；schema v9–v13 建立 Request Ledger、day scope 与 request-level pricing。schema v14 在此基础上明确区分四层：`model_usage_events` 保存 raw observed evidence；`task_ownership/event_ownership` 保存 canonical/inherited/unresolved provenance；`canonical_requests` 保存唯一业务 Request；`session_day_usage` 保存 request-day/cost projection。ownership、canonical request、day/cost 与 `projection_generation` 在同一 SQLite transaction 内切换，读路径只能看到旧 generation 或新 generation，不会看到混合 Token/Cost/Task count。
 
+Projection semantics 与 schema version 独立。cross-root ownership hardening 使用 projection v2，而 SQL schema 仍为 v14；`derived_state.projection_version` 落后时，启动只从持久化 Task/Request raw evidence 重建 canonical/day/cost projection，不要求重新读取 rollout。全量 rebuild 按 session 创建时间稳定排序，使旧 root 优先建立 canonical identity；若 copy 先被索引，原始 canonical Request 后续出现时会回填 inherited evidence 的 `canonical_request_id`。
+
 schema v9 建立 `model_usage_events` 并完成双账本 backfill；schema v10 按 [ADR-0015](decisions/0015-request-ledger-primary-aggregation.md) 将 verified Request Ledger 提升为页面与 Timeline 主聚合来源。schema v11 按 [ADR-0016](decisions/0016-retire-boundary-ledger.md) 删除旧 Boundary parser 计算、task delta/quality 存储、API 审计字段与 reconciliation CLI，只保留 Request Ledger。旧 v8 session 仍必须安全 replay 建立完整 Request Ledger；已有 v9/v10 ledger 升到 v11 只迁移 schema 并重建 calendar/agent aggregate，不因退役旧方案重新读取 rollout。Phase 18 后 parser 语义版本与 SQLite schema version 独立：当前 schema 仍为 v14，但 parser semantics 提升后会把旧 session 标记 dirty 并后台重索引 cursor diagnostics，而不是通过 schema 迁移或手工清零 `unknown_records` 伪造健康状态。
 
 schema v12 按 [ADR-0018](decisions/0018-day-scoped-request-ledger-snapshot.md) 首次将日期切到 event `observedAt`；schema v14 再由 [ADR-0020](decisions/0020-canonical-request-ownership-and-projections.md) 收紧为 **canonical Request observed-day**。`src/snapshot-scope.js` 负责本地日/DST 和 scoped grouping，但它消费的是 ownership resolver 输出，不再允许 lifecycle-only Task 进入 Time ledger。
@@ -61,6 +63,10 @@ schema v12 按 [ADR-0018](decisions/0018-day-scoped-request-ledger-snapshot.md) 
 parser 把每条 `token_count` 建模为独立审计事件。`last_token_usage` 只作为“本次新增 usage”的候选值，必须由相邻 `total_token_usage` 逐字段验证：累计不变先判 `duplicate`；累计增量与 `last` 一致才是 `verified_increment`；累计回退只有在新累计快照本身与 `last` 一致、可证明 generation 起点时才是 `generation_start`；缺前序累计快照/关键字段保留 `unverified`，无法解释的矛盾保留 `anomaly`。Task / Agent / Session / Timeline 只聚合 verified event；duplicate、unverified、anomaly 和未归属 event 都保持独立 coverage。历史 schema 缺少 cache-write 字段时，仅该字段保持不可验证，不把整条记录强制判错。
 
 Phase 18 把“raw evidence locator”和“业务 Request identity”正式分离。`(source_key, line_number)` 仍是 raw evidence 的 durable locator，但不再被称为 Request identity。Request identity 优先读取 `token_count` 自身的 `request_id/model_request_id/response_id`；当前真实 legacy 样本均不存在，因此 fallback 使用 `turnId + generation + cumulative verified usage + last verified usage` 做确定性 hash。thread/source/line/envelope timestamp 均不参与 identity，`call_id` 只属于工具调用。相同 identity 的 fork copy 只形成 provenance，并通过 `canonical_request_id` 指向唯一 canonical Request。已持久化 reconstructed identity 在 restore 时是 authoritative derived evidence，不能因 source 缺失、部分 replay 或排序变化被再次生成不同 ID；v13→v14 projection rebuild 会把从既有 Request Ledger 重建出的 identity 回填到 raw event 派生列。
+
+Ownership 既处理同-root lineage，也处理 cross-root history copy。Task `startedAt` 明确早于 root session `createdAt` 时直接判为 inherited provenance；若这一时间证据未来失效，但 request identity 已被其他 root 的 `canonical_requests` 占有，则全局 identity ownership 继续阻止重复计量。一个 turn 同时含 inherited 旧 Request 与当前 root 新 Request 时只排除旧 Request，不能按 Task 粗暴清空。
+
+Ownership 解析只发生在 raw evidence 进入 canonical projection 的边界。数据库已经通过 `task_ownership/canonical_requests` 过滤后的 Session/Day 数据，在 Snapshot/Calendar materialization 中以 `ownershipResolved` 输入处理，不再套用 root `createdAt` causal heuristic；这避免 canonical 新 Request 被第二次误判为 inherited。
 
 缓存命中率只做展示层确定性派生：`cachedInputTokens / inputTokens`。会话使用 request-derived `summary.totalUsage`，智能体使用 request-derived `ownUsage`，任务使用 request-derived `deltaUsage`；输入非正、字段缺失或缓存大于输入时不输出百分比。
 

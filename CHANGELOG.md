@@ -4,6 +4,12 @@
 
 ## [Unreleased]
 
+### Fixed
+
+- 修复 `history_mode=legacy` 把旧 root session 历史复制进新 root 时，`canonical_requests.request_id` 全局唯一约束触发启动/选会话崩溃的问题。cross-root copied Task/Request 现在只保留 inherited provenance；全局 request identity 继续作为重复 Token/Cost 的 accounting guard，而不是放宽为 `(root_session_id, request_id)`。
+- 修复 copy root 先索引时 provenance 指针为空的问题：原始 canonical Request 后续出现后会自动 backfill `canonical_request_id`；projection semantics 升级到 v2，SQLite schema 保持 v14，并从持久化 raw evidence 一次性重建旧 projection。
+- 修复 HTTP handler 未等待异步 API 路径导致 projection rejection 逃出请求级 `try/catch`、请求悬挂甚至进程退出的问题；现在统一返回受控 500。
+
 ## [1.0.0] - 2026-08-27
 
 这是首个正式稳定版本。`v1.0.0` 冻结当前经真实 rollout reconciliation、桌面/窄屏浏览器回归和全量自动化验证后的 Canonical Request 统计架构，作为后续功能迭代的稳定基线。

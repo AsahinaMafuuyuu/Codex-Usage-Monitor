@@ -309,6 +309,16 @@ npm test
 - 最终 Chrome/CDP 复验：1440×900 下 task-table `scrollLeft=354`、focus、Agent 展开/手工折叠与 DOM identity 在 snapshot 后保持，结构插入 `scrollDelta=66px` 时 visual-anchor top delta=`0px`；Project 恢复 full scope。当前复验选中的 live session 只有 `2026-08-27` 一个 Timeline day，因此 cross-day 子检查自然 skipped；前一轮多日真实 session 已实际通过 `2026-08-27 → 2026-08-26`。720×900 下横向 overflow、`scrollLeft=240`、focus 与 Agent 状态保持。
 - 最终全量门槛：`npm test` 为 `109 tests / 108 passed / 0 failed / 1 skipped`；唯一 skipped 为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选五任务 fixture。`npm run check` 与 `git diff --check` 均通过。
 
+#### Cross-root ownership hardening / projection v2
+
+- 真实故障 root `01a0461a-1c38-7433-8ed8-18f6586ddc43` 只读重扫得到 49 Task / 382 verified Request。12 个 Task 的 `startedAt` 明确早于 root `createdAt=2026-08-28T02:01:51.000Z`；这些 Task 中 278 条 verified Request 的 identity `278/278` 已存在于其他 root，`uniquePreRootVerifiedEvents=0`，证明本次 causal guard 不会删除该真实 session 的新 Request。
+- 临时库集成使用旧 root `019ff3cc-b7b9-7c01-9a48-d93b6c6c43aa` 的真实 raw evidence + 故障 root 当前 rollout：旧 root 278 canonical Request；故障 root 104 新 canonical Request；故障 root inherited event 284、unresolved 0；全局 projection Request=382，没有把 278 个历史副本再次计量。
+- `T-PROJ-007` 锁定 old-root-first 的 UNIQUE 崩溃；`T-PROJ-008` 锁定当前 legacy 格式下 copy-first/original-later pointer backfill；`T-PROJ-009` 锁定 original canonical 已存在时 copied Task timestamp rewrite 后仍由全局 request identity 防重复；`T-PROJ-010` 锁定 projection semantics stale 时 schema v14 原地从 raw evidence 重建为 projection v2；`T-PROJ-011` 锁定同 turn 的旧 inherited Request 与真正新 Request 不会被一起删除。
+- HTTP async error-boundary 回归先稳定复现“请求悬挂”，修复后 synthetic projection rejection 返回 500，随后 `/api/health` 仍可正常 200，证明错误不再逃逸请求级 `try/catch`。
+- 该 hardening 不修改 `.codex`、不放宽 `canonical_requests.request_id` 全局唯一性、也不通过 `INSERT OR IGNORE` 隐藏重复。若未来 wire format 同时改写 copied Task 时间且 copy root 早于原始 root 被 canonicalize，当前设计会要求新增证据/显式 unresolved 规则，而不是静默猜 ownership。
+- 正式 `data/usage.sqlite` 的临时副本执行真实 v1→v2 migration：`PRAGMA user_version=14` 保持不变，projection=`v2`，一次性 rebuild `2766ms`。随后在该副本导入当前故障 root：104 canonical verified Request / 278 inherited verified Request / 0 unresolved；37 canonical Task / 12 inherited Task；canonical Token=`12,808,314`。参与的 2 个真实 rollout SHA-256 before/after 完全一致。
+- 最终门槛：`npm test` 为 `115 tests / 114 passed / 0 failed / 1 skipped`；唯一 skip 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+
 ## 手工验收
 
 1. 启动服务，确认只监听 `127.0.0.1`，使用一次性 URL 进入页面。

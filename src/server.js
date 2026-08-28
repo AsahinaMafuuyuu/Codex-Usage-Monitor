@@ -69,7 +69,7 @@ export async function startApplication(options = {}) {
       }
 
       if (url.pathname.startsWith("/api/")) {
-        return handleApi({ request, response, url, monitor });
+        return await handleApi({ request, response, url, monitor });
       }
       const asset = STATIC_FILES.get(url.pathname);
       if (!asset) return sendText(response, 404, "页面不存在");

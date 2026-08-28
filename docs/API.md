@@ -37,13 +37,15 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 返回全部已发现根 session 的本地日期用量账页。Phase 18/schema v14 起该 endpoint **只读取已有 SQLite projection**，不会因为一次 HTTP Timeline 请求同步解析 rollout 或现场重算历史费用。启动与文件 watcher 把 stale/dirty session 交给 background indexer；已有 projection 立即返回，首次没有任何 projection 时才允许等待首轮后台构建形成可用基线。Indexer 使用 portable `source_key` + cursor 执行 restore/tail/replay，并在单一 transaction 内生成 ownership、`canonical_requests`、request-day/cost projection 与新的 `projection_generation`。
 
+cross-root ownership hardening 使用 projection v2、SQLite schema 仍为 v14。相同 request identity 已由其他 root canonicalize 时，当前 session 的 copied evidence 不会再次进入 Timeline/Session accounting。内部异步 projection/index 错误由请求级 error boundary 转成 HTTP 500，不应形成悬挂请求或未处理 Promise rejection。
+
 该同步只写监控器自己的派生 SQLite（task、cursor、session-day aggregate），从不修改 `.codex`。Timeline 后台补齐不会把历史 rollout 中的全部 quota 快照批量归档；账号额度仍由现有 latest-quota/实时路径维护。cursor 不可信、文件收缩或持久化状态不足时，parser 会回退到原有安全 replay 规则。
 
 ```json
 {
   "generatedAt": "2026-08-25T03:22:56.706Z",
   "timezone": "Asia/Shanghai",
-  "projection": { "version": 1, "generation": 42 },
+  "projection": { "version": 2, "generation": 42 },
   "usage": { "inputTokens": 0, "cachedInputTokens": 0, "outputTokens": 0, "reasoningOutputTokens": 0, "totalTokens": 0 },
   "modelRequestCount": 0,
   "tokensPerModelRequest": null,
@@ -227,7 +229,7 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
   "health": {
     "status": "healthy",
     "observerMode": "rollout-file-observer",
-    "projectionVersion": 1,
+    "projectionVersion": 2,
     "projectionGeneration": 42,
     "canonicalRequests": 100,
     "inheritedRequestCopies": 20,

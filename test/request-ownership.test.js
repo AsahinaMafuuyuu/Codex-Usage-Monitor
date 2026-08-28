@@ -254,8 +254,338 @@ test("T-PROJ-001/002 raw fork copies remain auditable but runtime reads canonica
   assert.equal(ownershipCounts.inheritedEvents, 1);
   assert.equal(ownershipCounts.unresolvedEvents, 0);
   assert.equal(database.getHealthStats().canonicalRequestRows, 2);
-  assert.equal(database.getTimeline().projection.version, 1);
+  assert.equal(database.getTimeline().projection.version, 2);
   assert.ok(database.getTimeline().projection.generation > 0);
+});
+
+test("T-PROJ-007 cross-root legacy history stays provenance and cannot duplicate a canonical request", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-cross-root-projection-"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  t.after(() => {
+    database.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+
+  const originalRoot = "root-a";
+  const copiedRoot = "root-b";
+  const turnId = "turn-shared";
+  const originalSource = "sessions/2026/08/01/rollout-root-a.jsonl";
+  const copiedSource = "sessions/2026/08/02/rollout-root-b.jsonl";
+  const makeSnapshot = ({ rootId, sourceKey, createdAt, taskStartedAt }) => ({
+    session: { id: rootId, title: "", createdAt },
+    agents: [{
+      rootSessionId: rootId,
+      threadId: rootId,
+      parentThreadId: null,
+      depth: 0,
+      isRoot: true,
+      rolloutKey: sourceKey,
+      firstSeenAt: createdAt,
+      lastSeenAt: "2026-08-02T03:00:00.000Z",
+    }],
+    tasks: [{
+      ...task(rootId, turnId, taskStartedAt),
+      rootSessionId: rootId,
+      sourceKey,
+    }],
+    modelUsageEvents: [{
+      ...event(rootId, turnId, "2026-08-01T15:01:00.000Z", 100),
+      rootSessionId: rootId,
+      sourceKey,
+      lineNumber: 10,
+    }],
+    cursors: [],
+    quotas: [],
+    health: { status: "healthy" },
+  });
+
+  database.replaceSession(makeSnapshot({
+    rootId: originalRoot,
+    sourceKey: originalSource,
+    createdAt: "2026-08-01T14:00:00.000Z",
+    taskStartedAt: "2026-08-01T15:00:00.000Z",
+  }), { persistQuotas: false });
+
+  assert.doesNotThrow(() => database.replaceSession(makeSnapshot({
+    rootId: copiedRoot,
+    sourceKey: copiedSource,
+    createdAt: "2026-08-02T14:00:00.000Z",
+    taskStartedAt: "2026-08-01T15:00:00.000Z",
+  }), { persistQuotas: false }));
+
+  assert.equal(database.db.prepare("SELECT COUNT(*) AS c FROM canonical_requests").get().c, 1);
+  assert.equal(database.getSession(originalRoot).modelUsageEvents.length, 1);
+  assert.equal(database.getSession(copiedRoot).modelUsageEvents.length, 0);
+  assert.equal(database.getSession(copiedRoot).tasks.length, 0);
+  const copiedOwnership = database.db.prepare(`
+    SELECT status, canonical_request_id
+    FROM event_ownership
+    WHERE root_session_id=? AND source_key=? AND line_number=?
+  `).get(copiedRoot, copiedSource, 10);
+  assert.equal(copiedOwnership.status, "inherited_copy");
+  assert.match(copiedOwnership.canonical_request_id, /^reqr_[0-9a-f]{64}$/u);
+  const timelineRows = database.db.prepare(`
+    SELECT SUM(total_tokens) AS total_tokens, SUM(model_request_count) AS requests
+    FROM session_day_usage
+  `).get();
+  assert.equal(Number(timelineRows.total_tokens), 100);
+  assert.equal(Number(timelineRows.requests), 1);
+});
+
+test("T-PROJ-008 cross-root provenance backfills when the original root is indexed later", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-cross-root-reverse-order-"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  t.after(() => {
+    database.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+
+  const turnId = "turn-shared";
+  const makeSnapshot = ({ rootId, sourceKey, createdAt, taskStartedAt }) => ({
+    session: { id: rootId, title: "", createdAt },
+    agents: [{
+      rootSessionId: rootId,
+      threadId: rootId,
+      parentThreadId: null,
+      depth: 0,
+      isRoot: true,
+      rolloutKey: sourceKey,
+      firstSeenAt: createdAt,
+      lastSeenAt: "2026-08-02T03:00:00.000Z",
+    }],
+    tasks: [{
+      ...task(rootId, turnId, taskStartedAt),
+      rootSessionId: rootId,
+      sourceKey,
+    }],
+    modelUsageEvents: [{
+      ...event(rootId, turnId, "2026-08-01T15:01:00.000Z", 100),
+      rootSessionId: rootId,
+      sourceKey,
+      lineNumber: 10,
+    }],
+    cursors: [],
+    quotas: [],
+    health: { status: "healthy" },
+  });
+
+  const copiedRoot = "root-b";
+  const copiedSource = "sessions/2026/08/02/rollout-root-b.jsonl";
+  database.replaceSession(makeSnapshot({
+    rootId: copiedRoot,
+    sourceKey: copiedSource,
+    createdAt: "2026-08-02T14:00:00.000Z",
+    taskStartedAt: "2026-08-01T15:00:00.000Z",
+  }), { persistQuotas: false });
+  assert.equal(database.db.prepare("SELECT COUNT(*) AS c FROM canonical_requests").get().c, 0);
+
+  database.replaceSession(makeSnapshot({
+    rootId: "root-a",
+    sourceKey: "sessions/2026/08/01/rollout-root-a.jsonl",
+    createdAt: "2026-08-01T14:00:00.000Z",
+    taskStartedAt: "2026-08-01T15:00:00.000Z",
+  }), { persistQuotas: false });
+
+  assert.equal(database.db.prepare("SELECT COUNT(*) AS c FROM canonical_requests").get().c, 1);
+  const copiedOwnership = database.db.prepare(`
+    SELECT status, canonical_request_id
+    FROM event_ownership
+    WHERE root_session_id=? AND source_key=? AND line_number=?
+  `).get(copiedRoot, copiedSource, 10);
+  assert.equal(copiedOwnership.status, "inherited_copy");
+  assert.match(copiedOwnership.canonical_request_id, /^reqr_[0-9a-f]{64}$/u);
+  const timelineRows = database.db.prepare(`
+    SELECT SUM(total_tokens) AS total_tokens, SUM(model_request_count) AS requests
+    FROM session_day_usage
+  `).get();
+  assert.equal(Number(timelineRows.total_tokens), 100);
+  assert.equal(Number(timelineRows.requests), 1);
+});
+
+test("T-PROJ-009 global request identity is a duplicate-accounting guard even when copied task time is rewritten", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-cross-root-identity-guard-"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  t.after(() => {
+    database.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+
+  const turnId = "turn-shared";
+  const makeSnapshot = ({ rootId, sourceKey, createdAt, taskStartedAt, observedAt }) => ({
+    session: { id: rootId, title: "", createdAt },
+    agents: [{
+      rootSessionId: rootId,
+      threadId: rootId,
+      parentThreadId: null,
+      depth: 0,
+      isRoot: true,
+      rolloutKey: sourceKey,
+      firstSeenAt: createdAt,
+      lastSeenAt: "2026-08-02T18:00:00.000Z",
+    }],
+    tasks: [{
+      ...task(rootId, turnId, taskStartedAt),
+      rootSessionId: rootId,
+      sourceKey,
+    }],
+    modelUsageEvents: [{
+      ...event(rootId, turnId, observedAt, 100),
+      rootSessionId: rootId,
+      sourceKey,
+      lineNumber: 10,
+    }],
+    cursors: [],
+    quotas: [],
+    health: { status: "healthy" },
+  });
+
+  database.replaceSession(makeSnapshot({
+    rootId: "root-a",
+    sourceKey: "sessions/2026/08/01/rollout-root-a.jsonl",
+    createdAt: "2026-08-01T14:00:00.000Z",
+    taskStartedAt: "2026-08-01T15:00:00.000Z",
+    observedAt: "2026-08-01T15:01:00.000Z",
+  }), { persistQuotas: false });
+
+  assert.doesNotThrow(() => database.replaceSession(makeSnapshot({
+    rootId: "root-b",
+    sourceKey: "sessions/2026/08/02/rollout-root-b.jsonl",
+    createdAt: "2026-08-02T14:00:00.000Z",
+    taskStartedAt: "2026-08-02T15:00:00.000Z",
+    observedAt: "2026-08-02T15:01:00.000Z",
+  }), { persistQuotas: false }));
+
+  assert.equal(database.db.prepare("SELECT COUNT(*) AS c FROM canonical_requests").get().c, 1);
+  assert.equal(database.getSession("root-b").modelUsageEvents.length, 0);
+  assert.equal(database.getSession("root-b").tasks.length, 0);
+  const copiedOwnership = database.db.prepare(`
+    SELECT status, canonical_request_id
+    FROM event_ownership
+    WHERE root_session_id='root-b'
+  `).get();
+  assert.equal(copiedOwnership.status, "inherited_copy");
+  assert.match(copiedOwnership.canonical_request_id, /^reqr_[0-9a-f]{64}$/u);
+});
+
+test("T-PROJ-010 stale projection semantics rebuild from persisted raw evidence without a schema bump", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-projection-version-rebuild-"));
+  const databasePath = join(directory, "usage.sqlite");
+  let database = new MonitorDatabase(databasePath);
+  t.after(() => {
+    database?.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+
+  database.replaceSession({
+    session: { id: "root", title: "", createdAt: "2026-08-01T14:00:00.000Z" },
+    agents: [{
+      rootSessionId: "root", threadId: "root", parentThreadId: null, depth: 0, isRoot: true,
+      firstSeenAt: "2026-08-01T14:00:00.000Z", lastSeenAt: "2026-08-01T16:00:00.000Z",
+    }],
+    tasks: [task("root", "turn-a", "2026-08-01T15:00:00.000Z")],
+    modelUsageEvents: [event("root", "turn-a", "2026-08-01T15:01:00.000Z", 100)],
+    cursors: [],
+    quotas: [],
+    health: { status: "healthy" },
+  }, { persistQuotas: false });
+  database.db.prepare("UPDATE session_day_usage SET total_tokens=999").run();
+  database.db.prepare(`
+    INSERT INTO derived_state (key, value) VALUES ('projection_version', '0')
+    ON CONFLICT(key) DO UPDATE SET value='0'
+  `).run();
+  database.close();
+  database = null;
+
+  database = new MonitorDatabase(databasePath);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 14);
+  assert.equal(database.getTimeline().usage.totalTokens, 100);
+  assert.equal(database.getTimeline().projection.version, 2);
+  assert.equal(
+    database.db.prepare("SELECT value FROM derived_state WHERE key='projection_version'").get().value,
+    "2",
+  );
+});
+
+test("T-PROJ-011 a turn with inherited history and a new request keeps only the new accounting usage", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-cross-root-mixed-turn-"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  t.after(() => {
+    database.close();
+    return rm(directory, { recursive: true, force: true });
+  });
+
+  const original = {
+    session: { id: "root-a", title: "", createdAt: "2026-08-01T14:00:00.000Z" },
+    agents: [{
+      rootSessionId: "root-a", threadId: "root-a", parentThreadId: null, depth: 0, isRoot: true,
+      firstSeenAt: "2026-08-01T14:00:00.000Z", lastSeenAt: "2026-08-01T16:00:00.000Z",
+    }],
+    tasks: [task("root-a", "turn-shared", "2026-08-01T15:00:00.000Z")],
+    modelUsageEvents: [{
+      ...event("root-a", "turn-shared", "2026-08-01T15:01:00.000Z", 100),
+      sourceKey: "sessions/2026/08/01/rollout-root-a.jsonl",
+      lineNumber: 10,
+    }],
+    cursors: [], quotas: [], health: { status: "healthy" },
+  };
+  database.replaceSession(original, { persistQuotas: false });
+  const originalRequestId = database.getCanonicalModelUsageEvents("root-a")[0].requestIdentity;
+
+  const copiedOldEvent = {
+    ...event("root-b", "turn-shared", "2026-08-02T15:01:00.000Z", 100),
+    rootSessionId: "root-b",
+    sourceKey: "sessions/2026/08/02/rollout-root-b.jsonl",
+    lineNumber: 10,
+    requestIdentity: originalRequestId,
+    requestIdentityKind: "reconstructed",
+    requestIdentityReason: "deterministic_request_reconstruction",
+  };
+  const newEvent = {
+    ...event("root-b", "turn-shared", "2026-08-02T15:02:00.000Z", 50),
+    rootSessionId: "root-b",
+    sourceKey: "sessions/2026/08/02/rollout-root-b.jsonl",
+    lineNumber: 20,
+  };
+  database.replaceSession({
+    session: { id: "root-b", title: "", createdAt: "2026-08-02T14:00:00.000Z" },
+    agents: [{
+      rootSessionId: "root-b", threadId: "root-b", parentThreadId: null, depth: 0, isRoot: true,
+      firstSeenAt: "2026-08-02T14:00:00.000Z", lastSeenAt: "2026-08-02T16:00:00.000Z",
+    }],
+    tasks: [task("root-b", "turn-shared", "2026-08-01T15:00:00.000Z")],
+    modelUsageEvents: [copiedOldEvent, newEvent],
+    cursors: [], quotas: [], health: { status: "healthy" },
+  }, { persistQuotas: false });
+
+  const rootB = database.getSession("root-b");
+  assert.equal(rootB.tasks.length, 1);
+  assert.equal(rootB.modelUsageEvents.length, 1);
+  assert.equal(rootB.modelUsageEvents[0].usage.totalTokens, 50);
+  assert.equal(rootB.tasks[0].turnId, "turn-shared");
+  const ownership = database.db.prepare(`
+    SELECT line_number, status, canonical_request_id
+    FROM event_ownership
+    WHERE root_session_id='root-b'
+    ORDER BY line_number
+  `).all();
+  assert.equal(ownership[0].status, "inherited_copy");
+  assert.equal(ownership[0].canonical_request_id, originalRequestId);
+  assert.equal(ownership[1].status, "canonical");
+  assert.equal(database.getTimeline().modelRequestCount, 2);
+  assert.equal(database.getTimeline().usage.totalTokens, 150);
+  const monitor = new UsageMonitor({
+    repository: {
+      sessions: new Map(),
+      getSession: () => null,
+      summary: () => ({}),
+    },
+    database,
+  });
+  const snapshot = monitor.snapshot("root-b");
+  assert.equal(snapshot.summary.taskCount, 1);
+  assert.equal(snapshot.summary.modelRequestCount, 1);
+  assert.equal(snapshot.summary.totalUsage.totalTokens, 50);
+  await monitor.close();
 });
 
 test("T-PROJ-005 present source authoritatively removes stale tasks and request evidence", async (t) => {
