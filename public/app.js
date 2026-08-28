@@ -11,11 +11,10 @@ const state = {
   connected: false,
   quotaRefreshing: false,
   requestDetails: new Map(),
-  taskPages: new Map(),
 };
 
-const TASK_PAGE_SIZE = 10;
 const REQUEST_PAGE_SIZE = 10;
+const REQUEST_PAGE_SIZE_OPTIONS = [5, 10];
 
 const elements = Object.fromEntries(
   [
@@ -82,13 +81,20 @@ elements["agent-tree"].addEventListener("click", (event) => {
     void toggleTaskRequests(toggle.dataset.threadId, toggle.dataset.turnId);
     return;
   }
+  const requestPageSize = event.target.closest("[data-request-page-size]");
+  if (requestPageSize) {
+    void setRequestPageSize(
+      requestPageSize.dataset.threadId,
+      requestPageSize.dataset.turnId,
+      Number(requestPageSize.dataset.requestPageSize),
+    );
+    return;
+  }
   const requestPage = event.target.closest("[data-request-page-action], [data-request-page-number], [data-request-page-jump-submit]");
   if (requestPage) {
     void handleRequestPageAction(requestPage);
     return;
   }
-  const taskPage = event.target.closest("[data-task-page-action], [data-task-page-number], [data-task-page-jump-submit]");
-  if (taskPage) handleTaskPageAction(taskPage);
 });
 elements["agent-tree"].addEventListener("keydown", (event) => {
   if (event.key !== "Enter") return;
@@ -96,12 +102,6 @@ elements["agent-tree"].addEventListener("keydown", (event) => {
   if (requestJump) {
     event.preventDefault();
     void jumpRequestPageFromInput(requestJump);
-    return;
-  }
-  const taskJump = event.target.closest("[data-task-page-jump]");
-  if (taskJump) {
-    event.preventDefault();
-    jumpTaskPageFromInput(taskJump);
   }
 });
 elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
@@ -150,7 +150,6 @@ async function selectSession(sessionId, requestedDay = null) {
   const nextSelectionKey = `${sessionId}|${day ?? ""}`;
   if (previousSelectionKey !== nextSelectionKey) {
     state.requestDetails.clear();
-    state.taskPages.clear();
   }
   state.selectedId = sessionId;
   state.selectedDay = day;
@@ -714,39 +713,7 @@ function renderAgentSummary(agent) {
 
 function renderTasks(agent) {
   if (!agent.tasks.length) return '<div class="empty-agent">该智能体还没有持久化任务边界。</div>';
-  const pagination = resolveTaskPagination(agent.threadId, agent.tasks.length);
-  const visibleTasks = agent.tasks.slice(pagination.startIndex, pagination.endIndex);
-  return `${renderTaskTableShell(visibleTasks.map(renderTaskRow).join(""))}<div class="task-request-details" aria-live="polite"></div>${renderTaskPagination(agent.threadId, pagination)}`;
-}
-
-function taskPageKey(threadId) {
-  return `${state.selectedId ?? ""}\u0000${state.selectedDay ?? ""}\u0000${threadId}`;
-}
-
-function resolveTaskPagination(threadId, totalItems) {
-  const totalPages = Math.max(1, Math.ceil(totalItems / TASK_PAGE_SIZE));
-  const key = taskPageKey(threadId);
-  const requestedPage = Number(state.taskPages.get(key) ?? 1);
-  const page = clamp(Number.isInteger(requestedPage) ? requestedPage : 1, 1, totalPages);
-  state.taskPages.set(key, page);
-  return {
-    page,
-    pageSize: TASK_PAGE_SIZE,
-    totalItems,
-    totalPages,
-    startIndex: (page - 1) * TASK_PAGE_SIZE,
-    endIndex: Math.min(page * TASK_PAGE_SIZE, totalItems),
-  };
-}
-
-function renderTaskPagination(threadId, pagination) {
-  const signature = `${pagination.page}|${pagination.totalPages}|${pagination.totalItems}`;
-  return `<nav class="task-pagination pagination-bar" data-task-pagination data-thread-id="${escapeHtml(threadId)}" data-signature="${signature}" aria-label="Task 分页">
-    ${renderPageButtons("task", pagination.page, pagination.totalPages, `data-thread-id="${escapeHtml(threadId)}"`)}
-    <span class="task-page-summary page-summary">第 ${pagination.page} / ${pagination.totalPages} 页 · 共 ${pagination.totalItems} 个 Task</span>
-    <label class="page-jump"><span>跳转</span><input type="number" min="1" max="${pagination.totalPages}" value="${pagination.page}" inputmode="numeric" data-task-page-jump data-thread-id="${escapeHtml(threadId)}" aria-label="跳转到 Task 页码"></label>
-    <button class="page-jump-submit" type="button" data-task-page-jump-submit data-thread-id="${escapeHtml(threadId)}">前往</button>
-  </nav>`;
+  return `${renderTaskTableShell(agent.tasks.map(renderTaskRow).join(""))}<div class="task-request-details" aria-live="polite"></div>`;
 }
 
 function renderPageButtons(kind, page, totalPages, contextAttributes) {
@@ -769,42 +736,6 @@ function paginationWindow(page, totalPages) {
   return Array.from({ length: count }, (_, index) => start + index);
 }
 
-function currentAgent(threadId) {
-  return state.snapshot?.agents?.find((agent) => agent.threadId === threadId) ?? null;
-}
-
-function handleTaskPageAction(control) {
-  const threadId = control.dataset.threadId;
-  const agent = currentAgent(threadId);
-  if (!agent) return;
-  const pagination = resolveTaskPagination(threadId, agent.tasks.length);
-  let page = pagination.page;
-  if (control.dataset.taskPageNumber) page = Number(control.dataset.taskPageNumber);
-  else if (control.matches("[data-task-page-jump-submit]")) {
-    const input = control.closest(".task-pagination")?.querySelector("[data-task-page-jump]");
-    if (input) page = Number(input.value);
-  } else {
-    page = pageFromAction(control.dataset.taskPageAction, page, pagination.totalPages);
-  }
-  setTaskPage(threadId, page);
-}
-
-function jumpTaskPageFromInput(input) {
-  setTaskPage(input.dataset.threadId, Number(input.value));
-}
-
-function setTaskPage(threadId, requestedPage) {
-  const agent = currentAgent(threadId);
-  if (!agent) return;
-  const totalPages = Math.max(1, Math.ceil(agent.tasks.length / TASK_PAGE_SIZE));
-  const page = clamp(Number.isInteger(requestedPage) ? requestedPage : 1, 1, totalPages);
-  state.taskPages.set(taskPageKey(threadId), page);
-  const branch = [...elements["agent-tree"].querySelectorAll("[data-agent-id]")]
-    .find((candidate) => candidate.dataset.agentId === threadId);
-  const details = branch?.querySelector(":scope > .agent-node > .agent-card");
-  patchAgentTasks(details, agent);
-}
-
 function pageFromAction(action, currentPage, totalPages) {
   if (action === "first") return 1;
   if (action === "prev") return Math.max(1, currentPage - 1);
@@ -822,8 +753,10 @@ function renderTaskTableShell(rows = "") {
   const headings = dayScope
     ? `<th class="task-name-head">Task</th><th class="task-status-head">状态</th><th>当日首请求</th><th>当日末请求</th><th>Requests</th><th>模型</th><th>推理强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`
     : `<th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>Requests</th><th>模型</th><th>推理强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`;
-  return `<div class="task-table-wrap" data-scope-kind="${dayScope ? "day" : "session"}" role="region" tabindex="0" aria-label="${dayScope ? "当日任务活动" : "任务记录"}；任务与状态列固定，可横向滚动查看完整 ${columnCount} 列"><table class="task-table ${dayScope ? "day-scope" : "session-scope"}">
-    <caption class="${dayScope ? "visually-hidden" : ""}">${dayScope ? "当日任务活动" : "任务记录"}</caption>
+  return `<div class="task-table-wrap" data-scope-kind="${dayScope ? "day" : "session"}" role="region" tabindex="0" aria-label="${dayScope ? "当日任务活动" : "任务记录"}；任务与状态列固定，可横向滚动查看完整 ${columnCount} 列">
+    ${dayScope ? "" : '<div class="task-table-heading" aria-hidden="true">任务记录</div>'}
+    <table class="task-table ${dayScope ? "day-scope" : "session-scope"}">
+    <caption class="visually-hidden">${dayScope ? "当日任务活动" : "任务记录"}</caption>
     <colgroup>${columns}</colgroup>
     <thead><tr>${headings}</tr></thead>
     <tbody>${rows}</tbody>
@@ -875,7 +808,6 @@ function patchAgentTasks(details, agent) {
   let structuralChanged = false;
   let tableWrap = directChildByClass(details, "task-table-wrap");
   let requestDetailsHost = directChildByClass(details, "task-request-details");
-  let paginationElement = directChildByClass(details, "task-pagination");
   let empty = directChildByClass(details, "empty-agent");
   if (!tasks.length) {
     if (tableWrap) {
@@ -884,10 +816,6 @@ function patchAgentTasks(details, agent) {
     }
     if (requestDetailsHost) {
       requestDetailsHost.remove();
-      structuralChanged = true;
-    }
-    if (paginationElement) {
-      paginationElement.remove();
       structuralChanged = true;
     }
     if (!empty) {
@@ -915,30 +843,15 @@ function patchAgentTasks(details, agent) {
     details.append(tableWrap);
     structuralChanged = true;
   }
-  const pagination = resolveTaskPagination(agent.threadId, tasks.length);
-  const visibleTasks = tasks.slice(pagination.startIndex, pagination.endIndex);
-  structuralChanged = patchTaskRows(tableWrap, visibleTasks) || structuralChanged;
+  structuralChanged = patchTaskRows(tableWrap, tasks) || structuralChanged;
   if (!requestDetailsHost) {
     requestDetailsHost = document.createElement("div");
     requestDetailsHost.className = "task-request-details";
     requestDetailsHost.setAttribute("aria-live", "polite");
-    details.insertBefore(requestDetailsHost, paginationElement ?? null);
+    details.append(requestDetailsHost);
     structuralChanged = true;
   }
-  structuralChanged = patchTaskRequestDetails(requestDetailsHost, visibleTasks) || structuralChanged;
-  const paginationMarkup = renderTaskPagination(agent.threadId, pagination);
-  const paginationSignature = `${pagination.page}|${pagination.totalPages}|${pagination.totalItems}`;
-  if (!paginationElement) {
-    paginationElement = createElementFromHtml(paginationMarkup);
-    details.append(paginationElement);
-    structuralChanged = true;
-  } else if (paginationElement.dataset.signature !== paginationSignature) {
-    const replacement = createElementFromHtml(paginationMarkup);
-    paginationElement.replaceWith(replacement);
-    paginationElement = replacement;
-    structuralChanged = true;
-  }
-  paginationElement.dataset.signature = paginationSignature;
+  structuralChanged = patchTaskRequestDetails(requestDetailsHost, tasks) || structuralChanged;
   return structuralChanged;
 }
 
@@ -1104,6 +1017,7 @@ async function toggleTaskRequests(threadId, turnId, { forceOpen = null } = {}) {
     loading: false,
     requests: [],
     page: 1,
+    pageSize: REQUEST_PAGE_SIZE,
     pagination: null,
     projectionGeneration: null,
     error: null,
@@ -1118,11 +1032,14 @@ async function loadTaskRequests(threadId, turnId, { page = null } = {}) {
   if (!detail || detail.loading || !detail.open) return;
   const selectionVersion = state.selectionVersion;
   const requestedPage = Math.max(1, Number(page ?? detail.page ?? 1) || 1);
+  const pageSize = REQUEST_PAGE_SIZE_OPTIONS.includes(Number(detail.pageSize))
+    ? Number(detail.pageSize)
+    : REQUEST_PAGE_SIZE;
   detail.loading = true;
   detail.error = null;
   patchVisibleTaskDetail(threadId, turnId);
   try {
-    const query = new URLSearchParams({ limit: String(REQUEST_PAGE_SIZE), page: String(requestedPage) });
+    const query = new URLSearchParams({ limit: String(pageSize), page: String(requestedPage) });
     if (state.selectedDay) query.set("day", state.selectedDay);
     const payload = await fetchJson(
       `/api/sessions/${encodeURIComponent(state.selectedId)}/tasks/${encodeURIComponent(threadId)}/${encodeURIComponent(turnId)}/requests?${query}`,
@@ -1131,10 +1048,11 @@ async function loadTaskRequests(threadId, turnId, { page = null } = {}) {
     detail.requests = payload.requests;
     detail.pagination = payload.pagination ?? {
       page: requestedPage,
-      pageSize: REQUEST_PAGE_SIZE,
+      pageSize,
       totalItems: payload.requests.length,
       totalPages: payload.requests.length ? 1 : 0,
     };
+    detail.pageSize = detail.pagination.pageSize ?? pageSize;
     detail.page = detail.pagination.totalPages > 0
       ? clamp(detail.pagination.page, 1, detail.pagination.totalPages)
       : 1;
@@ -1201,15 +1119,33 @@ function renderRequestDetail(detail, task) {
 
 function renderRequestPagination(detail) {
   const pagination = detail.pagination;
-  if (!pagination || pagination.totalPages <= 0) return "";
+  if (!pagination || pagination.totalPages <= 0 || pagination.totalItems < REQUEST_PAGE_SIZE) return "";
   const page = clamp(detail.page ?? pagination.page ?? 1, 1, pagination.totalPages);
+  const pageSize = REQUEST_PAGE_SIZE_OPTIONS.includes(Number(detail.pageSize))
+    ? Number(detail.pageSize)
+    : REQUEST_PAGE_SIZE;
   const context = `data-thread-id="${escapeHtml(detail.threadId)}" data-turn-id="${escapeHtml(detail.turnId)}"`;
+  const hasMultiplePages = pagination.totalPages > 1;
   return `<nav class="request-pagination pagination-bar" aria-label="Canonical Requests 分页">
-    ${renderPageButtons("request", page, pagination.totalPages, context)}
-    <span class="request-page-summary page-summary">第 ${page} / ${pagination.totalPages} 页 · 共 ${pagination.totalItems} Requests</span>
-    <label class="page-jump"><span>跳转</span><input type="number" min="1" max="${pagination.totalPages}" value="${page}" inputmode="numeric" data-request-page-jump ${context} aria-label="跳转到 Request 页码"></label>
-    <button class="page-jump-submit" type="button" data-request-page-jump-submit ${context}>前往</button>
+    <div class="page-size-control" role="group" aria-label="每页 Request 数量">
+      <span>每页</span>
+      ${REQUEST_PAGE_SIZE_OPTIONS.map((size) => `<button class="page-size-option${size === pageSize ? " active" : ""}" type="button" data-request-page-size="${size}" ${context} aria-pressed="${size === pageSize ? "true" : "false"}">${size}</button>`).join("")}
+    </div>
+    ${hasMultiplePages ? `${renderPageButtons("request", page, pagination.totalPages, context)}
+      <span class="request-page-summary page-summary">第 ${page} / ${pagination.totalPages} 页 · 共 ${pagination.totalItems} Requests</span>
+      <label class="page-jump"><span>跳转</span><input type="text" value="${page}" inputmode="numeric" pattern="[0-9]*" maxlength="${String(pagination.totalPages).length}" data-request-page-jump ${context} aria-label="跳转到 Request 页码"><span>页</span></label>
+      <button class="page-jump-submit" type="button" data-request-page-jump-submit ${context}>前往</button>` : `<span class="request-page-summary page-summary">共 ${pagination.totalItems} Requests</span>`}
   </nav>`;
+}
+
+async function setRequestPageSize(threadId, turnId, requestedPageSize) {
+  const detail = requestDetailState(threadId, turnId);
+  if (!detail?.open || !detail.pagination || !REQUEST_PAGE_SIZE_OPTIONS.includes(requestedPageSize)) return;
+  if (detail.pageSize === requestedPageSize && detail.loaded) return;
+  detail.pageSize = requestedPageSize;
+  detail.page = 1;
+  detail.loaded = false;
+  await loadTaskRequests(threadId, turnId, { page: 1 });
 }
 
 async function handleRequestPageAction(control) {

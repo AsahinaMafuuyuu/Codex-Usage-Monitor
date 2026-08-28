@@ -1306,3 +1306,25 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] pricing unit 与数据库 restart regression 覆盖新语义；全量测试通过后提交。
 
 **Delivered evidence (2026-08-28):** pricing policy 为 `subscription-standard-v2 / 2026-08-28-explicit-fast`。定向测试证明 `fast/FAST -> fast`，`default/standard/priority/missing/unknown -> standard`；缺 tier 不再生成 `service_tier_unknown` partial。数据库 regression 证明旧 `pricing_policy_version` 会从已持久化 canonical evidence 恢复正确 calendar cost。全量 `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 通过；Chrome/CDP 1440/720 live UI 复验通过。
+
+## Phase 22: Task Scroll / Request Pagination Ergonomics
+
+### Overview
+
+按 ADR-0024 调整 Agent Task 与 Canonical Request 的列表交互：Task 使用连续纵向滚动，Request 保留自适应分页；不改变 Request API、schema、accounting 或 pricing。
+
+### Tasks
+
+- [x] 移除 Agent Task 10 条分页和对应本地 page state；全部 Task 保持稳定 key reconcile。
+- [x] `.task-table-wrap` 增加约 5 行高度的纵向 overflow，并保持横向滚动、sticky 表头和 SSE DOM identity。
+- [x] Request 默认 10 条/页，增加 5/10 页大小切换；少于 10 条时隐藏分页条。
+- [x] Request 分页条整体居中；导航符号增大；跳页改为无 spinner 的单页码文本输入，控件文字双向居中。
+- [x] 更新静态 UI contract 与 Chrome/CDP：验证 23 Task 全量 DOM + 纵向滚动、Request 5/10 切换、分页居中、独立横向滚动和 720px 状态保持。
+
+### Checkpoint
+
+- [x] Task 保持连续业务序列，不再用页码切断；超过约 5 行后只在 Agent 自身任务视口滚动。
+- [x] Request 仍保持 bounded fetch/DOM；默认 10 条，必要时可切 5 条精查。
+- [x] 小结果集不展示无意义分页导航，所有分页控件沿用当前主题并保持居中。
+
+**Delivered evidence (2026-08-28):** `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check` 与 `git diff --check` 通过。Chrome/CDP 实测 Task synthetic 23 rows 全部保留，任务视口 `clientHeight=513 / scrollHeight=2287`、纵向 `scrollTop 80→240`；普通 SSE snapshot 保持同一 `.task-table-wrap` 且 `scrollLeft=473 / scrollTop=120` 不变。真实 24-Request Task 默认 10 行，切换 5 条后变为 `第 1 / 5 页`，恢复 10 条正常；分页 `justify-content=center`，jump input 为 `type=text`，父/子横向滚动继续独立，720px 回归通过。

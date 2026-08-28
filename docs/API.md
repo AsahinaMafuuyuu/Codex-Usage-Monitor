@@ -196,7 +196,7 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 
 按 Task 懒加载其 **canonical Request audit detail**。无 `day` 时读取完整 Task 的 canonical Request；带 `day` 时只读取该本地自然日 `[dayStart,nextDayStart)` 内的 Request。初始 session/day snapshot 不内嵌这些明细，因此长 Task 的 Request 数量不会线性放大常规 SSE payload 或 DOM。
 
-查询只读 `canonical_requests`，不会返回 `inherited_copy` raw evidence。结果稳定按 `(observed_at, request_id)` 升序；默认 `limit=200`，允许 `1..500`。接口同时保留两种只读分页协议：历史 cursor 模式继续通过不透明 `nextCursor` 顺序读取；传 `page=N` 时按同一稳定顺序做编号分页，并返回 `pagination.page/pageSize/totalItems/totalPages`。`page` 与 `cursor` 互斥。当前页面固定使用 `limit=10&page=N`，因此每个 Task 的 Canonical Requests 最多渲染 10 行，并支持页码、前后页和页码跳转。非法 day、limit、page 或 cursor 返回 `400`；Task 不属于指定 root session 时返回 `404`。
+查询只读 `canonical_requests`，不会返回 `inherited_copy` raw evidence。结果稳定按 `(observed_at, request_id)` 升序；默认 `limit=200`，允许 `1..500`。接口同时保留两种只读分页协议：历史 cursor 模式继续通过不透明 `nextCursor` 顺序读取；传 `page=N` 时按同一稳定顺序做编号分页，并返回 `pagination.page/pageSize/totalItems/totalPages`。`page` 与 `cursor` 互斥。当前页面默认使用 `limit=10&page=N`，并允许用户切换为 `limit=5`；总 Request 数少于 10 时不渲染分页导航。非法 day、limit、page 或 cursor 返回 `400`；Task 不属于指定 root session 时返回 `404`。
 
 ```json
 {

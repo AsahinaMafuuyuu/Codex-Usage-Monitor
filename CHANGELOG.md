@@ -6,7 +6,7 @@
 
 ### Added
 
-- 为每个 Agent 的 Task 列表和每个 Task 的 Canonical Requests 增加 10 条/页编号分页，支持首/末页、前/后页、页码按钮与直接跳转；Request API 新增与既有 cursor 互斥的 `page` 查询和 `pagination` 元数据。
+- Canonical Requests 保留编号分页并增加 5/10 条每页切换；默认 10 条，少于 10 条时不渲染分页条。分页导航居中，跳页改为无数值 spinner 的单页码输入，方向符号增大。
 - Canonical Requests 增加独立横向滚动区和居中三横线收起把手；Request drawer 保留稳定 DOM 并加入收起/展开过渡动画。
 - Phase 19 Request Fact / Task Day Slice：Time 先按 canonical Request `observedAt` 切本地日，再按原 Task 分组；day-scope Task 增加 `scopeDay/firstRequestAt/lastRequestAt/requestCount`，不复制 Task identity。
 - 新增 task-scoped canonical Request 懒加载 API，支持 day filter、`(observedAt, requestId)` 稳定 cursor、bounded page size 和 `projectionGeneration`；新增 covering index `idx_canonical_requests_task_observed`，schema 继续保持 v14。
@@ -14,6 +14,7 @@
 
 ### Changed
 
+- Agent Task 从 10 条/页分页改为连续纵向滚动，默认视口约显示 5 个 Task；超过 5 个通过该 Agent 自己的纵向滚动条浏览，不再用分页切断 Task 连续性。
 - Service tier pricing 改为 explicit-fast：只有原始值明确为 `fast` 才应用 Fast multiplier；`default`、`standard`、`priority`、缺失和其他未知值全部按 standard。pricing policy 升级到 `subscription-standard-v2 / 2026-08-28-explicit-fast`，启动时会从持久化 canonical evidence 重建旧 calendar cost projection，不回放 `.codex`。
 - Task 的 `N Requests` 改为明确的可交互胶囊，补齐 pointer、hover、active 与 focus 反馈；表格可见标题与审计 drawer 不再跟随父表横向滚动。服务层级统一显示为 `standard` 或 `fast · N 倍率`，倍率直接取 request-level pricing evidence，而不是硬编码。
 - Time Task 表移除可见的“当日任务活动”caption，并补充“推理强度”；Canonical Request 明细移除独立 Coverage 列、补充所属 Task 推理强度，并将 `service_tier` 显示为更明确的“服务层级”。

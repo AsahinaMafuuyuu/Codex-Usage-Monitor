@@ -332,6 +332,15 @@ npm test
 - `.codex` read-only gate：上述真实 reconciliation 的 rollout manifest before/after 均为 `5d684e43b671aeb19b92bdbfca1a7b2b02e335774f43c952ae1b6843ea8ef379`，`hashChangedFiles=0`。
 - 自动化门槛：业务 8 / 8、ownership/DB/API 46 / 46、UI static/stability 2 / 2 均 Green；最终全量 `npm test` 为 `124 tests / 123 passed / 0 failed / 1 skipped`，唯一 skip 为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
 
+### Phase 22：Task Scroll / Request Pagination Ergonomics
+
+日期：2026-08-28。按 ADR-0024 将 Task 与 Request 的浏览策略拆开：Task 取消页码并改为约 5 行高的纵向滚动视口；Request 默认 10 条、可切 5/10 条，少于 10 条不显示分页条。
+
+- Chrome/CDP synthetic 23 Task 验证全部 Task row 保留，视口 `clientHeight=513 / scrollHeight=2287`，`scrollTop 80→240` 可滚动且不存在 Task pager。
+- 普通 snapshot 前后 `.task-table-wrap` DOM identity、focus、`scrollLeft=473`、`scrollTop=120` 全部保持；可见“任务记录”标题横向位移 `0px`。
+- 真实 24 Request drill-down 默认 10 行，切 5 条后为 5 行与 `第 1 / 5 页 · 共 24 Requests`；分页条居中，jump input 为 text（无 number spinner），5/10 两档切换和父/子 scrollbar 隔离通过。
+- 最终 `npm test` 为 `125 tests / 124 passed / 0 failed / 1 skipped`；`npm run check`、`git diff --check` 与 720px 浏览器回归通过。
+
 ### Phase 21：Explicit-Fast Service Tier Policy
 
 日期：2026-08-28。按 ADR-0023 将 service-tier pricing 改为“仅显式 Fast”：原始 `service_tier` 只有在 trim/lower 后严格等于 `fast` 时才应用 Fast multiplier；`default`、`standard`、`priority`、missing 与未知字符串全部按 standard。

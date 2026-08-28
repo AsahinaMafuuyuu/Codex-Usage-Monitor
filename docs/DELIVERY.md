@@ -234,6 +234,8 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 
 最终真实 Chrome/CDP 1440×900 与 720×900 均通过：普通 snapshot 更新保持同一 task-table/Agent DOM、`scrollLeft=354`、focus、展开与手工折叠状态；结构变化 `scrollDelta=66px` 时 visual-anchor top delta `0px`，Project 恢复 full scope。最终复验选中的 live session 只有一个 Timeline day，因此 cross-day 子检查自然 skipped；此前多日真实 session 已实际通过 `2026-08-27 → 2026-08-26`。720px 下独立横向 overflow、`scrollLeft=240`、focus 和 Agent 状态保持。
 
+Phase 22 UI 复验补充：Task 取消分页并改为约 5 行高纵向视口，synthetic 23 Task 时 `clientHeight=513 / scrollHeight=2287` 且可独立纵向滚动；普通 SSE snapshot 前后同一 task-table 的 `scrollLeft=473 / scrollTop=120` 均保持。真实 24 Request drill-down 默认 10 条，可切 5 条并得到 `第 1 / 5 页`；分页条居中、跳页无 number spinner，父 Task 与 Request 横向滚动仍完全隔离。
+
 ## 交付核对
 
 - [x] 源码、静态页面和测试在独立项目目录中。
@@ -247,3 +249,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] Phase 17 Subscription Standard-Rate Cost 已按 ADR-0019 完成交付：historical catalog、request-cost engine、long/Fast policy、schema v13、event pricing context、只读 enrichment、request-derived aggregation、API/UI coverage 与真实历史 reconciliation 均已闭环。
 - [x] Phase 18 Canonical Request Ownership / Request-Day / schema v14 已完成；随后完成 cross-root ownership hardening（projection v2，schema 仍为 v14），并增加真实故障数据、反向索引顺序、timestamp rewrite、projection stale rebuild 与 HTTP async error-boundary 回归。
 - [x] Phase 21 Explicit-Fast Service Tier Policy 已按 ADR-0023 交付：只有显式 `fast` 才应用 Fast multiplier，其余 tier 全部按 standard；policy version 变化会从持久化 canonical evidence 重建 calendar cost，Token/Request accounting 与 `.codex` 保持不变。
+- [x] Phase 22 Task Scroll / Request Pagination Ergonomics 已按 ADR-0024 交付：Task 使用约 5 行纵向滚动视口，Request 默认 10 条并支持 5/10 切换，少量结果隐藏分页条；Chrome/CDP 与全量测试通过。

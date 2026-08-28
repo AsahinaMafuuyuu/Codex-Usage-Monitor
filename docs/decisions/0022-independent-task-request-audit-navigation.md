@@ -3,6 +3,8 @@
 - **Status:** Accepted
 - **Date:** 2026-08-28
 
+> 2026-08-28 后续更新：Task 的“10 条编号分页”交互已由 [ADR-0024](0024-task-scroll-request-pagination-ergonomics.md) 替代为约 5 行高的连续纵向滚动；本 ADR 关于 Request 独立 drawer、独立横向滚动、稳定 page API 与交互状态的其余决策继续有效。
+
 ## Context
 
 ADR-0011 将 Task 表定义为可横向滚动的完整审计账页，ADR-0017 又要求实时 SSE 更新不能破坏滚动、焦点与展开状态。Phase 19 在 Task 行内加入 Canonical Requests `<tr>` 后产生新的嵌套交互冲突：Request 明细虽然拥有自己的表格，但仍处在父 `.task-table-wrap` 的 overflow 坐标系内，因此父表横向滚动会同时移动 `Canonical Requests` 标题和整个明细区域；长 Task / 多 Task 还会一次性扩张 DOM，降低扫描与定位效率。

@@ -69,10 +69,11 @@ try {
   const identityBefore = await cdp.evaluate(`(() => {
     const wrap = window.__codexLiveUiQa.wrap;
     const details = window.__codexLiveUiQa.details;
-    const caption = wrap.querySelector('caption:not(.visually-hidden)');
+    const caption = wrap.querySelector('.task-table-heading');
     wrap.scrollLeft = 0;
     const captionBeforeLeft = caption?.getBoundingClientRect().left ?? null;
     wrap.scrollLeft = Math.min(520, Math.max(1, wrap.scrollWidth - wrap.clientWidth));
+    if (wrap.scrollHeight > wrap.clientHeight) wrap.scrollTop = Math.min(120, wrap.scrollHeight - wrap.clientHeight);
     const captionAfterLeft = caption?.getBoundingClientRect().left ?? null;
     wrap.focus({ preventScroll: true });
     window.__codexLiveUiQa.scrollLeft = wrap.scrollLeft;
@@ -81,6 +82,7 @@ try {
     }));
     return {
       scrollLeft: wrap.scrollLeft,
+      scrollTop: wrap.scrollTop,
       detailsOpen: details.open,
       focused: document.activeElement === wrap,
       captionDelta: captionBeforeLeft == null || captionAfterLeft == null ? null : captionAfterLeft - captionBeforeLeft,
@@ -91,6 +93,7 @@ try {
     sameWrap: window.__codexLiveUiQa.wrap.isConnected && document.contains(window.__codexLiveUiQa.wrap),
     sameDetails: window.__codexLiveUiQa.details.isConnected && document.contains(window.__codexLiveUiQa.details),
     scrollLeft: window.__codexLiveUiQa.wrap.scrollLeft,
+    scrollTop: window.__codexLiveUiQa.wrap.scrollTop,
     detailsOpen: window.__codexLiveUiQa.details.open,
     focused: document.activeElement === window.__codexLiveUiQa.wrap,
     activeElement: document.activeElement ? document.activeElement.tagName + '.' + document.activeElement.className : null,
@@ -103,6 +106,7 @@ try {
   assert(identityAfter.sameWrap, "snapshot replaced .task-table-wrap");
   assert(identityAfter.sameDetails, "snapshot replaced .agent-card");
   assert(identityAfter.scrollLeft === identityBefore.scrollLeft, "snapshot changed task-table scrollLeft");
+  assert(identityAfter.scrollTop === identityBefore.scrollTop, "snapshot changed task-table scrollTop");
   assert(identityAfter.detailsOpen, "snapshot overwrote the open Agent state");
   assert(identityAfter.focused, "snapshot dropped focus from the task-table region");
 
@@ -178,11 +182,11 @@ try {
   assert(Math.abs(structural.topDelta) < 1, `visual anchor moved by ${structural.topDelta}px`);
 
   const requestDrilldown = await verifyRequestDrilldown(cdp);
-  const taskPagination = await verifyTaskPagination(cdp);
+  const taskScroll = await verifyTaskScroll(cdp);
   const scopedNavigation = await verifyScopedNavigation(cdp);
   const narrow = await verifyNarrowViewport(cdp);
 
-  console.log(JSON.stringify({ collapsed, structural, requestDrilldown, taskPagination, scopedNavigation, narrow }, null, 2));
+  console.log(JSON.stringify({ collapsed, structural, requestDrilldown, taskScroll, scopedNavigation, narrow }, null, 2));
 } finally {
   try { socket?.close(); } catch {}
   chrome.kill();
@@ -227,6 +231,9 @@ async function verifyRequestDrilldown(cdp) {
       collapseHandle: Boolean(detail?.querySelector('[data-request-collapse]')),
       paginator: Boolean(detail?.querySelector('.request-pagination')),
       pageText: detail?.querySelector('.request-page-summary')?.textContent?.trim() ?? '',
+      pageSizeOptions: [...(detail?.querySelectorAll('[data-request-page-size]') ?? [])].map((button) => button.textContent.trim()),
+      jumpInputType: detail?.querySelector('[data-request-page-jump]')?.getAttribute('type') ?? null,
+      paginationAlignment: detail?.querySelector('.request-pagination') ? getComputedStyle(detail.querySelector('.request-pagination')).justifyContent : null,
       independentOverflow: Boolean(requestScroll && requestScroll.scrollWidth > requestScroll.clientWidth),
       headingLeft: heading?.getBoundingClientRect().left ?? null,
     };
@@ -242,7 +249,24 @@ async function verifyRequestDrilldown(cdp) {
   assert(before.collapseHandle, "Request drill-down is missing the centered collapse handle");
   assert(before.paginator, "Request drill-down is missing numbered pagination");
   assert(/第\s*1\s*\/\s*\d+\s*页/u.test(before.pageText), `Request pagination does not expose current/total pages: ${before.pageText}`);
+  assert(before.pageSizeOptions.join(',') === '5,10', `Request pagination page-size options are wrong: ${before.pageSizeOptions.join(',')}`);
+  assert(before.jumpInputType === 'text', `Request jump still exposes numeric spinner semantics: ${before.jumpInputType}`);
+  assert(before.paginationAlignment === 'center', `Request pagination is not centered: ${before.paginationAlignment}`);
   assert(before.independentOverflow, "Request table does not own an independent horizontal scrollbar");
+
+  await cdp.evaluate(`window.__codexLiveUiQa.requestDetail?.querySelector('[data-request-page-size="5"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const detail = window.__codexLiveUiQa.requestDetail;
+    return detail?.querySelectorAll('.request-table tbody tr').length === 5 &&
+      detail?.querySelector('[data-request-page-size="5"]')?.getAttribute('aria-pressed') === 'true';
+  })()`), "Request page size 5");
+  const fivePerPage = await cdp.evaluate(`(() => ({
+    requestRows: window.__codexLiveUiQa.requestDetail?.querySelectorAll('.request-table tbody tr').length ?? 0,
+    pageText: window.__codexLiveUiQa.requestDetail?.querySelector('.request-page-summary')?.textContent?.trim() ?? '',
+  }))()`);
+  assert(fivePerPage.requestRows === 5, `Request page-size switch rendered ${fivePerPage.requestRows} rows instead of 5`);
+  await cdp.evaluate(`window.__codexLiveUiQa.requestDetail?.querySelector('[data-request-page-size="10"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`window.__codexLiveUiQa.requestDetail?.querySelectorAll('.request-table tbody tr').length === 10`), "Request page size 10 restore");
 
   const scrollIsolation = await cdp.evaluate(`(() => {
     const detail = window.__codexLiveUiQa.requestDetail;
@@ -317,10 +341,10 @@ async function verifyRequestDrilldown(cdp) {
     openState: window.__codexLiveUiQa.requestDetail?.dataset.open ?? null,
   }))()`);
   assert(reopened.sameDetail && reopened.openState === "true", "Request drawer did not reopen in place after collapse");
-  return { target, before, scrollIsolation, after, collapsedDetail, reopened };
+  return { target, before, fivePerPage, scrollIsolation, after, collapsedDetail, reopened };
 }
 
-async function verifyTaskPagination(cdp) {
+async function verifyTaskScroll(cdp) {
   const result = await cdp.evaluate(`(() => {
     const original = JSON.parse(window.__codexLiveUiQa.snapshotData);
     const agent = original.agents.find((item) => item.tasks?.length);
@@ -328,29 +352,33 @@ async function verifyTaskPagination(cdp) {
     const seed = structuredClone(agent.tasks[0]);
     agent.tasks = Array.from({ length: 23 }, (_, index) => ({
       ...structuredClone(seed),
-      turnId: '__codex-task-page-' + String(index + 1).padStart(2, '0') + '__',
+      turnId: '__codex-task-scroll-' + String(index + 1).padStart(2, '0') + '__',
       sequence: index + 1,
       requestCount: index + 1,
     }));
     agent.taskCount = agent.tasks.length;
     window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', { data: JSON.stringify(original) }));
     const branch = document.querySelector('[data-agent-id="' + CSS.escape(agent.threadId) + '"]');
-    const pager = branch?.querySelector('.task-pagination');
-    const page1 = branch?.querySelectorAll('tr.task-row').length ?? 0;
-    const summary1 = pager?.querySelector('.task-page-summary')?.textContent?.trim() ?? '';
-    pager?.querySelector('[data-task-page-action="next"]')?.click();
-    const nextPager = branch?.querySelector('.task-pagination');
-    const page2 = branch?.querySelectorAll('tr.task-row').length ?? 0;
-    const summary2 = nextPager?.querySelector('.task-page-summary')?.textContent?.trim() ?? '';
+    const wrap = branch?.querySelector('.task-table-wrap');
+    const rows = branch?.querySelectorAll('tr.task-row').length ?? 0;
+    const before = wrap?.scrollTop ?? 0;
+    if (wrap) wrap.scrollTop = Math.min(240, wrap.scrollHeight - wrap.clientHeight);
+    const after = wrap?.scrollTop ?? 0;
+    const metrics = wrap ? {
+      clientHeight: wrap.clientHeight,
+      scrollHeight: wrap.scrollHeight,
+      overflowY: getComputedStyle(wrap).overflowY,
+    } : null;
+    const hasPager = Boolean(branch?.querySelector('.task-pagination'));
     window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', { data: window.__codexLiveUiQa.snapshotData }));
-    return { skipped: false, page1, page2, summary1, summary2, hasJump: Boolean(nextPager?.querySelector('[data-task-page-jump]')) };
+    return { skipped: false, rows, before, after, metrics, hasPager };
   })()`);
-  assert(!result.skipped, result.reason || "task pagination QA was skipped");
-  assert(result.page1 === 10, `Task page 1 rendered ${result.page1} rows instead of 10`);
-  assert(result.page2 === 10, `Task page 2 rendered ${result.page2} rows instead of 10`);
-  assert(/第\s*1\s*\/\s*3\s*页/u.test(result.summary1), `Task page summary is wrong: ${result.summary1}`);
-  assert(/第\s*2\s*\/\s*3\s*页/u.test(result.summary2), `Task next-page navigation failed: ${result.summary2}`);
-  assert(result.hasJump, "Task pagination is missing page jump input");
+  assert(!result.skipped, result.reason || "task scroll QA was skipped");
+  assert(result.rows === 23, `Task scroll rendered ${result.rows} rows instead of all 23`);
+  assert(!result.hasPager, "Task list still renders pagination instead of vertical scrolling");
+  assert(result.metrics?.scrollHeight > result.metrics?.clientHeight, "Task list does not overflow vertically after five-row viewport");
+  assert(result.metrics?.clientHeight <= 530, `Task viewport is taller than the intended five-row size: ${result.metrics?.clientHeight}`);
+  assert(result.after > result.before, "Task list vertical scrollbar did not move");
   return result;
 }
 
