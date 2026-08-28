@@ -1008,7 +1008,7 @@ summary:focus-visible,
 .task-table .col-total { width: 96px; }
 .task-table .col-cost { width: 110px; }
 .task-table .col-quality { width: 89px; }
-.task-table.day-scope { min-width: 1375px; }
+.task-table.day-scope { min-width: 1447px; }
 
 .task-table caption {
   padding: 10px 12px 9px;

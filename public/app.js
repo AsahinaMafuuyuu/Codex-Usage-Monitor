@@ -688,13 +688,13 @@ function renderTasks(agent) {
 
 function renderTaskTableShell(rows = "") {
   const dayScope = isDayScope();
-  const columnCount = dayScope ? 13 : 14;
+  const columnCount = 14;
   const columns = dayScope
-    ? `<col class="col-task"><col class="col-status"><col class="col-request-time"><col class="col-request-time"><col class="col-requests"><col class="col-model"><col class="col-input"><col class="col-cache"><col class="col-hit"><col class="col-output"><col class="col-total"><col class="col-cost"><col class="col-quality">`
+    ? `<col class="col-task"><col class="col-status"><col class="col-request-time"><col class="col-request-time"><col class="col-requests"><col class="col-model"><col class="col-effort"><col class="col-input"><col class="col-cache"><col class="col-hit"><col class="col-output"><col class="col-total"><col class="col-cost"><col class="col-quality">`
     : `<col class="col-task"><col class="col-status"><col class="col-start"><col class="col-duration"><col class="col-requests"><col class="col-model"><col class="col-effort"><col class="col-input"><col class="col-cache"><col class="col-hit"><col class="col-output"><col class="col-total"><col class="col-cost"><col class="col-quality">`;
   const headings = dayScope
-    ? `<th class="task-name-head">Task</th><th class="task-status-head">状态</th><th>当日首请求</th><th>当日末请求</th><th>Requests</th><th>模型</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`
-    : `<th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>Requests</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`;
+    ? `<th class="task-name-head">Task</th><th class="task-status-head">状态</th><th>当日首请求</th><th>当日末请求</th><th>Requests</th><th>模型</th><th>推理强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`
+    : `<th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>Requests</th><th>模型</th><th>推理强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`;
   return `<div class="task-table-wrap" data-scope-kind="${dayScope ? "day" : "session"}" role="region" tabindex="0" aria-label="${dayScope ? "当日任务活动" : "任务记录"}；任务与状态列固定，可横向滚动查看完整 ${columnCount} 列"><table class="task-table ${dayScope ? "day-scope" : "session-scope"}">
     <caption class="${dayScope ? "visually-hidden" : ""}">${dayScope ? "当日任务活动" : "任务记录"}</caption>
     <colgroup>${columns}</colgroup>
@@ -717,6 +717,7 @@ function renderTaskCells(task) {
     <td title="${escapeHtml(task.lastRequestAt || "")}">${formatDate(task.lastRequestAt)}</td>
     <td><strong>${tokenFormatter.format(task.requestCount ?? 0)}</strong></td>
     <td class="model-cell"><code title="${escapeHtml(task.model || "模型未知")}">${escapeHtml(task.model || "未知")}</code></td>
+    <td><span class="effort-chip">${escapeHtml(effortLabel(task.effort))}</span></td>
     <td>${formatTokens(task.deltaUsage?.inputTokens)}</td>
     <td>${formatTokens(task.deltaUsage?.cachedInputTokens)}</td>
     <td>${formatCacheHitRate(task.deltaUsage)}</td>
@@ -832,7 +833,7 @@ function patchTaskRequestDetail(tbody, taskRow, task) {
     detailRow.dataset.taskDetailId = task.turnId;
     structuralChanged = true;
   }
-  detailRow.innerHTML = `<td colspan="${taskColumnCount()}">${renderRequestDetail(detail)}</td>`;
+  detailRow.innerHTML = `<td colspan="${taskColumnCount()}">${renderRequestDetail(detail, task)}</td>`;
   if (taskRow.nextElementSibling !== detailRow) {
     taskRow.after(detailRow);
     structuralChanged = true;
@@ -846,7 +847,7 @@ function findTaskDetailRow(tbody, turnId) {
 }
 
 function taskColumnCount() {
-  return isDayScope() ? 13 : 14;
+  return 14;
 }
 
 function isDayScope() {
@@ -953,7 +954,7 @@ async function refreshStaleOpenRequestDetails() {
   await Promise.all(jobs);
 }
 
-function renderRequestDetail(detail) {
+function renderRequestDetail(detail, task) {
   if (detail.error) {
     return `<div class="request-detail-state error">Request 明细读取失败：${escapeHtml(detail.error)}</div>`;
   }
@@ -966,14 +967,14 @@ function renderRequestDetail(detail) {
   return `<div class="request-audit">
     <div class="request-audit-heading"><strong>Canonical Requests</strong><span>${detail.requests.length}${detail.nextCursor ? "+" : ""} 条已加载</span></div>
     <div class="request-audit-scroll"><table class="request-table">
-      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>Tier</th><th>USD</th><th>Coverage</th></tr></thead>
-      <tbody>${detail.requests.map(renderRequestRow).join("")}</tbody>
+      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th>Tier</th><th>USD</th></tr></thead>
+      <tbody>${detail.requests.map((request) => renderRequestRow(request, task?.effort)).join("")}</tbody>
     </table></div>
     ${detail.nextCursor ? `<button class="request-more" type="button" data-request-more data-thread-id="${escapeHtml(detail.threadId)}" data-turn-id="${escapeHtml(detail.turnId)}" ${detail.loading ? "disabled" : ""}>${detail.loading ? "加载中…" : "加载更多"}</button>` : ""}
   </div>`;
 }
 
-function renderRequestRow(request) {
+function renderRequestRow(request, effort) {
   return `<tr>
     <td title="${escapeHtml(request.observedAt || "")}">${formatDate(request.observedAt)}</td>
     <td>${formatTokens(request.usage?.inputTokens)}</td>
@@ -983,9 +984,9 @@ function renderRequestRow(request) {
     <td>${formatTokens(request.usage?.reasoningOutputTokens)}</td>
     <td><strong>${formatTokens(request.usage?.totalTokens)}</strong></td>
     <td><code title="${escapeHtml(request.model || "模型未知")}">${escapeHtml(request.model || "未知")}</code></td>
+    <td><span class="effort-chip">${escapeHtml(effortLabel(effort))}</span></td>
     <td>${escapeHtml(request.serviceTier || "未知")}</td>
     <td title="${escapeHtml(costEstimateTitle(request.costEstimate))}">${formatUsdEstimate(request.costEstimate)}</td>
-    <td>${escapeHtml(costEstimateLabel(request.costEstimate))}</td>
   </tr>`;
 }
 
