@@ -4,6 +4,10 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-28
+
+`v1.1.0` 是 `v1.0.0` 之后的首个功能增强版本，重点收敛 Canonical Request ownership、Request-day 审计语义、explicit-fast 定价和 Task / Request 浏览交互。SQLite schema 继续保持 v14；升级只会重建派生 projection，不修改原始 `.codex` rollout。
+
 ### Added
 
 - Canonical Requests 保留编号分页并增加 5/10 条每页切换；默认 10 条，少于 10 条时不渲染分页条。长分页改为最多 5 个边界/当前页语义槽位，仅保留前后翻页；方向导航使用严格居中的 Lucide chevron，跳页继续使用无 spinner 的单页码输入，并为分页/翻页加入轻量过渡。
@@ -98,5 +102,6 @@
 - 项目级多智能体协作规范、交付文档和架构决策记录。
 
 [Unreleased]: docs/ROADMAP.md
+[1.1.0]: docs/releases/v1.1.0.md
 [1.0.0]: docs/DELIVERY.md
 [0.1.0]: docs/DELIVERY.md
