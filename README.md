@@ -71,7 +71,7 @@ codex-usage-monitor\
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
-- 逐任务费用只汇总其 verified Request Ledger usage unit 的 request cost：按事件发生时间选择历史模型价，并在 event-level evidence 可证明时处理 `input >272K` 长上下文和 Fast；未知历史价格、service tier 或冲突 evidence 显式降低 coverage，不猜测。
+- 逐任务费用只汇总其 verified Request Ledger usage unit 的 request cost：按事件发生时间选择历史模型价，并按单 Request 处理 `input >272K` 长上下文。Fast 只有在原始 `service_tier` 明确为 `fast` 时启用；`default/standard/priority/缺失/其他值` 全部按标准层级计费。未知历史价格或其他冲突 evidence 仍显式降低 coverage。
 - Request Ledger 任务质量只区分 `complete`、`provisional`、`partial` 和 `unknown`。
 - 通过文件观察与 1 秒轮询把变化 session 放入后台 dirty queue；Indexer 执行 parse/tail → Request identity/ownership → canonical projection → generation commit，并用 SSE 刷新页面。
 - 实时 snapshot 使用 session/Agent/Task 稳定 key 原位 reconcile：常规 token/费用/状态更新不会替换任务表滚动容器、已展开 Request drawer 或 Agent `<details>`；横向滚动、键盘焦点和用户展开状态保持，结构新增时以当前可见 Agent/Task 做视觉锚点补偿。Request drawer 收起/展开保留原 DOM 并使用可降级到 `prefers-reduced-motion` 的过渡动画。

@@ -157,14 +157,14 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - **历史价格必须按发生时间选择。** Terra/Luna 2026-07-30 降价会反映到付费订阅 usage，因此该日期是历史价目切点；历史 GPT-5.5/GPT-5.4 等模型按其实际 recorded model 和可证明 rate interval 计算。
 - **费用计算下沉到 Request Ledger usage unit。** Task/Agent/Session 只汇总 request cost，不能先把 Task token 合并后再判断 feature surcharge。
 - **长上下文按单次请求判定。** 只有 request-level evidence 可证明且 input `>272K` 才应用 full-request `input 2× / cached 2× / output 1.5×`；Task 累计超过 272K 不构成长上下文。
-- **Fast 按事件当时 service tier 判定。** `fast`/`priority` 使用模型对应 multiplier；缺 evidence 不猜。当前官方 Fast FAQ 不支持 long context，因此两者同时出现不做倍率叠乘。
+- **Fast 按事件当时 service tier 判定。** 本条已由 ADR-0023 修订：当前运行时只有原始 `fast` 使用模型对应 multiplier；`priority`、缺失和其他值均按 standard。Fast + long context 仍不做倍率叠乘。
 - **API cache-write surcharge 不直接迁入订阅口径。** `cacheWriteInputTokens` 保留审计，但第一版 subscription-standard policy 按非 cached input 处理，直到出现明确的订阅/legacy metering cache-write 规则。
 
 ### 证据与边界
 
 - Token Ledger 仍只接受 verified `generation_start` / `verified_increment`，本阶段不得改变六字段 usage、classification 或 day-scope 归属。
 - request-boundary evidence gate 已通过 bounded semantics：verified Request Ledger usage unit 可作为 Codex 单次 model sampling usage unit 判断 272K；它不等价于 HTTP invoice identity。重复 `token_count` 仍必须由 cumulative advancement 去重，未验证 event 只能报告 candidate/partial。
-- 历史 service tier 目前没有持久化。原 rollout 存在时允许只读 metadata enrichment；原文件不存在时保持 unknown，不能默认 `default`。
+- 历史原始 service tier evidence 继续按原样保存/富化；pricing interpretation 按 ADR-0023 执行，缺失值不再意味着 Fast 未知，而是按 standard 计费。
 - USD 始终只是订阅标准价等值，不是 Plus 实际扣费，也不能用于反推 5 小时/周额度。
 - Regional processing、web search、image/voice/tool fee 不在本阶段范围，后续必须作为独立 feature policy 且有可证明本地 evidence 后再加入。
 
@@ -183,7 +183,7 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - Snapshot / Agent / Session / Day / Timeline USD 全部改为 `Σ requestCost(event)`，不再从 Task aggregate 重跑 threshold/multiplier；partial 金额直接显示 `$xx.xx`，coverage/title 解释证据缺口，不恢复 `≥`。
 - schema v13 为 `model_usage_events` 增加 `model / service_tier / pricing_context_quality`，cursor 保存 pricing context；v12→v13 migration 逐字段证明 classification + 六类 usage 不变。原 rollout 存在时只读 enrichment，缺源时保持 unknown。
 - 真实历史 reconciliation 扫描 `425` 个 rollout / `242` 个 root session / `2,368` 个 task / `41,089` 个 verified usage unit，总 verified token `5,223,166,739`；源文件 `hashChangedFiles=0`。
-- 真实 service-tier evidence：`default=23,743`、`fast=0`、`priority=0`、`unknown=17,346`。因此真实历史 Fast adjustment 为 `$0`，不是缺失实现；unknown 继续降低 coverage，不并入 default。
+- Phase 17 交付时记录的真实 service-tier evidence 为 `default=23,743`、`fast=0`、`priority=0`、`unknown=17,346`。该 inventory 仍是有效历史证据，但当前 ADR-0023 会把除显式 `fast` 外的记录全部按 standard 解释。
 - `input >272K` 的 verified usage unit 共 `571` 个，input token `166,551,689`。真实可比较的 `1,792` 个 task 上，旧 current API equivalent `$2703.97106036` 经 subscription-policy `+$155.09507810`、historical-rate `+$50.84818823`、long-context `+$106.61941600`、Fast `+$0` 后得到 `$3016.53374269`；重建 delta 为 `$0`。所有可定价 usage unit 的已知新金额合计 `$3087.22782329`，其中部分 task 因旧 estimator 或历史证据不可比较而不进入 additive subset。
 - 真实 Chrome/CDP 桌面与 720px 验收通过；snapshot 更新保持任务表横向滚动、focus、Agent 展开和 visual anchor，Project↔Time scope 仍正常。
 
@@ -246,3 +246,4 @@ Phase 14 的定向测试覆盖 schema v10→v11 删除旧列且 `replayedFiles=0
 - [x] Phase 16 Day-scoped Snapshot 已按 ADR-0018 和 schema v12 交付；Timeline/detail、HTTP/SSE、前端二元选择和 live interaction 验证证据已归档。
 - [x] Phase 17 Subscription Standard-Rate Cost 已按 ADR-0019 完成交付：historical catalog、request-cost engine、long/Fast policy、schema v13、event pricing context、只读 enrichment、request-derived aggregation、API/UI coverage 与真实历史 reconciliation 均已闭环。
 - [x] Phase 18 Canonical Request Ownership / Request-Day / schema v14 已完成；随后完成 cross-root ownership hardening（projection v2，schema 仍为 v14），并增加真实故障数据、反向索引顺序、timestamp rewrite、projection stale rebuild 与 HTTP async error-boundary 回归。
+- [x] Phase 21 Explicit-Fast Service Tier Policy 已按 ADR-0023 交付：只有显式 `fast` 才应用 Fast multiplier，其余 tier 全部按 standard；policy version 变化会从持久化 canonical evidence 重建 calendar cost，Token/Request accounting 与 `.codex` 保持不变。

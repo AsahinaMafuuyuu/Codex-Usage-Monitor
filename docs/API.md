@@ -165,7 +165,7 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
     "amountUsd": 0.012345,
     "currency": "USD",
     "basis": "subscription-standard-equivalent",
-    "policyVersion": "2026-08-26",
+    "policyVersion": "2026-08-28-explicit-fast",
     "requestCount": 1,
     "estimatedRequests": 1,
     "partialRequests": 0,
@@ -184,7 +184,7 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 
 若 task 同时包含 verified 与 unverified/anomaly 事件，`deltaUsage` 只保留 verified 部分并以 `partial` 标记；没有可证明 usage 的完成任务保持 `partial`，活跃任务保持 `unknown`。旧 `boundaryDeltaUsage` / `boundaryQuality` API 字段已在 schema v11 删除；需要复核旧实现时使用 Git tag `usage-boundary-ledger-v1`。
 
-`costEstimate` 先逐 verified Request Ledger usage unit 计算，再在 Task 层求和。状态为 `estimated | partial | unavailable`；`partial.amountUsd` 是当前可证明金额，不代表完整 Plus 扣费。`pricing.basis` 固定为 `subscription-standard-equivalent`。Historical Rate Resolver 使用 event `observedAt` 选择历史价；`input >272K` 的 long-context multiplier 与 Fast 只在 request-level evidence 可证明时应用，unknown service tier 不默认 standard。`featureCoverage` 明确披露 historical rate、request boundary 与 service tier 证据状态。
+`costEstimate` 先逐 verified Request Ledger usage unit 计算，再在 Task 层求和。状态为 `estimated | partial | unavailable`；`partial.amountUsd` 是当前可证明金额，不代表完整 Plus 扣费。`pricing.basis` 固定为 `subscription-standard-equivalent`。Historical Rate Resolver 使用 event `observedAt` 选择历史价；`input >272K` 的 long-context multiplier 仍按 Request 证据判定。Fast 采用显式规则：只有原始 `service_tier` 明确为 `fast` 才应用 Fast multiplier，其余值全部按 standard；因此 service tier 缺失本身不再降低 cost coverage。
 
 每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。摘要同时返回 task 与 request 级 `estimated/partial/unavailable` 数量及 `featureCoverage`。所有金额都来自 request cost 求和，不能重新对 Task aggregate 套 272K/Fast 规则；页面继续直接显示 `$xx.xx`，partial 状态通过 coverage/title 解释，不在主数值前加 `≥`。
 
@@ -230,7 +230,7 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 }
 ```
 
-Request cost 继续严格使用该 Request 自身 event-level pricing evidence。若 canonical Request 缺 model/service-tier 等证据，detail 会返回既有 `partial/unavailable` 状态，而不会从 Task aggregate 反向猜值。`partial.amountUsd` 仍是可证明的基础金额，例如 service tier 缺失时保留已知历史标准价金额、但不猜 Fast/priority multiplier；前端会显示该金额并通过 USD 悬停说明披露 evidence 缺口。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。服务层级在 UI 中规范化为 `standard` 或 `fast · N 倍率`；倍率直接使用该 Request 已计算的 pricing evidence（当前 GPT-5.6/GPT-5.5 Fast 为 2.5×、GPT-5.4 为 2×），不会把 long-context output 的 1.5×误标成 Fast。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
+Request cost 继续严格使用该 Request 自身 event-level pricing evidence。缺 model、历史价、usage breakdown 或其他必要证据时仍返回 `partial/unavailable`，不会从 Task aggregate 反向猜值；但 service tier 采用 ADR-0023 的业务默认：**仅字面 `fast` 为 Fast，其余均为 standard**。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。服务层级 UI 只显示 `standard` 或 `fast · N 倍率`；倍率直接使用该 Request 已计算的 pricing evidence（当前 GPT-5.6/GPT-5.5 Fast 为 2.5×、GPT-5.4 为 2×），不会把 long-context output 的 1.5×误标成 Fast。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
 
 ### `GET /api/sessions/:id/events[?day=YYYY-MM-DD]`
 

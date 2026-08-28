@@ -1187,7 +1187,7 @@ function renderRequestDetail(detail, task) {
     content = '<div class="request-detail-state">这个 Task 没有可展示的 canonical Request。</div>';
   } else {
     content = `<div class="request-audit-scroll" role="region" tabindex="0" aria-label="Canonical Requests 表格，可独立横向滚动"><table class="request-table">
-      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="Codex service_tier；default/standard 为标准层级，priority 归一为 Fast。倍率按当前 Request 的已验证 pricing policy 显示。">服务层级</th><th>USD</th></tr></thead>
+      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="只有 service_tier 明确为 fast 才使用 Fast 定价；default、standard、priority、缺失或其他值一律按 standard 计费。">服务层级</th><th>USD</th></tr></thead>
       <tbody>${detail.requests.map((request) => renderRequestRow(request, task?.effort)).join("")}</tbody>
     </table></div>
     ${renderRequestPagination(detail)}`;
@@ -1530,9 +1530,7 @@ function requestCostEstimateTitle(estimate) {
     return `价目版本：${rate}；服务层级：${tier}。订阅标准价等值，不是 Plus 实际扣费。`;
   }
   if (estimate.status === "partial") {
-    const reason = estimate.reason === "service_tier_unknown"
-      ? "rollout 未证明 service_tier，因此未应用 Fast/priority 倍率"
-      : `pricing evidence 不完整${estimate.reason ? `（${estimate.reason}）` : ""}`;
+    const reason = `pricing evidence 不完整${estimate.reason ? `（${estimate.reason}）` : ""}`;
     return `${amount ? `当前可证明金额 ${amount}；` : ""}价目版本：${rate}；服务层级：${tier}。${reason}。不是 Plus 实际扣费。`;
   }
   return `价目版本：${rate}；服务层级：${tier}。缺少足够的 request-level pricing evidence，无法估算。`;
@@ -1540,21 +1538,18 @@ function requestCostEstimateTitle(estimate) {
 
 function serviceTierLabel(value, estimate = null) {
   const normalized = String(value ?? "").trim().toLowerCase();
-  if (normalized === "default" || normalized === "standard") return "standard";
-  if (normalized === "fast" || normalized === "priority") {
+  if (normalized === "fast") {
     const multiplier = Number(estimate?.multipliers?.fast);
     return Number.isFinite(multiplier) && multiplier > 1
       ? `fast · ${formatMultiplier(multiplier)} 倍率`
       : "fast";
   }
-  return "unknown";
+  return "standard";
 }
 
 function serviceTierClass(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
-  if (normalized === "default" || normalized === "standard") return "standard";
-  if (normalized === "fast" || normalized === "priority") return "fast";
-  return "unknown";
+  return normalized === "fast" ? "fast" : "standard";
 }
 
 function formatMultiplier(value) {

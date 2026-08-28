@@ -3,7 +3,7 @@ import { dirname } from "node:path";
 import { DatabaseSync } from "node:sqlite";
 import { materializeRequestLedgerTasks } from "./request-ledger.js";
 import { resolveCanonicalRequestOwnership } from "./request-ownership.js";
-import { combineCostSummaries } from "./pricing.js";
+import { combineCostSummaries, SUBSCRIPTION_PRICING_CATALOG } from "./pricing.js";
 import { materializeCalendarSlices } from "./snapshot-scope.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import { addUsage, normalizeTimestamp, sumTaskUsage, USAGE_FIELDS, zeroUsage } from "./usage.js";
@@ -361,10 +361,14 @@ export class MonitorDatabase {
     const storedProjectionVersion = Number(
       this.db.prepare("SELECT value FROM derived_state WHERE key='projection_version'").get()?.value ?? 0,
     );
+    const storedPricingPolicyVersion = this.db.prepare(
+      "SELECT value FROM derived_state WHERE key='pricing_policy_version'",
+    ).get()?.value ?? null;
     if (
       previousVersion < 14 ||
       storedTimezone !== timezone ||
-      storedProjectionVersion !== PROJECTION_VERSION
+      storedProjectionVersion !== PROJECTION_VERSION ||
+      storedPricingPolicyVersion !== SUBSCRIPTION_PRICING_CATALOG.policyVersion
     ) {
       this.rebuildAllCanonicalProjections();
     }
@@ -380,6 +384,10 @@ export class MonitorDatabase {
       INSERT INTO derived_state (key, value) VALUES ('projection_version', ?)
       ON CONFLICT(key) DO UPDATE SET value=excluded.value
     `).run(String(PROJECTION_VERSION));
+    this.db.prepare(`
+      INSERT INTO derived_state (key, value) VALUES ('pricing_policy_version', ?)
+      ON CONFLICT(key) DO UPDATE SET value=excluded.value
+    `).run(SUBSCRIPTION_PRICING_CATALOG.policyVersion);
     this.db.exec(`PRAGMA user_version=${SCHEMA_VERSION};`);
     // Session names can be derived from prompt text. Keep them in the live read-only
     // repository index, never in the monitor's durable archive.

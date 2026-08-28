@@ -3,11 +3,11 @@ const MILLION = 1_000_000;
 const VERIFIED_REQUEST_CLASSIFICATIONS = new Set(["verified_increment", "generation_start"]);
 
 export const SUBSCRIPTION_PRICING_CATALOG = Object.freeze({
-  version: "subscription-standard-v1",
+  version: "subscription-standard-v2",
   currency: "USD",
   basis: "subscription-standard-equivalent",
-  capturedAt: "2026-08-26T00:00:00.000Z",
-  policyVersion: "2026-08-26",
+  capturedAt: "2026-08-28T00:00:00.000Z",
+  policyVersion: "2026-08-28-explicit-fast",
   limitations: Object.freeze([
     "codex_subscription_not_billing",
     "quota_not_currency_convertible",
@@ -63,11 +63,8 @@ export function resolveHistoricalRate(model, observedAt) {
 }
 
 export function normalizeServiceTier(value) {
-  if (typeof value !== "string") return "unknown";
-  const normalized = value.trim().toLowerCase();
-  if (normalized === "default" || normalized === "standard") return "standard";
-  if (normalized === "fast" || normalized === "priority") return "fast";
-  return "unknown";
+  const normalized = typeof value === "string" ? value.trim().toLowerCase() : "";
+  return normalized === "fast" ? "fast" : "standard";
 }
 
 export function estimateRequestCost(event, {
@@ -131,9 +128,6 @@ export function estimateRequestCost(event, {
       reason = "fast_model_unsupported";
       fastMultiplier = 1;
     }
-  } else if (serviceTier === "unknown") {
-    status = "partial";
-    reason ??= "service_tier_unknown";
   }
 
   const uncachedInputUsd = baseComponents.uncachedInput * inputMultiplier * fastMultiplier;
@@ -163,7 +157,7 @@ export function estimateRequestCost(event, {
     featureCoverage: {
       historicalRate: "verified",
       requestBoundary: requestBoundaryVerified ? "verified" : "unproven",
-      serviceTier: serviceTier === "unknown" ? "unknown" : "verified",
+      serviceTier: "verified",
     },
     components: {
       uncachedInputTokens,

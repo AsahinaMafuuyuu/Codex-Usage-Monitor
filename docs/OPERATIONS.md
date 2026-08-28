@@ -158,7 +158,7 @@ npm run audit:unknown-records -- --session <root-session-id>
 
 ### USD 显示“不可估算”或与实际账单不同
 
-费用必须有 verified Request Ledger usage、事件发生时可解析的历史模型价，以及对应 request pricing evidence。service tier 缺失会保留基础金额但降低为 partial；未知模型、历史价 gap、矛盾 usage 或不支持的 Fast+long-context 组合不会猜测。
+费用必须有 verified Request Ledger usage、事件发生时可解析的历史模型价，以及对应 request pricing evidence。service tier 使用显式 Fast 规则：只有 `fast` 才应用 Fast multiplier，其余值（包括缺失）按 standard，因此缺失 tier 本身不会再把 cost 降为 partial。未知模型、历史价 gap、矛盾 usage 或不支持的 Fast+long-context 组合仍不会猜测。
 
 长上下文只按单个 verified usage unit 的 `input >272K` 判定；Fast/priority 只按 event-level service tier 应用。即使 coverage 完整，金额也只是订阅标准价等值，不是 Plus invoice；区域处理和收费工具仍未纳入当前 policy。
 

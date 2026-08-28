@@ -102,6 +102,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /limit: String\(REQUEST_PAGE_SIZE\), page: String\(requestedPage\)/u);
   assert.match(script, /return "standard"/u);
   assert.match(script, /`fast · \$\{formatMultiplier\(multiplier\)\} 倍率`/u);
+  assert.match(script, /return normalized === "fast" \? "fast" : "standard"/u);
+  assert.doesNotMatch(script, /normalized === "fast" \|\| normalized === "priority"/u);
   assert.match(script, /const value = estimate\?\.amountUsd/u);
   assert.doesNotMatch(script, /estimate\?\.status === "estimated" \? estimate\.amountUsd : null/u);
   assert.match(script, /function requestCostEstimateTitle\(/u);

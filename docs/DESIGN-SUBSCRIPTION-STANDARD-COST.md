@@ -236,8 +236,8 @@ pricing_context_quality
 ```text
 default          -> standard
 fast             -> fast
-priority         -> fast   # 官方 Fast FAQ：Priority 已重命名为 Fast
-missing/unknown  -> unknown
+priority         -> standard
+missing/unknown  -> standard
 ```
 
 Fast multiplier：
@@ -248,7 +248,7 @@ Fast multiplier：
 | GPT-5.5 | 2.5× |
 | GPT-5.4 | 2× |
 
-只在 service tier 被 event-level evidence 证明时应用；unknown 不默认当 Fast，也不默认声称“已完整估算 feature cost”。
+ADR-0023 已修订本节的旧 alias 规则：**只有原始 `service_tier` 明确为 `fast` 才应用 Fast multiplier**。其余值统一按 standard，因此缺失 tier 本身不再降低 pricing coverage。原始 service-tier evidence 仍保留用于审计。
 
 ## 9. Fast 与 Long Context 的组合
 
@@ -348,7 +348,7 @@ Request Event Cost
 1. 已持久化 event usage/observedAt 不重算、不改值。
 2. event model 若能从 task/turn 身份唯一证明，可直接 backfill。
 3. 历史 service tier 当前未落库；若原 rollout 仍存在，可以做一次**只读 metadata enrichment replay**，仅提取 pricing context，不改变 Token Ledger classification/usage。
-4. 原 rollout 不存在时，service tier 保持 unknown；不得默认 `default`。
+4. 原 rollout 不存在时，raw service tier 可以保持 unknown；pricing interpretation 仍按 ADR-0023 把非显式 `fast` 统一当作 standard，不伪造 raw `default` evidence。
 5. enrichment 前后原 rollout SHA-256 必须不变。
 
 ## 13. 实施拆分

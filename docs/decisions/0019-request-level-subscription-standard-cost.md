@@ -20,7 +20,7 @@ Request Ledger 已保存逐 verified model-usage unit 的六字段 usage 和 `ob
 - 价目目录按 `policy + model + effective interval` 版本化；使用 event `observedAt` 选历史价格，不允许当前价重算全部历史。
 - GPT-5.6 Terra/Luna 从 2026-07-30 起采用官方已反映到付费订阅 usage 的新标准价；Sol 2026-08-21 的临时 token-based USD 促销不作为本 subscription-standard policy 的切价点。
 - long context 只能在 request-level evidence 可证明时应用；`input >272K` 时整个 request 的 input/cached input 2×、output 1.5×。不得使用 Task 累计 input 判断。
-- Fast 只使用 event 当时可证明的 `service_tier`；`fast` 和 `priority` 规范化为 Fast，unknown 不猜测。
+- Fast 的 service-tier 解释已由 ADR-0023 修订：只有原始值明确为 `fast` 才应用 Fast；`default/standard/priority/缺失/其他值` 一律按 standard。
 - 当前官方说明 Fast 不支持 long context，因此二者同时出现时作为不支持/冲突 evidence，禁止盲目叠乘。
 - subscription-standard policy 不沿用 GPT-5.6 API cache-write 1.25× surcharge；`cacheWriteInputTokens` 继续用于审计，但属于非 cached input 的标准计价组成，除非后续获得明确的 subscription/legacy metering 证据。
 - 最终美元金额不持久化；仅持久化 event-level 最小 pricing context，以便未来价目更新后仍能确定性重算。

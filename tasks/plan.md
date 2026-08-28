@@ -1288,3 +1288,21 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] 长 Agent 不再一次性展示全部 Task；长 Task 不再一次性展示全部 Request。
 - [x] Canonical Requests 不再受父 Task scrollbar 位移影响，每个 Request 表拥有自己的横向滚动边界。
 - [x] 所有 UI 改动保持现有 parchment / clay / blue-gray 主题与键盘/窄屏可用性。
+
+## Phase 21: Explicit-Fast Service Tier Policy
+
+### Overview
+
+冻结服务层级的新业务口径：只有 Request 原始 `service_tier` 明确为 `fast` 才应用 Fast multiplier，其他所有值按 standard。该阶段只修改 pricing interpretation、派生 USD/coverage 和对应 UI，不改变 Token/Request/Task accounting。
+
+事实来源：ADR-0023。
+
+### Tasks
+
+- [x] `normalizeServiceTier` 改为 explicit-fast；`priority`、missing、unknown 均归 standard。
+- [x] service tier 缺失不再产生 `service_tier_unknown` partial；其他 pricing evidence 完整时 Request 为 estimated。
+- [x] UI 只显示 `standard` 或 `fast · N 倍率`，并同步 tooltip。
+- [x] pricing policy version 升级，并在启动时检测旧 `pricing_policy_version`，从持久化 projection 重建 calendar cost，不回放 `.codex`。
+- [x] pricing unit 与数据库 restart regression 覆盖新语义；全量测试通过后提交。
+
+**Delivered evidence (2026-08-28):** pricing policy 为 `subscription-standard-v2 / 2026-08-28-explicit-fast`。定向测试证明 `fast/FAST -> fast`，`default/standard/priority/missing/unknown -> standard`；缺 tier 不再生成 `service_tier_unknown` partial。数据库 regression 证明旧 `pricing_policy_version` 会从已持久化 canonical evidence 恢复正确 calendar cost。全量 `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 通过；Chrome/CDP 1440/720 live UI 复验通过。

@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { MonitorDatabase } from "../src/database.js";
 import { UsageMonitor } from "../src/monitor.js";
+import { SUBSCRIPTION_PRICING_CATALOG } from "../src/pricing.js";
 import { CodexRepository } from "../src/repository.js";
 import { resolveCodexHome, resolveDatabasePath, startApplication } from "../src/server.js";
 import { CodexSourceLocator, recoverLegacySourceKey } from "../src/source-locator.js";
@@ -113,6 +114,50 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   assert.equal(second.monitor.health().timeline.replayedFiles, 0);
   assert.equal(second.monitor.health().timeline.tailedFiles, 0);
   assert.equal(second.database.getModelUsageEvents(ROOT).length, 1);
+});
+
+test("pricing policy changes rebuild persisted calendar cost from stored canonical evidence", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-pricing-policy-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `rollout-pricing-policy-${ROOT}.jsonl`),
+    makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"),
+  );
+  const first = await bootMonitor(codexHome, databasePath);
+  let reopened = null;
+  t.after(async () => {
+    await first.monitor.close().catch(() => {});
+    try { first.database.close(); } catch {}
+    try { reopened?.close(); } catch {}
+    await rm(directory, { recursive: true, force: true });
+  });
+  await first.monitor.timeline();
+  first.monitor.close();
+  first.database.db.prepare(`
+    UPDATE session_day_usage
+    SET cost_amount_usd=999, cost_status='partial', pricing_policy_version='stale-policy'
+  `).run();
+  first.database.db.prepare(`
+    INSERT INTO derived_state (key, value) VALUES ('pricing_policy_version', 'stale-policy')
+    ON CONFLICT(key) DO UPDATE SET value='stale-policy'
+  `).run();
+  first.database.close();
+
+  reopened = new MonitorDatabase(databasePath);
+  const row = reopened.db.prepare(`
+    SELECT cost_amount_usd, cost_status, pricing_policy_version
+    FROM session_day_usage WHERE root_session_id=?
+  `).get(ROOT);
+  assert.equal(Number(row.cost_amount_usd), 0.0003);
+  assert.equal(row.cost_status, "estimated");
+  assert.equal(row.pricing_policy_version, SUBSCRIPTION_PRICING_CATALOG.policyVersion);
+  assert.equal(
+    reopened.db.prepare("SELECT value FROM derived_state WHERE key='pricing_policy_version'").get().value,
+    SUBSCRIPTION_PRICING_CATALOG.policyVersion,
+  );
 });
 
 test("parser semantics version reindexes stale cursor diagnostics without changing schema version", async (t) => {

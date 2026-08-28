@@ -14,6 +14,7 @@
 
 ### Changed
 
+- Service tier pricing 改为 explicit-fast：只有原始值明确为 `fast` 才应用 Fast multiplier；`default`、`standard`、`priority`、缺失和其他未知值全部按 standard。pricing policy 升级到 `subscription-standard-v2 / 2026-08-28-explicit-fast`，启动时会从持久化 canonical evidence 重建旧 calendar cost projection，不回放 `.codex`。
 - Task 的 `N Requests` 改为明确的可交互胶囊，补齐 pointer、hover、active 与 focus 反馈；表格可见标题与审计 drawer 不再跟随父表横向滚动。服务层级统一显示为 `standard` 或 `fast · N 倍率`，倍率直接取 request-level pricing evidence，而不是硬编码。
 - Time Task 表移除可见的“当日任务活动”caption，并补充“推理强度”；Canonical Request 明细移除独立 Coverage 列、补充所属 Task 推理强度，并将 `service_tier` 显示为更明确的“服务层级”。
 - Request/Task 模型采用与现有蓝灰角色体系一致的轻量强调样式；Request pricing coverage 继续通过 USD 悬停说明保留，不增加额外宽列。

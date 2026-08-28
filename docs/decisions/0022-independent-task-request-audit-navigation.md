@@ -18,7 +18,7 @@ ADR-0011 将 Task 表定义为可横向滚动的完整审计账页，ADR-0017 �
 - Task 的 `N Requests` 使用明确的 capsule affordance；整个 Task cell button 保持键盘可操作，胶囊补充 hover / active / focus 可见反馈。
 - drawer 顶部使用居中的三横线 grip 作为收起入口；收起不销毁 drawer DOM，而是切换稳定 `data-open` 状态并通过 grid-row/opacity/translate 过渡。`prefers-reduced-motion` 继续覆盖动画时长。
 - 可见表标题属于滚动容器上下文而不是数据列；任务表 caption 固定在当前容器视口左侧。Request 标题天然位于 Request scrollbar 之外，仅 Request 表列发生横向移动。
-- `service_tier` UI 只规范化为 `standard` 或 `fast · N 倍率`。`priority` 归一为 fast；`N` 必须来自 request cost 的实际 `multipliers.fast`。不得把 long-context output 的 `1.5×` 当成 Fast 倍率硬编码。
+- `service_tier` UI 只规范化为 `standard` 或 `fast · N 倍率`。具体 Fast 判定由 ADR-0023 约束：只有原始 `fast` 才进入 Fast；`N` 必须来自 request cost 的实际 `multipliers.fast`。不得把 long-context output 的 `1.5×` 当成 Fast 倍率硬编码。
 
 ## Alternatives considered
 

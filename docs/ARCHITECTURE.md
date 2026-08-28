@@ -99,7 +99,7 @@ verified Request Ledger event
   -> Σ Session / Day / Timeline
 ```
 
-普通 request 只对 `input - cachedInput`、cached input 和 output 计价；reasoning 是 output 明细，不重复收费。subscription-standard policy 不迁入旧 API cache-write 1.25× surcharge。`input >272K` 只在单个 verified usage unit 上判定，并对整个 request 应用 input/cached 2×、output 1.5×；多个普通 request 的 Task aggregate 即使超过 272K 也不能触发。Fast/priority 只在 event-level service tier 可证明时应用，unknown 不猜；当前 Fast + long-context 组合被视为 unsupported evidence，不叠乘。
+普通 request 只对 `input - cachedInput`、cached input 和 output 计价；reasoning 是 output 明细，不重复收费。subscription-standard policy 不迁入旧 API cache-write 1.25× surcharge。`input >272K` 只在单个 verified usage unit 上判定，并对整个 request 应用 input/cached 2×、output 1.5×；多个普通 request 的 Task aggregate 即使超过 272K 也不能触发。Fast 只在原始 event-level `service_tier` 字面为 `fast` 时应用；`priority`、缺失值和其他非-fast 值均按 standard。当前 Fast + long-context 组合仍被视为 unsupported evidence，不叠乘。
 
 Historical Rate Resolver 使用 `model + observedAt` 选择唯一有效期记录。Terra/Luna 2026-07-30 切换历史价；Sol 的临时 API promotion 不改变本 `subscription-standard-equivalent` policy。Task/Agent/Session/Day 只相加 request-cost summary；`partial.amountUsd` 是当前可证明金额，并同时保留 request/task unavailable 数和 historical-rate/request-boundary/service-tier coverage。它不是 Plus 实际账单，也不能由额度百分比反推；regional processing 与收费工具仍排除。
 
