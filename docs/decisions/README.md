@@ -24,6 +24,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0018](0018-day-scoped-request-ledger-snapshot.md) | Accepted | 时间视图按 Request Ledger `observedAt` 构造 `session + day` slice，工程视图保留完整 session |
 | [0019](0019-request-level-subscription-standard-cost.md) | Accepted | 逐 Request Ledger usage unit 按历史订阅标准价、长上下文与 Fast evidence 计算 USD 等值 |
 | [0020](0020-canonical-request-ownership-and-projections.md) | Accepted | 以 lineage 解析 canonical Request ownership，Time 按 Request-day 投影，并用后台 versioned SQL projection 替代点击时全历史重算 |
+| [0021](0021-task-business-request-accounting-scope.md) | Accepted | Task 作为业务分组、Request 作为计量与日期原子；Time 使用 Task Day Slice 并按需展开 Request |
 
 ## 新增 ADR
 

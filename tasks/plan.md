@@ -1206,3 +1206,44 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] 新增 `T-PROJ-007~011` 与 HTTP async error-boundary regression，并用真实故障 root 做临时 SQLite 集成验证。
 
 **Delivered evidence (2026-08-28):** 正式监控 SQLite 副本从 projection v1 原地重建为 v2，schema 保持 v14，耗时 `2766ms`；真实故障 root 写入后为 104 canonical verified Request + 278 inherited verified Request + 0 unresolved，37 canonical Task + 12 inherited Task，2 个参与 rollout SHA-256 前后不变。最终 `npm test` 115 / 114 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 通过。
+
+## Phase 19: Request Fact / Task Day Slice Scope Contract
+
+### Overview
+
+冻结最终领域语义：Request 是 Token/Cost/日期计量原子，Task 是 Session/Project 的业务工作单元，Time 先按 Request `observedAt` 切日，再以 Task Day Slice 分组。补齐 Time UI 的“活动任务/当日 Request”表达和按需 Request audit detail，同时保持 canonical accounting、cross-root provenance 与 SQL projection 性能边界。
+
+事实来源：`docs/DESIGN-REQUEST-FACT-TASK-DAY-SLICE.md`、`docs/TEST-REQUEST-FACT-TASK-DAY-SLICE.md`、ADR-0021、`docs/DELIVERY-REQUEST-FACT-TASK-DAY-SLICE.md`。
+
+### Task 1: Freeze business scope tests
+
+- [x] 以 `test/request-scope-business.test.js` 锁定 Full Task、Task Day Slice、Full=ΣDay、无当日 Request 不显示、cross-root mixed-turn、六字段 conservation、copied timestamp 不污染日期。
+- [x] 单元测试只测试领域行为，不混入 HTTP/CSP/CSS/schema-shape 样板。
+
+### Task 2: Expose Task Day Slice metadata
+
+- [ ] Day scope 补充 `scopeKind/scopeDay/firstRequestAt/lastRequestAt/requestCount`；不复制 Task identity，不改变 canonical Request accounting。
+- [ ] Project scope 保持完整 Task lifecycle 与完整 Request 汇总。
+
+### Task 3: Add lazy Request audit drill-down
+
+- [ ] 增加 task-scoped canonical Request read API，Project 返回完整 Task Request，Time `?day=` 只返回当天 Request。
+- [ ] 初始 snapshot 不内嵌 Request detail；增加定向 SQL index 与稳定分页，避免长 Task 放大 payload/DOM。
+
+### Task 4: Recompose Project/Time task presentation
+
+- [ ] Project 继续“任务记录”；Time 使用“当日任务活动 / 活动任务 / Requests”。
+- [ ] Time 表使用当日 Request window/count，不能把 full Task startedAt/duration 冒充日内计量。
+- [ ] Task 展开按需加载 Request，继续保护 ADR-0017 的滚动/展开/focus/visual-anchor。
+
+### Task 5: Reconcile correctness and performance
+
+- [ ] raw=canonical+inherited+unresolved 六字段守恒；Full canonical=ΣDay；Session/Agent/Task rollup 对账。
+- [ ] warm Timeline <200ms、day/session <300ms、request drill-down 首批 <100ms；cached scope switch 不 replay rollout。
+- [ ] `npm test`、`npm run check`、`git diff --check`、真实 hash/reconciliation、1440/720 browser gate 全通过后才更新 Delivery 为 Implemented。
+
+### Checkpoint
+
+- [ ] Session 回答“做了什么”，Time 回答“什么时候发生消耗”，二者共享同一 canonical Request 事实源。
+- [ ] UI 展示单位和 accounting unit 不再混淆。
+- [ ] 不通过 root-local identity、Task-start day 或 eager Request payload 换取表面简化。
