@@ -67,16 +67,16 @@ codex-usage-monitor\
 
 - 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话；已有 SQLite projection 时点击只读 cached canonical snapshot，不在请求路径同步解析 rollout。新增/变化 session 由后台 indexer 处理；目录缺失时明确归入“未归类”。
 - 左侧可切换“工程”和“时间”两种导航；工程模式打开完整 session，并以“任务记录”展示完整 Task lifecycle；时间模式以 `(sessionId, local day)` 为选择身份，直接展示当天真正发生的 canonical Request，再按 Task Day Slice 分组。Time 表显示“当日首请求 / 当日末请求 / Requests / 推理强度”，不会把完整 Task 的开始时间或耗时冒充为当天计量时间。
-- Task 可按需展开 canonical Request 审计表，查看每个 Request 的时间、Input/Cached/Cache Write/Output/Reasoning/Total、模型、所属 Task 推理强度、service tier 与 USD。Project 展开完整 Task Request；Time 只展开当天 Request。独立 coverage 列不再占用表宽，pricing coverage/限制通过 USD 悬停说明保留；明细使用稳定 cursor 分页，初始 snapshot/SSE 不内嵌全部 Request。
+- Task 可按需展开 canonical Request 审计表，查看每个 Request 的时间、Input/Cached/Cache Write/Output/Reasoning/Total、模型、所属 Task 推理强度、service tier 与 USD。Project 展开完整 Task Request；Time 只展开当天 Request。独立 coverage 列不再占用表宽，pricing coverage/限制通过 USD 悬停说明保留。每个智能体的 Task 与每个 Task 的 Request 都按 10 条/页导航；Request 明细拥有独立横向滚动区、页码/前后页/跳转和居中三横线收起把手，父任务表横向滚动不会带动 Canonical Requests 标题或明细。初始 snapshot/SSE 仍不内嵌全部 Request。
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
 - 逐任务费用只汇总其 verified Request Ledger usage unit 的 request cost：按事件发生时间选择历史模型价，并在 event-level evidence 可证明时处理 `input >272K` 长上下文和 Fast；未知历史价格、service tier 或冲突 evidence 显式降低 coverage，不猜测。
 - Request Ledger 任务质量只区分 `complete`、`provisional`、`partial` 和 `unknown`。
 - 通过文件观察与 1 秒轮询把变化 session 放入后台 dirty queue；Indexer 执行 parse/tail → Request identity/ownership → canonical projection → generation commit，并用 SSE 刷新页面。
-- 实时 snapshot 使用 session/Agent/Task 稳定 key 原位 reconcile：常规 token/费用/状态更新不会替换任务表滚动容器或 Agent `<details>`；横向滚动、键盘焦点和用户展开状态保持，结构新增时以当前可见 Agent/Task 做视觉锚点补偿。
+- 实时 snapshot 使用 session/Agent/Task 稳定 key 原位 reconcile：常规 token/费用/状态更新不会替换任务表滚动容器、已展开 Request drawer 或 Agent `<details>`；横向滚动、键盘焦点和用户展开状态保持，结构新增时以当前可见 Agent/Task 做视觉锚点补偿。Request drawer 收起/展开保留原 DOM 并使用可降级到 `prefers-reduced-motion` 的过渡动画。
 - 任务表不显示指令正文；受认证的旧 preview API 暂时保留，供后续完整对话功能重新设计。
-- 任务表固定 13 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏当前审计字段。
+- 任务表固定 14 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏当前审计字段。可见表标题保持在滚动容器视口左侧，横向移动只作用于数据列。
 - 展示独立的账号级 `rate_limits` 快照；同一 reset 窗口内若并发 rollout 返回互相回退的 `used_percent`，运行时按该窗口观测到的最大已用比例保守收敛，避免把 100% 错降成 97%。页面统一显示 `100 - used_percent` 的剩余额度；额度卡右上角使用本地安装的 Lucide `refresh-cw` 图标，点击后立即重新扫描本机最新 rollout，刷新期间图标旋转。
 
 ### 额度刷新语义

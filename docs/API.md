@@ -14,7 +14,7 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 | 状态 | 含义 |
 |---|---|
-| `400` | ID 格式无效，`day` 不是合法 `YYYY-MM-DD` 本地日期，或 Request drill-down 的 `limit/cursor` 无效 |
+| `400` | ID 格式无效，`day` 不是合法 `YYYY-MM-DD` 本地日期，或 Request drill-down 的 `limit/page/cursor` 无效 |
 | `401` | 缺少或错误的会话 Cookie |
 | `403` | Host 或 Origin 不受信任 |
 | `404` | 会话、任务或接口不存在 |
@@ -192,11 +192,11 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 
 这是有状态选择操作，但不写 `.codex`；它只更新监控器自身的解析范围和派生 SQLite。
 
-### `GET /api/sessions/:sessionId/tasks/:threadId/:turnId/requests[?day=YYYY-MM-DD&limit=N&cursor=...]`
+### `GET /api/sessions/:sessionId/tasks/:threadId/:turnId/requests[?day=YYYY-MM-DD&limit=N&page=N|cursor=...]`
 
 按 Task 懒加载其 **canonical Request audit detail**。无 `day` 时读取完整 Task 的 canonical Request；带 `day` 时只读取该本地自然日 `[dayStart,nextDayStart)` 内的 Request。初始 session/day snapshot 不内嵌这些明细，因此长 Task 的 Request 数量不会线性放大常规 SSE payload 或 DOM。
 
-查询只读 `canonical_requests`，不会返回 `inherited_copy` raw evidence。结果稳定按 `(observed_at, request_id)` 升序；默认 `limit=200`，允许 `1..500`。存在后续页时返回不透明 `nextCursor`，客户端只应原样回传。非法 day、limit 或 cursor 返回 `400`；Task 不属于指定 root session 时返回 `404`。
+查询只读 `canonical_requests`，不会返回 `inherited_copy` raw evidence。结果稳定按 `(observed_at, request_id)` 升序；默认 `limit=200`，允许 `1..500`。接口同时保留两种只读分页协议：历史 cursor 模式继续通过不透明 `nextCursor` 顺序读取；传 `page=N` 时按同一稳定顺序做编号分页，并返回 `pagination.page/pageSize/totalItems/totalPages`。`page` 与 `cursor` 互斥。当前页面固定使用 `limit=10&page=N`，因此每个 Task 的 Canonical Requests 最多渲染 10 行，并支持页码、前后页和页码跳转。非法 day、limit、page 或 cursor 返回 `400`；Task 不属于指定 root session 时返回 `404`。
 
 ```json
 {
@@ -219,12 +219,18 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
     "quality": "complete",
     "costEstimate": { "status": "estimated", "amountUsd": 0.0 }
   }],
+  "pagination": {
+    "page": 1,
+    "pageSize": 10,
+    "totalItems": 24,
+    "totalPages": 3
+  },
   "nextCursor": null,
   "projectionGeneration": 42
 }
 ```
 
-Request cost 继续严格使用该 Request 自身 event-level pricing evidence。若 canonical Request 缺 model/service-tier 等证据，detail 会返回既有 `partial/unavailable` 状态，而不会从 Task aggregate 反向猜值。`partial.amountUsd` 仍是可证明的基础金额，例如 service tier 缺失时保留已知历史标准价金额、但不猜 Fast/priority multiplier；前端会显示该金额并通过 USD 悬停说明披露 evidence 缺口。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
+Request cost 继续严格使用该 Request 自身 event-level pricing evidence。若 canonical Request 缺 model/service-tier 等证据，detail 会返回既有 `partial/unavailable` 状态，而不会从 Task aggregate 反向猜值。`partial.amountUsd` 仍是可证明的基础金额，例如 service tier 缺失时保留已知历史标准价金额、但不猜 Fast/priority multiplier；前端会显示该金额并通过 USD 悬停说明披露 evidence 缺口。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。服务层级在 UI 中规范化为 `standard` 或 `fast · N 倍率`；倍率直接使用该 Request 已计算的 pricing evidence（当前 GPT-5.6/GPT-5.5 Fast 为 2.5×、GPT-5.4 为 2×），不会把 long-context output 的 1.5×误标成 Fast。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
 
 ### `GET /api/sessions/:id/events[?day=YYYY-MM-DD]`
 

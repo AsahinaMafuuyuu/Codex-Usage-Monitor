@@ -364,13 +364,15 @@ export class UsageMonitor extends EventEmitter {
     range = null,
     limit = 200,
     after = null,
+    page = null,
   } = {}) {
     const task = this.database.getTask(threadId, turnId);
     if (!task || task.rootSessionId !== sessionId) return null;
-    const page = this.database.getCanonicalTaskRequests(sessionId, threadId, turnId, {
+    const requestPage = this.database.getCanonicalTaskRequests(sessionId, threadId, turnId, {
       range,
       limit,
       after,
+      page,
     });
     const projection = this.database.getProjectionState();
     return {
@@ -384,7 +386,7 @@ export class UsageMonitor extends EventEmitter {
       scope: day
         ? { type: "day", day, timezone: range?.timezone ?? null }
         : { type: "session" },
-      requests: page.requests.map((request) => ({
+      requests: requestPage.requests.map((request) => ({
         requestId: request.requestId,
         observedAt: request.observedAt,
         usage: request.usage,
@@ -394,7 +396,8 @@ export class UsageMonitor extends EventEmitter {
         quality: request.quality,
         costEstimate: estimateRequestCost(request),
       })),
-      nextAfter: page.nextAfter,
+      nextAfter: requestPage.nextAfter,
+      pagination: requestPage.pagination,
       projectionGeneration: Number(projection?.generation ?? 0),
     };
   }

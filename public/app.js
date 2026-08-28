@@ -11,7 +11,11 @@ const state = {
   connected: false,
   quotaRefreshing: false,
   requestDetails: new Map(),
+  taskPages: new Map(),
 };
+
+const TASK_PAGE_SIZE = 10;
+const REQUEST_PAGE_SIZE = 10;
 
 const elements = Object.fromEntries(
   [
@@ -68,13 +72,37 @@ elements["session-list"].addEventListener("click", (event) => {
   if (button) void selectSession(button.dataset.sessionId, button.dataset.sessionDay ?? null);
 });
 elements["agent-tree"].addEventListener("click", (event) => {
+  const requestCollapse = event.target.closest("[data-request-collapse]");
+  if (requestCollapse) {
+    void toggleTaskRequests(requestCollapse.dataset.threadId, requestCollapse.dataset.turnId, { forceOpen: false });
+    return;
+  }
   const toggle = event.target.closest("[data-task-toggle]");
   if (toggle) {
     void toggleTaskRequests(toggle.dataset.threadId, toggle.dataset.turnId);
     return;
   }
-  const more = event.target.closest("[data-request-more]");
-  if (more) void loadTaskRequests(more.dataset.threadId, more.dataset.turnId, { append: true });
+  const requestPage = event.target.closest("[data-request-page-action], [data-request-page-number], [data-request-page-jump-submit]");
+  if (requestPage) {
+    void handleRequestPageAction(requestPage);
+    return;
+  }
+  const taskPage = event.target.closest("[data-task-page-action], [data-task-page-number], [data-task-page-jump-submit]");
+  if (taskPage) handleTaskPageAction(taskPage);
+});
+elements["agent-tree"].addEventListener("keydown", (event) => {
+  if (event.key !== "Enter") return;
+  const requestJump = event.target.closest("[data-request-page-jump]");
+  if (requestJump) {
+    event.preventDefault();
+    void jumpRequestPageFromInput(requestJump);
+    return;
+  }
+  const taskJump = event.target.closest("[data-task-page-jump]");
+  if (taskJump) {
+    event.preventDefault();
+    jumpTaskPageFromInput(taskJump);
+  }
 });
 elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
 
@@ -120,7 +148,10 @@ async function selectSession(sessionId, requestedDay = null) {
   const selectionVersion = ++state.selectionVersion;
   const previousSelectionKey = `${state.selectedId ?? ""}|${state.selectedDay ?? ""}`;
   const nextSelectionKey = `${sessionId}|${day ?? ""}`;
-  if (previousSelectionKey !== nextSelectionKey) state.requestDetails.clear();
+  if (previousSelectionKey !== nextSelectionKey) {
+    state.requestDetails.clear();
+    state.taskPages.clear();
+  }
   state.selectedId = sessionId;
   state.selectedDay = day;
   localStorage.setItem("codex-monitor-session", sessionId);
@@ -641,7 +672,7 @@ function updateAgentBranch(branch, agent, depth) {
     summary.dataset.agentAnchorId = agent.threadId;
     summary.innerHTML = renderAgentSummary(agent);
   }
-  structuralChanged = patchAgentTasks(details, agent.tasks) || structuralChanged;
+  structuralChanged = patchAgentTasks(details, agent) || structuralChanged;
   return structuralChanged;
 }
 
@@ -683,7 +714,103 @@ function renderAgentSummary(agent) {
 
 function renderTasks(agent) {
   if (!agent.tasks.length) return '<div class="empty-agent">该智能体还没有持久化任务边界。</div>';
-  return renderTaskTableShell(agent.tasks.map(renderTaskRow).join(""));
+  const pagination = resolveTaskPagination(agent.threadId, agent.tasks.length);
+  const visibleTasks = agent.tasks.slice(pagination.startIndex, pagination.endIndex);
+  return `${renderTaskTableShell(visibleTasks.map(renderTaskRow).join(""))}<div class="task-request-details" aria-live="polite"></div>${renderTaskPagination(agent.threadId, pagination)}`;
+}
+
+function taskPageKey(threadId) {
+  return `${state.selectedId ?? ""}\u0000${state.selectedDay ?? ""}\u0000${threadId}`;
+}
+
+function resolveTaskPagination(threadId, totalItems) {
+  const totalPages = Math.max(1, Math.ceil(totalItems / TASK_PAGE_SIZE));
+  const key = taskPageKey(threadId);
+  const requestedPage = Number(state.taskPages.get(key) ?? 1);
+  const page = clamp(Number.isInteger(requestedPage) ? requestedPage : 1, 1, totalPages);
+  state.taskPages.set(key, page);
+  return {
+    page,
+    pageSize: TASK_PAGE_SIZE,
+    totalItems,
+    totalPages,
+    startIndex: (page - 1) * TASK_PAGE_SIZE,
+    endIndex: Math.min(page * TASK_PAGE_SIZE, totalItems),
+  };
+}
+
+function renderTaskPagination(threadId, pagination) {
+  const signature = `${pagination.page}|${pagination.totalPages}|${pagination.totalItems}`;
+  return `<nav class="task-pagination pagination-bar" data-task-pagination data-thread-id="${escapeHtml(threadId)}" data-signature="${signature}" aria-label="Task 分页">
+    ${renderPageButtons("task", pagination.page, pagination.totalPages, `data-thread-id="${escapeHtml(threadId)}"`)}
+    <span class="task-page-summary page-summary">第 ${pagination.page} / ${pagination.totalPages} 页 · 共 ${pagination.totalItems} 个 Task</span>
+    <label class="page-jump"><span>跳转</span><input type="number" min="1" max="${pagination.totalPages}" value="${pagination.page}" inputmode="numeric" data-task-page-jump data-thread-id="${escapeHtml(threadId)}" aria-label="跳转到 Task 页码"></label>
+    <button class="page-jump-submit" type="button" data-task-page-jump-submit data-thread-id="${escapeHtml(threadId)}">前往</button>
+  </nav>`;
+}
+
+function renderPageButtons(kind, page, totalPages, contextAttributes) {
+  const actionAttribute = `data-${kind}-page-action`;
+  const pageAttribute = `data-${kind}-page-number`;
+  const pages = paginationWindow(page, totalPages);
+  const numbered = pages.map((candidate) => `<button class="page-number${candidate === page ? " active" : ""}" type="button" ${pageAttribute}="${candidate}" ${contextAttributes} aria-current="${candidate === page ? "page" : "false"}">${candidate}</button>`).join("");
+  return `<div class="page-controls">
+    <button class="page-edge" type="button" ${actionAttribute}="first" ${contextAttributes} ${page <= 1 ? "disabled" : ""} aria-label="第一页">«</button>
+    <button class="page-edge" type="button" ${actionAttribute}="prev" ${contextAttributes} ${page <= 1 ? "disabled" : ""} aria-label="上一页">‹</button>
+    <span class="page-numbers">${numbered}</span>
+    <button class="page-edge" type="button" ${actionAttribute}="next" ${contextAttributes} ${page >= totalPages ? "disabled" : ""} aria-label="下一页">›</button>
+    <button class="page-edge" type="button" ${actionAttribute}="last" ${contextAttributes} ${page >= totalPages ? "disabled" : ""} aria-label="最后一页">»</button>
+  </div>`;
+}
+
+function paginationWindow(page, totalPages) {
+  const count = Math.min(5, totalPages);
+  const start = clamp(page - Math.floor(count / 2), 1, Math.max(1, totalPages - count + 1));
+  return Array.from({ length: count }, (_, index) => start + index);
+}
+
+function currentAgent(threadId) {
+  return state.snapshot?.agents?.find((agent) => agent.threadId === threadId) ?? null;
+}
+
+function handleTaskPageAction(control) {
+  const threadId = control.dataset.threadId;
+  const agent = currentAgent(threadId);
+  if (!agent) return;
+  const pagination = resolveTaskPagination(threadId, agent.tasks.length);
+  let page = pagination.page;
+  if (control.dataset.taskPageNumber) page = Number(control.dataset.taskPageNumber);
+  else if (control.matches("[data-task-page-jump-submit]")) {
+    const input = control.closest(".task-pagination")?.querySelector("[data-task-page-jump]");
+    if (input) page = Number(input.value);
+  } else {
+    page = pageFromAction(control.dataset.taskPageAction, page, pagination.totalPages);
+  }
+  setTaskPage(threadId, page);
+}
+
+function jumpTaskPageFromInput(input) {
+  setTaskPage(input.dataset.threadId, Number(input.value));
+}
+
+function setTaskPage(threadId, requestedPage) {
+  const agent = currentAgent(threadId);
+  if (!agent) return;
+  const totalPages = Math.max(1, Math.ceil(agent.tasks.length / TASK_PAGE_SIZE));
+  const page = clamp(Number.isInteger(requestedPage) ? requestedPage : 1, 1, totalPages);
+  state.taskPages.set(taskPageKey(threadId), page);
+  const branch = [...elements["agent-tree"].querySelectorAll("[data-agent-id]")]
+    .find((candidate) => candidate.dataset.agentId === threadId);
+  const details = branch?.querySelector(":scope > .agent-node > .agent-card");
+  patchAgentTasks(details, agent);
+}
+
+function pageFromAction(action, currentPage, totalPages) {
+  if (action === "first") return 1;
+  if (action === "prev") return Math.max(1, currentPage - 1);
+  if (action === "next") return Math.min(totalPages, currentPage + 1);
+  if (action === "last") return totalPages;
+  return currentPage;
 }
 
 function renderTaskTableShell(rows = "") {
@@ -709,7 +836,7 @@ function renderTaskRow(task) {
 
 function renderTaskCells(task) {
   const detail = requestDetailState(task.threadId, task.turnId);
-  const taskCell = `<td class="task-name-cell"><button class="task-request-toggle" type="button" data-task-toggle data-thread-id="${escapeHtml(task.threadId)}" data-turn-id="${escapeHtml(task.turnId)}" aria-expanded="${detail?.open ? "true" : "false"}"><strong>Task ${task.sequence}</strong><code title="${escapeHtml(task.turnId)}">${escapeHtml(shortId(task.turnId))}</code><span>${task.requestCount ?? 0} Requests</span></button></td>`;
+  const taskCell = `<td class="task-name-cell"><button class="task-request-toggle" type="button" data-task-toggle data-thread-id="${escapeHtml(task.threadId)}" data-turn-id="${escapeHtml(task.turnId)}" aria-expanded="${detail?.open ? "true" : "false"}" aria-label="${detail?.open ? "收起" : "展开"} Task ${task.sequence} 的 Canonical Requests"><strong>Task ${task.sequence}</strong><code title="${escapeHtml(task.turnId)}">${escapeHtml(shortId(task.turnId))}</code><span class="request-count-pill">${task.requestCount ?? 0} Requests</span></button></td>`;
   if (isDayScope()) {
     return `${taskCell}
     <td class="task-status-cell"><span class="status-chip ${escapeHtml(task.status)}">${statusLabel(task.status)}</span></td>
@@ -742,14 +869,25 @@ function renderTaskCells(task) {
     <td><span class="quality-chip ${escapeHtml(task.quality)}">${qualityLabel(task.quality)}</span></td>`;
 }
 
-function patchAgentTasks(details, tasks) {
+function patchAgentTasks(details, agent) {
   if (!details) return false;
+  const tasks = agent.tasks ?? [];
   let structuralChanged = false;
   let tableWrap = directChildByClass(details, "task-table-wrap");
+  let requestDetailsHost = directChildByClass(details, "task-request-details");
+  let paginationElement = directChildByClass(details, "task-pagination");
   let empty = directChildByClass(details, "empty-agent");
   if (!tasks.length) {
     if (tableWrap) {
       tableWrap.remove();
+      structuralChanged = true;
+    }
+    if (requestDetailsHost) {
+      requestDetailsHost.remove();
+      structuralChanged = true;
+    }
+    if (paginationElement) {
+      paginationElement.remove();
       structuralChanged = true;
     }
     if (!empty) {
@@ -777,7 +915,31 @@ function patchAgentTasks(details, tasks) {
     details.append(tableWrap);
     structuralChanged = true;
   }
-  return patchTaskRows(tableWrap, tasks) || structuralChanged;
+  const pagination = resolveTaskPagination(agent.threadId, tasks.length);
+  const visibleTasks = tasks.slice(pagination.startIndex, pagination.endIndex);
+  structuralChanged = patchTaskRows(tableWrap, visibleTasks) || structuralChanged;
+  if (!requestDetailsHost) {
+    requestDetailsHost = document.createElement("div");
+    requestDetailsHost.className = "task-request-details";
+    requestDetailsHost.setAttribute("aria-live", "polite");
+    details.insertBefore(requestDetailsHost, paginationElement ?? null);
+    structuralChanged = true;
+  }
+  structuralChanged = patchTaskRequestDetails(requestDetailsHost, visibleTasks) || structuralChanged;
+  const paginationMarkup = renderTaskPagination(agent.threadId, pagination);
+  const paginationSignature = `${pagination.page}|${pagination.totalPages}|${pagination.totalItems}`;
+  if (!paginationElement) {
+    paginationElement = createElementFromHtml(paginationMarkup);
+    details.append(paginationElement);
+    structuralChanged = true;
+  } else if (paginationElement.dataset.signature !== paginationSignature) {
+    const replacement = createElementFromHtml(paginationMarkup);
+    paginationElement.replaceWith(replacement);
+    paginationElement = replacement;
+    structuralChanged = true;
+  }
+  paginationElement.dataset.signature = paginationSignature;
+  return structuralChanged;
 }
 
 function patchTaskRows(tableWrap, tasks) {
@@ -803,51 +965,100 @@ function patchTaskRows(tableWrap, tasks) {
       tbody.insertBefore(row, insertionPoint);
       structuralChanged = true;
     }
-    structuralChanged = patchTaskRequestDetail(tbody, row, task) || structuralChanged;
-    const detailRow = findTaskDetailRow(tbody, task.turnId);
-    insertionPoint = (detailRow ?? row).nextElementSibling;
+    insertionPoint = row.nextElementSibling;
   });
 
   for (const [taskId, row] of existing) {
     if (!desiredIds.has(taskId)) {
       row.remove();
-      findTaskDetailRow(tbody, taskId)?.remove();
       structuralChanged = true;
     }
   }
   return structuralChanged;
 }
 
-function patchTaskRequestDetail(tbody, taskRow, task) {
-  const detail = requestDetailState(task.threadId, task.turnId);
-  let detailRow = findTaskDetailRow(tbody, task.turnId);
-  if (!detail?.open) {
-    if (!detailRow) return false;
-    detailRow.remove();
-    return true;
-  }
+function patchTaskRequestDetails(host, tasks) {
+  const existing = new Map(
+    [...host.querySelectorAll(":scope > .task-request-row")].map((detail) => [detail.dataset.taskDetailId, detail]),
+  );
+  const desiredIds = new Set(tasks.map((task) => task.turnId));
   let structuralChanged = false;
-  if (!detailRow) {
-    detailRow = document.createElement("tr");
-    detailRow.className = "task-request-row";
-    detailRow.dataset.taskDetailId = task.turnId;
-    structuralChanged = true;
+  let insertionPoint = host.firstElementChild;
+  for (const task of tasks) {
+    const detailState = requestDetailState(task.threadId, task.turnId);
+    const current = existing.get(task.turnId);
+    if (!detailState && !current) continue;
+    const detail = patchTaskRequestDetail(host, task);
+    if (detail && insertionPoint !== detail) {
+      host.insertBefore(detail, insertionPoint);
+      structuralChanged = true;
+    }
+    insertionPoint = detail?.nextElementSibling ?? insertionPoint;
   }
-  detailRow.innerHTML = `<td colspan="${taskColumnCount()}">${renderRequestDetail(detail, task)}</td>`;
-  if (taskRow.nextElementSibling !== detailRow) {
-    taskRow.after(detailRow);
-    structuralChanged = true;
+  for (const [taskId, detail] of existing) {
+    if (!desiredIds.has(taskId)) {
+      detail.remove();
+      structuralChanged = true;
+    }
   }
   return structuralChanged;
 }
 
-function findTaskDetailRow(tbody, turnId) {
-  return [...tbody.querySelectorAll(":scope > tr.task-request-row")]
-    .find((row) => row.dataset.taskDetailId === turnId) ?? null;
+function patchTaskRequestDetail(host, task) {
+  const detail = requestDetailState(task.threadId, task.turnId);
+  let detailRow = findTaskDetailRow(host, task.turnId);
+  if (!detail && !detailRow) return null;
+  const created = !detailRow;
+  if (!detailRow) {
+    detailRow = document.createElement("div");
+    detailRow.className = "task-request-row task-request-drawer";
+    detailRow.dataset.taskDetailId = task.turnId;
+    detailRow.dataset.open = "false";
+    host.append(detailRow);
+  }
+  const signature = requestDetailRenderSignature(detail, task);
+  if (detailRow.dataset.contentSignature !== signature) {
+    detailRow.innerHTML = `<div class="task-request-panel" aria-hidden="${detail?.open ? "false" : "true"}" ${detail?.open ? "" : "inert"}><div class="task-request-panel-clip">${renderRequestDetail(detail, task)}</div></div>`;
+    detailRow.dataset.contentSignature = signature;
+  } else {
+    const panel = detailRow.querySelector(":scope > .task-request-panel");
+    if (panel) {
+      panel.setAttribute("aria-hidden", detail?.open ? "false" : "true");
+      panel.toggleAttribute("inert", !detail?.open);
+    }
+  }
+  if (created && detail?.open) {
+    requestAnimationFrame(() => {
+      if (detailRow.isConnected && requestDetailState(task.threadId, task.turnId)?.open) {
+        detailRow.dataset.open = "true";
+      }
+    });
+  } else {
+    detailRow.dataset.open = detail?.open ? "true" : "false";
+  }
+  return detailRow;
 }
 
-function taskColumnCount() {
-  return 14;
+function requestDetailRenderSignature(detail, task) {
+  if (!detail) return "closed";
+  const requestIds = detail.requests?.map((request) => request.requestId).join(",") ?? "";
+  const pagination = detail.pagination;
+  return [
+    detail.loading ? "loading" : "idle",
+    detail.loaded ? "loaded" : "unloaded",
+    detail.error ?? "",
+    detail.page ?? 1,
+    pagination?.totalItems ?? "",
+    pagination?.totalPages ?? "",
+    detail.projectionGeneration ?? "",
+    task?.effort ?? "",
+    requestIds,
+  ].join("|");
+}
+
+function findTaskDetailRow(host, turnId) {
+  return [...host.querySelectorAll(":scope > .task-request-row")]
+    .find((row) => row.dataset.taskDetailId === turnId) ?? null;
 }
 
 function isDayScope() {
@@ -872,13 +1083,13 @@ function currentTask(threadId, turnId) {
   return null;
 }
 
-async function toggleTaskRequests(threadId, turnId) {
+async function toggleTaskRequests(threadId, turnId, { forceOpen = null } = {}) {
   const task = currentTask(threadId, turnId);
   if (!task) return;
   const key = requestDetailKey(threadId, turnId);
   const existing = state.requestDetails.get(key);
   if (existing) {
-    existing.open = !existing.open;
+    existing.open = forceOpen == null ? !existing.open : Boolean(forceOpen);
     patchVisibleTaskDetail(threadId, turnId);
     if (existing.open && !existing.loaded && !existing.loading) {
       await loadTaskRequests(threadId, turnId);
@@ -892,7 +1103,8 @@ async function toggleTaskRequests(threadId, turnId) {
     loaded: false,
     loading: false,
     requests: [],
-    nextCursor: null,
+    page: 1,
+    pagination: null,
     projectionGeneration: null,
     error: null,
   });
@@ -900,25 +1112,32 @@ async function toggleTaskRequests(threadId, turnId) {
   await loadTaskRequests(threadId, turnId);
 }
 
-async function loadTaskRequests(threadId, turnId, { append = false } = {}) {
+async function loadTaskRequests(threadId, turnId, { page = null } = {}) {
   const key = requestDetailKey(threadId, turnId);
   const detail = state.requestDetails.get(key);
   if (!detail || detail.loading || !detail.open) return;
   const selectionVersion = state.selectionVersion;
+  const requestedPage = Math.max(1, Number(page ?? detail.page ?? 1) || 1);
   detail.loading = true;
   detail.error = null;
   patchVisibleTaskDetail(threadId, turnId);
   try {
-    const query = new URLSearchParams({ limit: "200" });
+    const query = new URLSearchParams({ limit: String(REQUEST_PAGE_SIZE), page: String(requestedPage) });
     if (state.selectedDay) query.set("day", state.selectedDay);
-    if (append && detail.nextCursor) query.set("cursor", detail.nextCursor);
     const payload = await fetchJson(
       `/api/sessions/${encodeURIComponent(state.selectedId)}/tasks/${encodeURIComponent(threadId)}/${encodeURIComponent(turnId)}/requests?${query}`,
     );
     if (selectionVersion !== state.selectionVersion || state.requestDetails.get(key) !== detail) return;
-    const merged = append ? [...detail.requests, ...payload.requests] : payload.requests;
-    detail.requests = [...new Map(merged.map((request) => [request.requestId, request])).values()];
-    detail.nextCursor = payload.nextCursor;
+    detail.requests = payload.requests;
+    detail.pagination = payload.pagination ?? {
+      page: requestedPage,
+      pageSize: REQUEST_PAGE_SIZE,
+      totalItems: payload.requests.length,
+      totalPages: payload.requests.length ? 1 : 0,
+    };
+    detail.page = detail.pagination.totalPages > 0
+      ? clamp(detail.pagination.page, 1, detail.pagination.totalPages)
+      : 1;
     detail.projectionGeneration = payload.projectionGeneration;
     detail.loaded = true;
   } catch (error) {
@@ -938,8 +1157,10 @@ function patchVisibleTaskDetail(threadId, turnId) {
     candidate.dataset.threadId === threadId && candidate.dataset.taskId === turnId
   );
   if (!row) return;
-  row.innerHTML = renderTaskCells(currentTask(threadId, turnId));
-  patchTaskRequestDetail(row.parentElement, row, currentTask(threadId, turnId));
+  const task = currentTask(threadId, turnId);
+  row.innerHTML = renderTaskCells(task);
+  const host = directChildByClass(row.closest(".agent-card"), "task-request-details");
+  if (host) patchTaskRequestDetail(host, task);
 }
 
 async function refreshStaleOpenRequestDetails() {
@@ -948,30 +1169,78 @@ async function refreshStaleOpenRequestDetails() {
   for (const detail of state.requestDetails.values()) {
     if (!detail.open || !detail.loaded || detail.loading || detail.projectionGeneration === generation) continue;
     detail.loaded = false;
-    detail.nextCursor = null;
+    detail.page = 1;
+    detail.pagination = null;
     jobs.push(loadTaskRequests(detail.threadId, detail.turnId));
   }
   await Promise.all(jobs);
 }
 
 function renderRequestDetail(detail, task) {
-  if (detail.error) {
-    return `<div class="request-detail-state error">Request 明细读取失败：${escapeHtml(detail.error)}</div>`;
-  }
-  if (!detail.loaded && detail.loading) {
-    return '<div class="request-detail-state">正在读取 canonical Requests…</div>';
-  }
-  if (!detail.requests.length) {
-    return '<div class="request-detail-state">这个 Task 没有可展示的 canonical Request。</div>';
-  }
-  return `<div class="request-audit">
-    <div class="request-audit-heading"><strong>Canonical Requests</strong><span>${detail.requests.length}${detail.nextCursor ? "+" : ""} 条已加载</span></div>
-    <div class="request-audit-scroll"><table class="request-table">
-      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="Codex service_tier；default 为标准层级，fast/priority 会影响 Fast 定价。缺失时仅展示可证明的基础金额。">服务层级</th><th>USD</th></tr></thead>
+  const totalItems = detail?.pagination?.totalItems ?? task?.requestCount ?? detail?.requests?.length ?? 0;
+  let content;
+  if (detail?.error) {
+    content = `<div class="request-detail-state error">Request 明细读取失败：${escapeHtml(detail.error)}</div>`;
+  } else if (!detail?.loaded && detail?.loading) {
+    content = '<div class="request-detail-state">正在读取 canonical Requests…</div>';
+  } else if (!detail?.requests?.length) {
+    content = '<div class="request-detail-state">这个 Task 没有可展示的 canonical Request。</div>';
+  } else {
+    content = `<div class="request-audit-scroll" role="region" tabindex="0" aria-label="Canonical Requests 表格，可独立横向滚动"><table class="request-table">
+      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="Codex service_tier；default/standard 为标准层级，priority 归一为 Fast。倍率按当前 Request 的已验证 pricing policy 显示。">服务层级</th><th>USD</th></tr></thead>
       <tbody>${detail.requests.map((request) => renderRequestRow(request, task?.effort)).join("")}</tbody>
     </table></div>
-    ${detail.nextCursor ? `<button class="request-more" type="button" data-request-more data-thread-id="${escapeHtml(detail.threadId)}" data-turn-id="${escapeHtml(detail.turnId)}" ${detail.loading ? "disabled" : ""}>${detail.loading ? "加载中…" : "加载更多"}</button>` : ""}
-  </div>`;
+    ${renderRequestPagination(detail)}`;
+  }
+  return `<div class="request-audit-shell"><div class="request-audit">
+    <div class="request-audit-toolbar"><button class="request-collapse-handle" type="button" data-request-collapse data-thread-id="${escapeHtml(detail?.threadId ?? task?.threadId ?? "")}" data-turn-id="${escapeHtml(detail?.turnId ?? task?.turnId ?? "")}" aria-label="收起 Canonical Requests" title="收起 Canonical Requests"><span class="request-grip-lines" aria-hidden="true"></span></button></div>
+    <div class="request-audit-heading"><strong>Canonical Requests</strong><span>${tokenFormatter.format(totalItems)} Requests</span></div>
+    ${content}
+  </div></div>`;
+}
+
+function renderRequestPagination(detail) {
+  const pagination = detail.pagination;
+  if (!pagination || pagination.totalPages <= 0) return "";
+  const page = clamp(detail.page ?? pagination.page ?? 1, 1, pagination.totalPages);
+  const context = `data-thread-id="${escapeHtml(detail.threadId)}" data-turn-id="${escapeHtml(detail.turnId)}"`;
+  return `<nav class="request-pagination pagination-bar" aria-label="Canonical Requests 分页">
+    ${renderPageButtons("request", page, pagination.totalPages, context)}
+    <span class="request-page-summary page-summary">第 ${page} / ${pagination.totalPages} 页 · 共 ${pagination.totalItems} Requests</span>
+    <label class="page-jump"><span>跳转</span><input type="number" min="1" max="${pagination.totalPages}" value="${page}" inputmode="numeric" data-request-page-jump ${context} aria-label="跳转到 Request 页码"></label>
+    <button class="page-jump-submit" type="button" data-request-page-jump-submit ${context}>前往</button>
+  </nav>`;
+}
+
+async function handleRequestPageAction(control) {
+  const threadId = control.dataset.threadId;
+  const turnId = control.dataset.turnId;
+  const detail = requestDetailState(threadId, turnId);
+  if (!detail?.open || !detail.pagination) return;
+  let page = detail.page ?? 1;
+  if (control.dataset.requestPageNumber) page = Number(control.dataset.requestPageNumber);
+  else if (control.matches("[data-request-page-jump-submit]")) {
+    const input = control.closest(".request-pagination")?.querySelector("[data-request-page-jump]");
+    if (input) page = Number(input.value);
+  } else {
+    page = pageFromAction(control.dataset.requestPageAction, page, detail.pagination.totalPages);
+  }
+  await setRequestPage(threadId, turnId, page);
+}
+
+async function jumpRequestPageFromInput(input) {
+  await setRequestPage(input.dataset.threadId, input.dataset.turnId, Number(input.value));
+}
+
+async function setRequestPage(threadId, turnId, requestedPage) {
+  const detail = requestDetailState(threadId, turnId);
+  if (!detail?.open || !detail.pagination) return;
+  const totalPages = Math.max(1, detail.pagination.totalPages);
+  const page = clamp(Number.isInteger(requestedPage) ? requestedPage : 1, 1, totalPages);
+  if (page === detail.page && detail.loaded) return;
+  detail.page = page;
+  detail.loaded = false;
+  await loadTaskRequests(threadId, turnId, { page });
 }
 
 function renderRequestRow(request, effort) {
@@ -985,7 +1254,7 @@ function renderRequestRow(request, effort) {
     <td><strong>${formatTokens(request.usage?.totalTokens)}</strong></td>
     <td><code class="request-model" title="${escapeHtml(request.model || "模型未知")}">${escapeHtml(request.model || "未知")}</code></td>
     <td><span class="effort-chip">${escapeHtml(effortLabel(effort))}</span></td>
-    <td><span class="tier-chip ${serviceTierClass(request.serviceTier)}">${escapeHtml(serviceTierLabel(request.serviceTier))}</span></td>
+    <td><span class="tier-chip ${serviceTierClass(request.serviceTier)}">${escapeHtml(serviceTierLabel(request.serviceTier, request.costEstimate))}</span></td>
     <td class="request-cost ${escapeHtml(request.costEstimate?.status || "unavailable")}" title="${escapeHtml(requestCostEstimateTitle(request.costEstimate))}">${formatUsdEstimate(request.costEstimate)}</td>
   </tr>`;
 }
@@ -1256,7 +1525,7 @@ function requestCostEstimateTitle(estimate) {
   if (!estimate) return "缺少可审计的 Request pricing evidence。";
   const amount = Number.isFinite(estimate.amountUsd) ? formatUsdAmount(estimate.amountUsd) : null;
   const rate = estimate.rateVersion || "历史价目不可用";
-  const tier = serviceTierLabel(estimate.rawServiceTier ?? estimate.serviceTier);
+  const tier = serviceTierLabel(estimate.rawServiceTier ?? estimate.serviceTier, estimate);
   if (estimate.status === "estimated") {
     return `价目版本：${rate}；服务层级：${tier}。订阅标准价等值，不是 Plus 实际扣费。`;
   }
@@ -1269,19 +1538,27 @@ function requestCostEstimateTitle(estimate) {
   return `价目版本：${rate}；服务层级：${tier}。缺少足够的 request-level pricing evidence，无法估算。`;
 }
 
-function serviceTierLabel(value) {
+function serviceTierLabel(value, estimate = null) {
   const normalized = String(value ?? "").trim().toLowerCase();
-  if (normalized === "default" || normalized === "standard") return "标准";
-  if (normalized === "fast") return "Fast";
-  if (normalized === "priority") return "Priority";
-  return "未知";
+  if (normalized === "default" || normalized === "standard") return "standard";
+  if (normalized === "fast" || normalized === "priority") {
+    const multiplier = Number(estimate?.multipliers?.fast);
+    return Number.isFinite(multiplier) && multiplier > 1
+      ? `fast · ${formatMultiplier(multiplier)} 倍率`
+      : "fast";
+  }
+  return "unknown";
 }
 
 function serviceTierClass(value) {
   const normalized = String(value ?? "").trim().toLowerCase();
-  return normalized === "default" || normalized === "standard" || normalized === "fast" || normalized === "priority"
-    ? normalized
-    : "unknown";
+  if (normalized === "default" || normalized === "standard") return "standard";
+  if (normalized === "fast" || normalized === "priority") return "fast";
+  return "unknown";
+}
+
+function formatMultiplier(value) {
+  return Number.isInteger(value) ? String(value) : String(Number(value.toFixed(2)));
 }
 
 function formatFeatureCoverage(coverage) {

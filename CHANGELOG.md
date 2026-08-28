@@ -6,17 +6,21 @@
 
 ### Added
 
+- 为每个 Agent 的 Task 列表和每个 Task 的 Canonical Requests 增加 10 条/页编号分页，支持首/末页、前/后页、页码按钮与直接跳转；Request API 新增与既有 cursor 互斥的 `page` 查询和 `pagination` 元数据。
+- Canonical Requests 增加独立横向滚动区和居中三横线收起把手；Request drawer 保留稳定 DOM 并加入收起/展开过渡动画。
 - Phase 19 Request Fact / Task Day Slice：Time 先按 canonical Request `observedAt` 切本地日，再按原 Task 分组；day-scope Task 增加 `scopeDay/firstRequestAt/lastRequestAt/requestCount`，不复制 Task identity。
 - 新增 task-scoped canonical Request 懒加载 API，支持 day filter、`(observedAt, requestId)` 稳定 cursor、bounded page size 和 `projectionGeneration`；新增 covering index `idx_canonical_requests_task_observed`，schema 继续保持 v14。
 - Project/Time 使用不同任务表语义：Project 保留完整 Task “开始/耗时”，Time 改为“当日任务活动 / 活动任务 / 当日首末请求 / Requests”；Task 展开可审计逐 Request Token、model/tier、USD/coverage，并保持 SSE keyed DOM/scroll/focus/anchor 稳定。
 
 ### Changed
 
+- Task 的 `N Requests` 改为明确的可交互胶囊，补齐 pointer、hover、active 与 focus 反馈；表格可见标题与审计 drawer 不再跟随父表横向滚动。服务层级统一显示为 `standard` 或 `fast · N 倍率`，倍率直接取 request-level pricing evidence，而不是硬编码。
 - Time Task 表移除可见的“当日任务活动”caption，并补充“推理强度”；Canonical Request 明细移除独立 Coverage 列、补充所属 Task 推理强度，并将 `service_tier` 显示为更明确的“服务层级”。
 - Request/Task 模型采用与现有蓝灰角色体系一致的轻量强调样式；Request pricing coverage 继续通过 USD 悬停说明保留，不增加额外宽列。
 
 ### Fixed
 
+- 修复 Canonical Requests 作为 Task 表内部 `<tr>` 时继承父级横向滚动、导致标题和明细随主表一起位移的问题；明细现在作为 Agent 内独立审计 drawer，父表与 Request 表分别拥有自己的滚动边界。
 - 修复 `partial.amountUsd` 已有可证明金额时前端仍显示 `—` 的问题。service tier 缺失现在显示部分可证明的基础 USD 金额，并明确不应用无法证明的 Fast/priority 倍率。
 
 - 修复 `history_mode=legacy` 把旧 root session 历史复制进新 root 时，`canonical_requests.request_id` 全局唯一约束触发启动/选会话崩溃的问题。cross-root copied Task/Request 现在只保留 inherited provenance；全局 request identity 继续作为重复 Token/Cost 的 accounting guard，而不是放宽为 `(root_session_id, request_id)`。

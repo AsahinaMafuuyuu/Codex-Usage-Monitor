@@ -1249,3 +1249,42 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] 不通过 root-local identity、Task-start day 或 eager Request payload 换取表面简化。
 
 **Delivered evidence (2026-08-28):** Phase 19 保持 schema v14 / projection v2，不重放 rollout 来制造 UI 数据。业务 unit 8/8、ownership/DB/API 46/46、UI contract 2/2 Green；全量 `npm test` 124 / 123 passed / 0 failed / 1 optional skip。真实正式 SQLite P95：Timeline `191.237ms`、Session `47.652ms`、Day detail `34.626ms`、Request drill-down `4.498ms`，后者命中 `idx_canonical_requests_task_observed` covering index。真实 session 1,022 canonical Request / 0 inherited / 0 unresolved，六字段 canonical=Σday=full；rollout manifest SHA-256 前后均为 `5d684e43b671aeb19b92bdbfca1a7b2b02e335774f43c952ae1b6843ea8ef379`。Chrome/CDP 1440/720 通过，真实 Task 懒加载 24 条 canonical Request 且 SSE 后展开/DOM/scroll/focus/anchor 保持。
+
+## Phase 20: Independent Task / Request Audit Navigation
+
+### Overview
+
+修复 Phase 19 inline Request `<tr>` 与父 Task 横向 overflow 共享坐标系的问题，并给长 Agent/Task 增加有界、可定位的编号分页。该阶段只改变本地只读 API 的分页能力与 UI 容器/交互，不改变 schema v14、projection v2、Request accounting、Task identity、day scope 或 pricing 口径。
+
+事实来源：ADR-0022、`docs/API.md`、`scripts/verify-live-ui.js`。
+
+### Task 1: Add bounded numbered pagination
+
+- [x] 每个 Agent 的 Task 固定 10 条/页，支持首/末页、前/后页、页码与直接跳转；分页状态按 session/day/thread 隔离。
+- [x] Request API 保留 cursor，同时增加互斥的 `page` 模式和 `pagination` 元数据；UI 固定 10 Request/页。
+- [x] DB 编号分页继续使用 `(observed_at, request_id)` 稳定顺序，不复制第二套 accounting 数据。
+
+### Task 2: Isolate nested scroll ownership
+
+- [x] Canonical Requests 从父 Task `<table>` 的 detail `<tr>` 移为 Agent card 内独立 audit drawer。
+- [x] 父 `.task-table-wrap` 只移动 Task 数据列；Request drawer 标题保持固定，`.request-audit-scroll` 自己移动 Request 列。
+- [x] Task 表可见 caption 固定在滚动容器视口左侧；Time 隐藏 caption 契约保持不变。
+
+### Task 3: Improve interaction affordance
+
+- [x] `N Requests` 使用主题化胶囊，补齐 pointer / hover / active / focus 反馈。
+- [x] Request drawer 顶部增加居中三横线 grip；收起保留稳定 DOM，使用 grid/opacity/translate 过渡并尊重 reduced-motion。
+- [x] service tier 规范化为 `standard` 或 `fast · N 倍率`；Fast 倍率取 request-level pricing evidence，禁止把 long-context output 1.5×硬编码成 Fast。
+
+### Task 4: Regression and delivery gate
+
+- [x] API regression 锁定 `page=2`、total pages、cursor compatibility 与非法 page。
+- [x] Chrome/CDP 锁定 Request 10 条/页、Task 10 条/页、跳转控件、父/子 scrollbar 独立、SSE detail identity、collapse stable DOM/transition，以及 720px 横向滚动保持。
+- [x] 静态 CSP/UI contract 覆盖分页、drawer、胶囊、三横线和无 inline style。
+- [x] `npm test`、`npm run check`、`git diff --check` 全通过后提交。
+
+### Checkpoint
+
+- [x] 长 Agent 不再一次性展示全部 Task；长 Task 不再一次性展示全部 Request。
+- [x] Canonical Requests 不再受父 Task scrollbar 位移影响，每个 Request 表拥有自己的横向滚动边界。
+- [x] 所有 UI 改动保持现有 parchment / clay / blue-gray 主题与键盘/窄屏可用性。

@@ -25,6 +25,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0019](0019-request-level-subscription-standard-cost.md) | Accepted | 逐 Request Ledger usage unit 按历史订阅标准价、长上下文与 Fast evidence 计算 USD 等值 |
 | [0020](0020-canonical-request-ownership-and-projections.md) | Accepted | 以 lineage 解析 canonical Request ownership，Time 按 Request-day 投影，并用后台 versioned SQL projection 替代点击时全历史重算 |
 | [0021](0021-task-business-request-accounting-scope.md) | Accepted | Task 作为业务分组、Request 作为计量与日期原子；Time 使用 Task Day Slice 并按需展开 Request |
+| [0022](0022-independent-task-request-audit-navigation.md) | Accepted | Task/Request 分别按 10 条分页，并将 Canonical Requests 移出父表 overflow，建立独立滚动与稳定 drawer |
 
 ## 新增 ADR
 

@@ -1118,6 +1118,7 @@ export class MonitorDatabase {
     range = null,
     limit = 200,
     after = null,
+    page = null,
   } = {}) {
     const conditions = [
       "root_session_id=?",
@@ -1136,7 +1137,28 @@ export class MonitorDatabase {
       conditions.push("(observed_at>? OR (observed_at=? AND request_id>?))");
       parameters.push(after.observedAt, after.observedAt, after.requestId);
     }
-    parameters.push(limit + 1);
+    let pagination = null;
+    let rowLimit = limit + 1;
+    let offset = null;
+    if (page != null) {
+      const countParameters = parameters.slice();
+      const totalItems = Number(this.db.prepare(`
+        SELECT COUNT(*) AS count
+        FROM canonical_requests
+        WHERE ${conditions.join(" AND ")}
+      `).get(...countParameters)?.count ?? 0);
+      const totalPages = totalItems === 0 ? 0 : Math.ceil(totalItems / limit);
+      pagination = {
+        page,
+        pageSize: limit,
+        totalItems,
+        totalPages,
+      };
+      rowLimit = limit;
+      offset = (page - 1) * limit;
+    }
+    parameters.push(rowLimit);
+    if (offset != null) parameters.push(offset);
     const rows = this.db.prepare(`
       SELECT
         request_id,
@@ -1154,9 +1176,9 @@ export class MonitorDatabase {
       FROM canonical_requests
       WHERE ${conditions.join(" AND ")}
       ORDER BY observed_at, request_id
-      LIMIT ?
+      LIMIT ?${offset == null ? "" : " OFFSET ?"}
     `).all(...parameters);
-    const hasMore = rows.length > limit;
+    const hasMore = page == null && rows.length > limit;
     const visibleRows = hasMore ? rows.slice(0, limit) : rows;
     const requests = visibleRows.map((row) => ({
       requestId: row.request_id,
@@ -1168,6 +1190,7 @@ export class MonitorDatabase {
       nextAfter: hasMore && last
         ? { observedAt: last.observedAt, requestId: last.requestId }
         : null,
+      pagination,
     };
   }
 

@@ -303,6 +303,17 @@ function parseTaskRequestPage(url) {
   }
   let after = null;
   const cursor = url.searchParams.get("cursor");
+  const pageText = url.searchParams.get("page");
+  let page = null;
+  if (pageText != null && pageText !== "") {
+    page = Number(pageText);
+    if (!Number.isInteger(page) || page < 1 || page > 1_000_000) {
+      return { value: null, error: "page 必须是 1 到 1000000 的整数" };
+    }
+  }
+  if (cursor && page != null) {
+    return { value: null, error: "cursor 与 page 不能同时使用" };
+  }
   if (cursor) {
     after = decodeTaskRequestCursor(cursor);
     if (!after) return { value: null, error: "cursor 无效或已损坏" };
@@ -313,6 +324,7 @@ function parseTaskRequestPage(url) {
       range: scope.value.type === "day" ? scope.value.range : null,
       limit,
       after,
+      page,
     },
     error: null,
   };

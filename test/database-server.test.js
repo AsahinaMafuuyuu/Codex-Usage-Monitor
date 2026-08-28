@@ -1348,6 +1348,19 @@ test("Phase 19 request drill-down returns only canonical task requests with stab
   assert.notEqual(second.requests[0].requestId, first.requests[0].requestId);
   assert.equal(second.nextCursor, null);
 
+  const numberedResponse = await fetch(`${endpoint}?limit=1&page=2`, { headers: { Cookie: cookie } });
+  assert.equal(numberedResponse.status, 200);
+  const numbered = await numberedResponse.json();
+  assert.equal(numbered.requests.length, 1);
+  assert.equal(Date.parse(numbered.requests[0].observedAt), Date.parse("2026-08-27T00:02:00-07:00"));
+  assert.deepEqual(numbered.pagination, {
+    page: 2,
+    pageSize: 1,
+    totalItems: 2,
+    totalPages: 2,
+  });
+  assert.equal(numbered.nextCursor, null);
+
   const dayResponse = await fetch(`${endpoint}?day=2026-08-27`, { headers: { Cookie: cookie } });
   assert.equal(dayResponse.status, 200);
   const day = await dayResponse.json();
@@ -1361,6 +1374,8 @@ test("Phase 19 request drill-down returns only canonical task requests with stab
   assert.equal(invalidCursor.status, 400);
   const invalidLimit = await fetch(`${endpoint}?limit=9999`, { headers: { Cookie: cookie } });
   assert.equal(invalidLimit.status, 400);
+  const invalidPage = await fetch(`${endpoint}?page=0`, { headers: { Cookie: cookie } });
+  assert.equal(invalidPage.status, 400);
 });
 
 test("T-DAY-060..062 scoped SSE rematerializes the listener scope after updates", async (t) => {
