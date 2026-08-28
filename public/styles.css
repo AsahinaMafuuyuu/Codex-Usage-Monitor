@@ -1021,6 +1021,17 @@ summary:focus-visible,
   text-align: left;
   letter-spacing: .04em;
 }
+.task-table caption.visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  overflow: hidden;
+  clip: rect(0 0 0 0);
+  clip-path: inset(50%);
+  white-space: nowrap;
+  border: 0;
+}
 
 .task-table th {
   padding: 12px 11px;

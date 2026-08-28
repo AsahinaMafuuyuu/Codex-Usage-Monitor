@@ -696,7 +696,7 @@ function renderTaskTableShell(rows = "") {
     ? `<th class="task-name-head">Task</th><th class="task-status-head">状态</th><th>当日首请求</th><th>当日末请求</th><th>Requests</th><th>模型</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`
     : `<th class="task-name-head">任务</th><th class="task-status-head">状态</th><th>开始</th><th>耗时</th><th>Requests</th><th>模型</th><th>强度</th><th>输入</th><th>缓存</th><th title="缓存输入 / 输入 tokens">命中率</th><th>输出</th><th>总计</th><th title="逐 verified usage unit 按事件发生时的订阅标准价与可证明 feature 计算；不是 Plus 实际扣费">估算 USD</th><th>质量</th>`;
   return `<div class="task-table-wrap" data-scope-kind="${dayScope ? "day" : "session"}" role="region" tabindex="0" aria-label="${dayScope ? "当日任务活动" : "任务记录"}；任务与状态列固定，可横向滚动查看完整 ${columnCount} 列"><table class="task-table ${dayScope ? "day-scope" : "session-scope"}">
-    <caption>${dayScope ? "当日任务活动" : "任务记录"}</caption>
+    <caption class="${dayScope ? "visually-hidden" : ""}">${dayScope ? "当日任务活动" : "任务记录"}</caption>
     <colgroup>${columns}</colgroup>
     <thead><tr>${headings}</tr></thead>
     <tbody>${rows}</tbody>

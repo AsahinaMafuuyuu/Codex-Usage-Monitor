@@ -90,7 +90,8 @@ test("the static UI does not require inline styles under the self-only CSP", asy
   assert.match(script, /\/tasks\/\$\{encodeURIComponent\(threadId\)\}\/\$\{encodeURIComponent\(turnId\)\}\/requests/u);
   assert.match(script, /refreshStaleOpenRequestDetails/u);
   assert.match(script, /projectionGeneration/u);
-  assert.match(script, /<caption>\$\{dayScope \? "当日任务活动" : "任务记录"\}<\/caption>/u);
+  assert.match(script, /<caption class="\$\{dayScope \? "visually-hidden" : ""\}">\$\{dayScope \? "当日任务活动" : "任务记录"\}<\/caption>/u);
+  assert.match(styles, /\.task-table caption\.visually-hidden\s*\{[^}]*position:\s*absolute;[^}]*clip-path:\s*inset\(50%\)/isu);
   assert.doesNotMatch(script, /<th>推理<\/th>|col-reasoning/u);
   assert.match(script, /class="task-name-head"/u);
   assert.match(script, /class="task-status-head"/u);
