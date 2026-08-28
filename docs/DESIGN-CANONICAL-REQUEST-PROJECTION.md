@@ -42,6 +42,17 @@ Request Event 先解析 request identity，再按 `(rootSessionId, turnId)` 找 
 
 没有 `turnId`、owner 冲突或无法证明 lineage 的 verified event 标记 unresolved，禁止静默吸收到某个 Task。
 
+### 4.3 Cross-root legacy history
+
+`history_mode=legacy` 也可能把旧 root session 的 turn/request evidence 复制进新的 root。该场景不能只依赖同-root lineage：
+
+- Task `startedAt` 明确早于 root session `createdAt` 时，这是强因果证据，该 Task 只作为 `inherited_copy` provenance，不形成当前 root 的业务 Task/Request；
+- 若 copied Task 时间戳未来被改写，但 request identity 已存在于其他 root 的 `canonical_requests`，全局 identity ownership 优先，当前 verified evidence 仍为 `inherited_copy`；
+- 同一 turn 若同时包含 external inherited Request 与当前 root 的新 Request，只排除 external Request，不把真正的新 Request 一并删除；
+- copy root 先索引、原始 root 后索引时，原始 canonical Request 出现后要回填此前 inherited evidence 的 `canonical_request_id`。
+
+因此不得把 `canonical_requests` 改成 `(root_session_id, request_id)` 联合唯一，也不得用 `INSERT OR IGNORE` 吞掉冲突；冲突必须先经过 ownership 语义解释。
+
 ### 4.3 安全对账
 
 每次 shadow rebuild 必须满足：
@@ -94,6 +105,10 @@ Phase 18 将运行时查询从“全历史 JS 重算”改为 versioned projecti
 `/api/timeline` 只读取 `session_day_usage` projection，不再读取全部 Task/Event 现场定价。
 
 投影在同一 SQLite transaction 内完成 ownership → canonical request → day/cost → `projection_generation` 更新；读请求只能观察事务前或事务后的完整 generation。
+
+Projection semantics 独立版本化。cross-root ownership hardening 使用 projection v2、SQLite schema 仍为 v14；启动发现持久化 projection version 落后时，仅从现有 `tasks/model_usage_events` raw evidence 一次性重建，不重放 `.codex`。
+
+Ownership resolver 只作用于 raw evidence → canonical projection 边界。`database.getSession/getSessionDay`、`rebuildOwnershipForSession` 已经输出 canonical Task/Request 后，后续 Session/Day/Cost materialization 必须以 `ownershipResolved` 语义消费，不能再次带 root causal heuristic 重跑 ownership；否则同 turn 的 inherited 旧 Request 与新 Request 会发生过度去重。
 
 ## 8. 后台 Indexer
 

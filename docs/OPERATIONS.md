@@ -158,7 +158,7 @@ npm run audit:unknown-records -- --session <root-session-id>
 
 ### USD 显示“不可估算”或与实际账单不同
 
-费用必须有 verified Request Ledger usage、事件发生时可解析的历史模型价，以及对应 request pricing evidence。service tier 缺失会保留基础金额但降低为 partial；未知模型、历史价 gap、矛盾 usage 或不支持的 Fast+long-context 组合不会猜测。
+费用必须有 verified Request Ledger usage、事件发生时可解析的历史模型价，以及对应 request pricing evidence。service tier 使用显式 Fast 规则：只有 `fast` 才应用 Fast multiplier，其余值（包括缺失）按 standard，因此缺失 tier 本身不会再把 cost 降为 partial。未知模型、历史价 gap、矛盾 usage 或不支持的 Fast+long-context 组合仍不会猜测。
 
 长上下文只按单个 verified usage unit 的 `input >272K` 判定；Fast/priority 只按 event-level service tier 应用。即使 coverage 完整，金额也只是订阅标准价等值，不是 Plus invoice；区域处理和收费工具仍未纳入当前 policy。
 
@@ -169,3 +169,5 @@ npm run audit:unknown-records -- --session <root-session-id>
 ## 升级
 
 升级前停止服务并备份派生 SQLite。检查 [CHANGELOG](../CHANGELOG.md) 和 [ADR](decisions/README.md) 是否包含 schema/parser 变化；运行 `npm test` 和 `npm run check` 后再启动。任何升级都不应要求修改 `.codex/config.toml`。
+
+从 `v1.0.0` 基线升级到 cross-root ownership hardening 时，SQLite schema 仍为 v14，但 projection semantics 会从 v1 升到 v2。首次启动会一次性从监控库中已有 `tasks/model_usage_events` 重建 canonical/day/cost projection；这是派生数据重建，不会 replay 或改写 `.codex`。历史库较大时首次启动可能比普通重启更慢，后续恢复正常增量路径。

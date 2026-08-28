@@ -48,6 +48,11 @@
 - `T-PROJ-004`：pricing policy/projection version 变化会使 projection stale 并重建。
 - `T-PROJ-005`：仍存在 source 被重写/收缩时，只删除该 source 的 stale Task/Event 并 authoritative replace；不能留下幽灵 Task。
 - `T-PROJ-006`：Timeline legacy `unattributed` fallback 与持久化 Agent aggregate 同样只消费 canonical ownership，不得把 raw fork copy 加回业务统计。
+- `T-PROJ-007`：旧 root 已有 canonical Request，新 root legacy copy 同 identity 时不得触发 UNIQUE；copy Task/Request 只保留 provenance，全局 Token/Request 只计一次。
+- `T-PROJ-008`：copy root 先索引、原始 root 后索引时，copy 先保持 inherited；原始 canonical Request 出现后自动 backfill `canonical_request_id`，统计仍只计一次。
+- `T-PROJ-009`：即使 copied Task `startedAt` 被改写到新 root 创建之后，只要 request identity 已由其他 root 占有，也必须作为 duplicate-accounting guard 降级为 inherited，而不是崩溃或重复计量。
+- `T-PROJ-010`：projection semantics 版本落后时，在 schema 仍为 v14 的前提下仅从持久化 raw evidence 重建 projection；不得通过 schema bump 或 rollout replay 假装完成语义升级。
+- `T-PROJ-011`：同一个 turn 同时包含 cross-root inherited Request 与当前 root 新 Request 时，只排除 inherited Request；新 Request、Task 可见性与 Token/Request count 必须保留。
 - `T-PERF-001`：真实历史 warm Timeline 不扫描全部 model events，目标 <200ms；warm day detail <300ms。
 - `T-PERF-002`：点击已缓存 session 不进行 rollout parse；dirty session 由 background indexer 消费。
 
@@ -68,5 +73,6 @@
 - 真实污染 session reconciliation 无 verified evidence 静默丢失。
 - 真实 `.codex` SHA-256 前后不变。
 - `npm test`、`npm run check`、`git diff --check` 通过。
+- HTTP API 内部异步 projection/index 错误必须被请求级 error boundary 捕获并返回 500，不能形成悬挂请求或逃逸为未处理 Promise rejection。
 - 桌面/窄屏 Time 模式验证：日期切换不显示 inherited history，Project/Time 数值语义清晰。
 

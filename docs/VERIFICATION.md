@@ -277,7 +277,7 @@ npm test
 日期：2026-08-26。按 `DESIGN-SUBSCRIPTION-STANDARD-COST.md`、`TEST-SUBSCRIPTION-STANDARD-COST.md` 与 ADR-0019 将旧 Task-level current API estimator 替换为逐 verified Request Ledger usage unit 的 Subscription Standard-Rate Equivalent。
 
 - T-COST-001~013：Historical Rate Catalog、Terra/Luna 2026-07-30 切价、Sol 2026-08-21 promotion exclusion、GPT-5.4/5.5 历史有效期、cached input、reasoning 与 subscription-policy cache-write 语义通过。gap/unknown 不选择最近价。
-- T-COST-020~034：`272000` 为 normal、`272001` 为 long；full-request input/cached 2×、output 1.5×；两个 200K request 的 Task aggregate=400K 不误触发 long。Fast multiplier 按模型族，missing tier 保持 partial，Fast+long-context 不叠乘。
+- T-COST-020~034：`272000` 为 normal、`272001` 为 long；full-request input/cached 2×、output 1.5×；两个 200K request 的 Task aggregate=400K 不误触发 long。Fast multiplier 按模型族；ADR-0023 后只有显式 `fast` 才启用 Fast，missing/priority/unknown 均按 standard，Fast+long-context 不叠乘。
 - request-boundary evidence gate 以 bounded semantics 通过：verified Request Ledger usage unit 可作为 Codex model sampling usage boundary 使用 272K threshold；不宣称等于 HTTP invoice identity。duplicate `token_count` 仍必须由 cumulative advancement 去重。
 - T-COST-033/060/061：同一 thread 内 `turn_context` model 与 `thread_settings_applied.service_tier` 按 event ordinal as-of 绑定，后续设置不会回写旧 request。schema v13 只持久化最小 `model/service_tier/pricing_context_quality`。
 - T-COST-062~065：v12→v13 migration 前后 `classification + input/cached/cache-write/output/reasoning/total` 逐字段完全一致。原 rollout 存在时只读 enrichment pricing metadata，测试 SHA-256 前后相同；原文件不存在时 service tier/model pricing context 保持 unknown；新 schema 不保存正文或完整 settings payload。
@@ -285,7 +285,7 @@ npm test
 - T-COST-070~073：API `basis=subscription-standard-equivalent`；Task/summary 暴露 request/task counts 与 historical-rate/request-boundary/service-tier coverage；UI 主数值不恢复 `≥`，title 明确 partial 为可证明部分而非 Plus 实际扣费；历史 recorded model 不被改写成当前模型。
 - T-COST-080~083：新增 `npm run reconcile:subscription-cost` 只读 reconciliation CLI。脱敏 fixture 证明 subscription-policy、historical-rate、long-context、Fast adjustment 可分离且加总 delta=0，源 rollout 哈希不变。
 - 真实历史 reconciliation：`425` rollout、`242` root session、`2,368` task、`41,089` verified usage unit、`5,223,166,739` verified token。`571` 个 usage unit 的 input `>272K`，合计 input `166,551,689`。
-- 真实 service-tier inventory：`default=23,743`、`fast=0`、`priority=0`、`unknown=17,346`。因此真实 Fast adjustment 为 `$0`；unknown 不并入 default。未知/无历史价格 usage unit `301` 个，其中 `missing_model=92`、`historical_rate_unavailable=209`；`service_tier_unknown=17,289` 个 request 保留已知基础金额但降低 coverage。
+- Phase 17 当时的真实 service-tier inventory 为 `default=23,743`、`fast=0`、`priority=0`、`unknown=17,346`。ADR-0023 已在 2026-08-28 修订解释规则：非显式 `fast` 现在统一按 standard；因此旧的 `service_tier_unknown` coverage 结论仅作为历史交付证据，不再代表当前运行时行为。
 - additive reconciliation subset 覆盖 `1,792` 个可比较 task：旧 current API equivalent `$2703.97106036`；subscription-policy adjustment `+$155.09507810`；historical-rate `+$50.84818823`；long-context `+$106.61941600`；Fast `$0`；新 subscription-standard equivalent `$3016.53374269`，`additivityDeltaUsd=0`。所有存在可证明新金额的 usage unit 合计 `$3087.22782329`。
 - 真实 `.codex` 只读门槛：reconciliation 前后 425 个 rollout 全部 SHA-256 相同，`hashChangedFiles=0 / sourceReadOnly=true`。
 - 真实 Chrome/CDP：1440px 常规 snapshot 前后 task wrap/Agent details DOM identity、`scrollLeft=357`、focus、展开状态保持；结构变化 visual-anchor top delta `0px`。720px 下横向 overflow 保持，`scrollLeft=240`、focus 与展开状态不变；同 session Time 跨日和 Project full-scope 恢复通过。
@@ -308,6 +308,47 @@ npm test
 - `.codex` read-only gate：20 个参与 rollout 的 combined SHA-256 manifest before=`3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`，after 完全相同；`hashChangedFiles=0`。
 - 最终 Chrome/CDP 复验：1440×900 下 task-table `scrollLeft=354`、focus、Agent 展开/手工折叠与 DOM identity 在 snapshot 后保持，结构插入 `scrollDelta=66px` 时 visual-anchor top delta=`0px`；Project 恢复 full scope。当前复验选中的 live session 只有 `2026-08-27` 一个 Timeline day，因此 cross-day 子检查自然 skipped；前一轮多日真实 session 已实际通过 `2026-08-27 → 2026-08-26`。720×900 下横向 overflow、`scrollLeft=240`、focus 与 Agent 状态保持。
 - 最终全量门槛：`npm test` 为 `109 tests / 108 passed / 0 failed / 1 skipped`；唯一 skipped 为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选五任务 fixture。`npm run check` 与 `git diff --check` 均通过。
+
+#### Cross-root ownership hardening / projection v2
+
+- 真实故障 root `01a0461a-1c38-7433-8ed8-18f6586ddc43` 只读重扫得到 49 Task / 382 verified Request。12 个 Task 的 `startedAt` 明确早于 root `createdAt=2026-08-28T02:01:51.000Z`；这些 Task 中 278 条 verified Request 的 identity `278/278` 已存在于其他 root，`uniquePreRootVerifiedEvents=0`，证明本次 causal guard 不会删除该真实 session 的新 Request。
+- 临时库集成使用旧 root `019ff3cc-b7b9-7c01-9a48-d93b6c6c43aa` 的真实 raw evidence + 故障 root 当前 rollout：旧 root 278 canonical Request；故障 root 104 新 canonical Request；故障 root inherited event 284、unresolved 0；全局 projection Request=382，没有把 278 个历史副本再次计量。
+- `T-PROJ-007` 锁定 old-root-first 的 UNIQUE 崩溃；`T-PROJ-008` 锁定当前 legacy 格式下 copy-first/original-later pointer backfill；`T-PROJ-009` 锁定 original canonical 已存在时 copied Task timestamp rewrite 后仍由全局 request identity 防重复；`T-PROJ-010` 锁定 projection semantics stale 时 schema v14 原地从 raw evidence 重建为 projection v2；`T-PROJ-011` 锁定同 turn 的旧 inherited Request 与真正新 Request 不会被一起删除。
+- HTTP async error-boundary 回归先稳定复现“请求悬挂”，修复后 synthetic projection rejection 返回 500，随后 `/api/health` 仍可正常 200，证明错误不再逃逸请求级 `try/catch`。
+- 该 hardening 不修改 `.codex`、不放宽 `canonical_requests.request_id` 全局唯一性、也不通过 `INSERT OR IGNORE` 隐藏重复。若未来 wire format 同时改写 copied Task 时间且 copy root 早于原始 root 被 canonicalize，当前设计会要求新增证据/显式 unresolved 规则，而不是静默猜 ownership。
+- 正式 `data/usage.sqlite` 的临时副本执行真实 v1→v2 migration：`PRAGMA user_version=14` 保持不变，projection=`v2`，一次性 rebuild `2766ms`。随后在该副本导入当前故障 root：104 canonical verified Request / 278 inherited verified Request / 0 unresolved；37 canonical Task / 12 inherited Task；canonical Token=`12,808,314`。参与的 2 个真实 rollout SHA-256 before/after 完全一致。
+- 最终门槛：`npm test` 为 `115 tests / 114 passed / 0 failed / 1 skipped`；唯一 skip 仍是未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+
+### Phase 19：Request Fact / Task Day Slice / lazy Request audit
+
+日期：2026-08-28。按 `DESIGN-REQUEST-FACT-TASK-DAY-SLICE.md`、`TEST-REQUEST-FACT-TASK-DAY-SLICE.md` 与 ADR-0021 完成 Request accounting unit、Full Task business unit 与 Task Day Slice presentation unit 的最终分离；SQLite schema 保持 v14，projection semantics 保持 v2。
+
+- 业务 scope：`test/request-scope-business.test.js` 最终 8 / 8 Green。跨午夜 Task 在 Session scope 仍只有一个完整 Task；Time 只聚合目标日 canonical Request；无当日 Request 的 Task 不出现；Full=ΣDay 的六字段 usage 与 Request count 守恒。新增 `BIZ-SCOPE-005` 锁定 `scopeKind=day_slice`、`scopeDay`、`firstRequestAt`、`lastRequestAt`，同时证明原 Task identity/lifecycle 不被复制或改写。
+- Request drill-down：新增 `GET /api/sessions/:sessionId/tasks/:threadId/:turnId/requests`，支持 `?day=`、`limit=1..500` 与稳定 `(observedAt, requestId)` cursor。DB/API 定向测试证明只返回 `canonical_requests`、full/day scope 一致、分页不重不漏、非法 cursor/limit 返回 400；缺少 event-level model 时 cost 保持 `unavailable/missing_model`，不从 Task metadata 猜价格。
+- SQL hot path：新增 covering index `idx_canonical_requests_task_observed(root_session_id, thread_id, turn_id, observed_at, request_id)`。正式 `data/usage.sqlite` 选择 canonical Request 数最多的真实 Task（314 Requests）测量：Timeline 300 次 warm P95=`191.237ms`；完整 Session 200 次 P95=`47.652ms`；Day detail 300 次 P95=`34.626ms`；Request drill-down 首批 200 rows、500 次 P95=`4.498ms`。`EXPLAIN QUERY PLAN` 明确命中该 covering index，无临时排序。
+- UI：Project 表标题/summary 为“任务记录”，保留完整 Task `开始/耗时` 并显式显示 Requests；Time 为“活动任务 / 当日任务活动”，列改为 `当日首请求 / 当日末请求 / Requests`，不把 full Task lifecycle 冒充日内计量。Task 名称成为可访问的 Request 展开按钮；明细表显示时间、Input/Cached/Cache Write/Output/Reasoning/Total、Model、Tier、USD、Coverage。初始 snapshot 不携带 Request detail。
+- SSE interaction：Request detail state 以 selected session/day + thread/turn 作为本地 key；已加载明细保存 `projectionGeneration`，generation 变化只刷新当前展开项。真实 Chrome/CDP 1440×900 下 task table `scrollLeft=463`、focus、Agent 展开/折叠、existing Task identity 与 visual-anchor top delta=`0px`；真实 Task 懒加载 24 条 canonical Request，snapshot replay 后 detail row DOM identity、展开状态和 24-row 内容保持。720×900 下横向 overflow、`scrollLeft=240`、focus 与 Agent 展开状态保持。
+- 真实 reconciliation：session `019f1635-022f-7191-9d80-c83d4d3eec6a` 的 1,029 model-usage evidence 中 1,022 verified canonical Request、7 duplicate、0 inherited、0 unresolved；34 canonical Task。六字段 raw observed 与 canonical business 完全相等，`conserved=true`。同一正式 SQLite 中 canonical Request、`session_day_usage` 求和、full snapshot 对 input/cached/cache-write/output/reasoning/total 六字段及 Request count 全部相等；Request count 均为 `1,022`，total token 均为 `171,536,696`。
+- `.codex` read-only gate：上述真实 reconciliation 的 rollout manifest before/after 均为 `5d684e43b671aeb19b92bdbfca1a7b2b02e335774f43c952ae1b6843ea8ef379`，`hashChangedFiles=0`。
+- 自动化门槛：业务 8 / 8、ownership/DB/API 46 / 46、UI static/stability 2 / 2 均 Green；最终全量 `npm test` 为 `124 tests / 123 passed / 0 failed / 1 skipped`，唯一 skip 为未配置 `CODEX_MONITOR_REAL_FIXTURE` 的可选真实五任务 fixture。`npm run check` 与 `git diff --check` 通过。
+
+### Phase 22：Task Scroll / Request Pagination Ergonomics
+
+日期：2026-08-28。按 ADR-0024 将 Task 与 Request 的浏览策略拆开：Task 取消页码并改为约 5 行高的纵向滚动视口；Request 默认 10 条、可切 5/10 条，少于 10 条不显示分页条。
+
+- Chrome/CDP synthetic 23 Task 验证全部 Task row 保留，视口 `clientHeight=513 / scrollHeight=2287`，`scrollTop 80→240` 可滚动且不存在 Task pager。真实 wheel 注入进一步证明 edge chaining：Task 已到底时 wrap 保持 `1774/1774`，外层 workspace `931→1251`；Task 无纵向 overflow 时向上滚轮由 workspace `639→319` 接管，不再吞掉滚动操作。
+- 普通 snapshot 前后 `.task-table-wrap` DOM identity、focus、`scrollLeft=473`、`scrollTop=120` 全部保持；可见“任务记录”标题横向位移 `0px`。
+- 真实 24 Request drill-down 默认 10 行，切 5 条后为 5 行与 `第 1 / 5 页 · 共 24 Requests`；分页条居中，jump input 为 text（无 number spinner），5/10 两档切换和父/子 scrollbar 隔离通过。前后导航使用 Lucide chevron，浏览器测得图标相对按钮中心 `x=0 / y=0`；pagination animation=`pagination-enter`。展开第二个有 Request 的 Task 后 `openCount=1`，旧 Task `aria-expanded=false`、新 Task=`true`，single-open 语义通过。
+- 最终 `npm test` 为 `125 tests / 124 passed / 0 failed / 1 skipped`；`npm run check`、`git diff --check` 与 720px 浏览器回归通过。
+
+### Phase 21：Explicit-Fast Service Tier Policy
+
+日期：2026-08-28。按 ADR-0023 将 service-tier pricing 改为“仅显式 Fast”：原始 `service_tier` 只有在 trim/lower 后严格等于 `fast` 时才应用 Fast multiplier；`default`、`standard`、`priority`、missing 与未知字符串全部按 standard。
+
+- Pricing unit：`T-COST-030/032/034` 证明 explicit-fast normalization、missing/non-fast complete standard pricing，以及仅真实 `fast` 与 long-context 进入组合冲突规则。缺 tier 不再生成 `service_tier_unknown` partial。
+- 持久化一致性：pricing policy 升级为 `subscription-standard-v2 / 2026-08-28-explicit-fast`；新增 restart regression 人工污染旧 `session_day_usage` 与 `pricing_policy_version` 后重启，数据库从持久化 canonical/raw evidence 恢复正确 calendar cost，不读取或修改 `.codex`。
+- UI：服务层级只显示 `standard` 或 `fast · N 倍率`；`priority` 不再被视为 Fast。Chrome/CDP 真实页面 1440×900 与 720×900 回归通过，既有分页、独立 Request scrollbar、drawer identity/transition、Task scroll/focus/Agent 状态均保持。
+- 最终门槛：`npm test` = `125 tests / 124 passed / 0 failed / 1 optional skip`；`npm run check` 与 `git diff --check` 通过。
 
 ## 手工验收
 

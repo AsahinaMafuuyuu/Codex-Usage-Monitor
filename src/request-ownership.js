@@ -3,8 +3,27 @@ import { USAGE_FIELDS, zeroUsage } from "./usage.js";
 
 const VERIFIED_CLASSIFICATIONS = new Set(["verified_increment", "generation_start"]);
 
-export function resolveCanonicalRequestOwnership({ agents = [], tasks = [], events = [] } = {}) {
+export function resolveCanonicalRequestOwnership({
+  agents = [],
+  tasks = [],
+  events = [],
+  rootCreatedAt = null,
+  externalCanonicalRequestIds = new Set(),
+} = {}) {
   const identifiedEvents = attachRequestIdentities(events);
+  const externalRequestIds = externalCanonicalRequestIds instanceof Set
+    ? externalCanonicalRequestIds
+    : new Set(externalCanonicalRequestIds ?? []);
+  const turnsWithCurrentVerifiedRequests = new Set();
+  if (externalRequestIds.size > 0) {
+    for (const event of identifiedEvents) {
+      if (!VERIFIED_CLASSIFICATIONS.has(event?.classification)) continue;
+      if (!event?.turnId || !event?.requestIdentity) continue;
+      if (!externalRequestIds.has(event.requestIdentity)) {
+        turnsWithCurrentVerifiedRequests.add(event.turnId);
+      }
+    }
+  }
   const agentsById = new Map(agents.map((agent) => [agent.threadId, agent]));
   const tasksByTurn = new Map();
   for (const task of tasks) {
@@ -15,24 +34,29 @@ export function resolveCanonicalRequestOwnership({ agents = [], tasks = [], even
   }
 
   const ownerByTurn = new Map();
+  const ownershipStatusByTurn = new Map();
   const candidateThreadsByTurn = new Map();
   const ownership = [];
   for (const [turnId, rows] of tasksByTurn) {
-    const resolved = resolveTaskOwner(rows, agentsById);
+    const resolved = taskPredatesRootSession(rows, rootCreatedAt) &&
+      !turnsWithCurrentVerifiedRequests.has(turnId)
+      ? {
+          status: "inherited_copy",
+          ownerThreadId: null,
+          duplicateCount: Math.max(0, rows.length - 1),
+          reason: "predates_root_session",
+        }
+      : resolveTaskOwner(rows, agentsById);
     if (resolved.status === "canonical") ownerByTurn.set(turnId, resolved.ownerThreadId);
+    ownershipStatusByTurn.set(turnId, resolved.status);
     candidateThreadsByTurn.set(turnId, new Set(rows.map((row) => row.threadId)));
     ownership.push({ turnId, ...resolved });
-  }
-
-  const canonicalTasks = [];
-  for (const row of tasks) {
-    const ownerThreadId = ownerByTurn.get(row.turnId);
-    if (ownerThreadId && ownerThreadId === row.threadId) canonicalTasks.push(row);
   }
 
   const canonicalEvidenceByRequestId = new Map();
   for (const event of identifiedEvents) {
     if (!VERIFIED_CLASSIFICATIONS.has(event?.classification)) continue;
+    if (event?.requestIdentity && externalRequestIds.has(event.requestIdentity)) continue;
     const ownerThreadId = event?.turnId ? ownerByTurn.get(event.turnId) : null;
     if (!ownerThreadId || event.threadId !== ownerThreadId || !event.requestIdentity) continue;
     const previous = canonicalEvidenceByRequestId.get(event.requestIdentity);
@@ -42,17 +66,25 @@ export function resolveCanonicalRequestOwnership({ agents = [], tasks = [], even
   }
 
   const reconciliation = createReconciliation();
-  const canonicalEvents = [];
-  const canonicalRequests = [];
   const provenance = [];
+  const eventResults = [];
+  const externalInheritedTurns = new Set();
+  const verifiedNonExternalTurns = new Set();
   for (const event of identifiedEvents) {
     const ownerThreadId = event?.turnId ? ownerByTurn.get(event.turnId) : null;
     const verified = VERIFIED_CLASSIFICATIONS.has(event?.classification);
+    const externallyOwned = Boolean(
+      verified && event?.requestIdentity && externalRequestIds.has(event.requestIdentity)
+    );
     const canonicalEvidence = event?.requestIdentity
       ? canonicalEvidenceByRequestId.get(event.requestIdentity)
       : null;
     let status = "unresolved";
-    if (verified) {
+    if (externallyOwned) {
+      status = "inherited_copy";
+      if (event?.turnId) externalInheritedTurns.add(event.turnId);
+    } else if (verified) {
+      if (event?.turnId) verifiedNonExternalTurns.add(event.turnId);
       if (canonicalEvidence && sameEvidenceLocation(event, canonicalEvidence)) {
         status = "canonical";
       } else if (
@@ -61,10 +93,14 @@ export function resolveCanonicalRequestOwnership({ agents = [], tasks = [], even
         (event.threadId === ownerThreadId || candidateThreadsByTurn.get(event.turnId)?.has(event.threadId))
       ) {
         status = "inherited_copy";
+      } else if (ownershipStatusByTurn.get(event?.turnId) === "inherited_copy") {
+        status = "inherited_copy";
       }
     } else if (ownerThreadId && event.threadId === ownerThreadId) {
       status = "canonical";
     } else if (ownerThreadId && candidateThreadsByTurn.get(event.turnId)?.has(event.threadId)) {
+      status = "inherited_copy";
+    } else if (ownershipStatusByTurn.get(event?.turnId) === "inherited_copy") {
       status = "inherited_copy";
     }
 
@@ -73,19 +109,59 @@ export function resolveCanonicalRequestOwnership({ agents = [], tasks = [], even
       lineNumber: event?.lineNumber ?? null,
       turnId: event?.turnId ?? null,
       threadId: event?.threadId ?? null,
-      ownerThreadId,
+      ownerThreadId: externallyOwned ? null : ownerThreadId,
       status,
       requestIdentity: event?.requestIdentity ?? null,
       requestIdentityKind: event?.requestIdentityKind ?? "unresolved",
       requestIdentityReason: event?.requestIdentityReason ?? null,
       requestNativeField: event?.requestNativeField ?? null,
-      canonicalRequestId: canonicalEvidence?.requestIdentity ?? null,
+      canonicalRequestId: externallyOwned
+        ? event.requestIdentity
+        : canonicalEvidence?.requestIdentity ?? null,
     });
 
-    if (status === "canonical") canonicalEvents.push(event);
-    if (status === "canonical" && verified) canonicalRequests.push(event);
+    eventResults.push({ event, verified, status });
     accumulateReconciliation(reconciliation, status, event);
   }
+
+  const crossRootInheritedTurns = new Set();
+  for (const row of ownership) {
+    if (
+      row.status === "canonical" &&
+      externalInheritedTurns.has(row.turnId) &&
+      !verifiedNonExternalTurns.has(row.turnId)
+    ) {
+      row.status = "inherited_copy";
+      row.ownerThreadId = null;
+      row.reason = "cross_root_request_owner";
+      ownerByTurn.delete(row.turnId);
+      crossRootInheritedTurns.add(row.turnId);
+    }
+  }
+  if (crossRootInheritedTurns.size > 0) {
+    for (let index = 0; index < provenance.length; index += 1) {
+      const row = provenance[index];
+      if (!crossRootInheritedTurns.has(row.turnId)) continue;
+      row.status = "inherited_copy";
+      row.ownerThreadId = null;
+      if (!row.canonicalRequestId && row.requestIdentity && externalRequestIds.has(row.requestIdentity)) {
+        row.canonicalRequestId = row.requestIdentity;
+      }
+      eventResults[index].status = "inherited_copy";
+    }
+  }
+
+  const canonicalTasks = [];
+  for (const row of tasks) {
+    const ownerThreadId = ownerByTurn.get(row.turnId);
+    if (ownerThreadId && ownerThreadId === row.threadId) canonicalTasks.push(row);
+  }
+  const canonicalEvents = eventResults
+    .filter((row) => row.status === "canonical")
+    .map((row) => row.event);
+  const canonicalRequests = eventResults
+    .filter((row) => row.status === "canonical" && row.verified)
+    .map((row) => row.event);
 
   finalizeReconciliation(reconciliation);
   return {
@@ -96,6 +172,15 @@ export function resolveCanonicalRequestOwnership({ agents = [], tasks = [], even
     provenance,
     reconciliation,
   };
+}
+
+function taskPredatesRootSession(rows, rootCreatedAt) {
+  const rootCreatedMs = Date.parse(rootCreatedAt ?? "");
+  if (!Number.isFinite(rootCreatedMs) || rows.length === 0) return false;
+  return rows.every((row) => {
+    const taskStartMs = Date.parse(row?.startedAt ?? "");
+    return Number.isFinite(taskStartMs) && taskStartMs < rootCreatedMs - 5_000;
+  });
 }
 
 function compareEvidenceLocation(left, right) {

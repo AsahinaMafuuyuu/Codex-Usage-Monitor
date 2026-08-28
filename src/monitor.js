@@ -2,7 +2,7 @@ import { EventEmitter } from "node:events";
 import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
-import { pricingCatalogSummary } from "./pricing.js";
+import { estimateRequestCost, pricingCatalogSummary } from "./pricing.js";
 import {
   readTaskPreview,
   scanLatestQuota,
@@ -329,7 +329,11 @@ export class UsageMonitor extends EventEmitter {
       agentCount: stored.session.agentCount,
       taskCount: stored.session.taskCount,
     };
-    const materialized = materializeScopedSnapshot(stored, normalizedScope);
+    const materialized = materializeScopedSnapshot(
+      stored,
+      normalizedScope,
+      { ownershipResolved: true },
+    );
     return {
       ...materialized,
       pricing: pricingCatalogSummary(),
@@ -353,6 +357,49 @@ export class UsageMonitor extends EventEmitter {
       return { available: false, text: null, reason: "原始任务位置无法绑定到当前 Codex 目录" };
     }
     return readTaskPreview({ ...task, sourcePath });
+  }
+
+  taskRequests(sessionId, threadId, turnId, {
+    day = null,
+    range = null,
+    limit = 200,
+    after = null,
+    page = null,
+  } = {}) {
+    const task = this.database.getTask(threadId, turnId);
+    if (!task || task.rootSessionId !== sessionId) return null;
+    const requestPage = this.database.getCanonicalTaskRequests(sessionId, threadId, turnId, {
+      range,
+      limit,
+      after,
+      page,
+    });
+    const projection = this.database.getProjectionState();
+    return {
+      task: {
+        rootSessionId: task.rootSessionId,
+        threadId: task.threadId,
+        turnId: task.turnId,
+        sequence: task.sequence,
+        status: task.status,
+      },
+      scope: day
+        ? { type: "day", day, timezone: range?.timezone ?? null }
+        : { type: "session" },
+      requests: requestPage.requests.map((request) => ({
+        requestId: request.requestId,
+        observedAt: request.observedAt,
+        usage: request.usage,
+        model: request.model,
+        serviceTier: request.serviceTier,
+        pricingContextQuality: request.pricingContextQuality,
+        quality: request.quality,
+        costEstimate: estimateRequestCost(request),
+      })),
+      nextAfter: requestPage.nextAfter,
+      pagination: requestPage.pagination,
+      projectionGeneration: Number(projection?.generation ?? 0),
+    };
   }
 
   health() {

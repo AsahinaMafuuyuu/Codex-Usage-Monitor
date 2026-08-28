@@ -98,3 +98,14 @@
 - [x] Shadow-rebuild polluted history and reconcile canonical/inherited/unresolved evidence
 - [x] Execute Phase 18 tests, real-history hashes, performance gates and browser QA
 - [x] Publish Phase 18 delivery/verification documentation
+- [x] Harden canonical ownership against cross-root legacy history copies without relaxing global request identity uniqueness
+- [x] Backfill cross-root provenance when the original canonical request is indexed later
+- [x] Add projection v2 stale rebuild on schema v14 persisted raw evidence
+- [x] Preserve genuinely new Request usage when it shares a turn with inherited cross-root history
+- [x] Contain asynchronous API projection failures inside the HTTP request error boundary
+- [x] Add real-failure regressions for cross-root copy, reverse indexing, timestamp rewrite, mixed-turn usage, and projection-version upgrade
+- [x] Freeze Phase 19 Request Fact / Task Day Slice business-unit contract
+- [x] Add day-slice request-window metadata without duplicating Task identity
+- [x] Add lazy canonical Request drill-down with task/day-scoped SQL and bounded payload
+- [x] Differentiate Project full-task UI from Time task-day-slice UI
+- [x] Reconcile six-field accounting/day conservation and meet SQL/UI performance gates

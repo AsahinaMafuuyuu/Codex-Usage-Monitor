@@ -4,6 +4,36 @@
 
 ## [Unreleased]
 
+## [1.1.0] - 2026-08-28
+
+`v1.1.0` 是 `v1.0.0` 之后的首个功能增强版本，重点收敛 Canonical Request ownership、Request-day 审计语义、explicit-fast 定价和 Task / Request 浏览交互。SQLite schema 继续保持 v14；升级只会重建派生 projection，不修改原始 `.codex` rollout。
+
+### Added
+
+- Canonical Requests 保留编号分页并增加 5/10 条每页切换；默认 10 条，少于 10 条时不渲染分页条。长分页改为最多 5 个边界/当前页语义槽位，仅保留前后翻页；方向导航使用严格居中的 Lucide chevron，跳页继续使用无 spinner 的单页码输入，并为分页/翻页加入轻量过渡。
+- Canonical Requests 增加独立横向滚动区和居中三横线收起把手；Request drawer 保留稳定 DOM 并加入收起/展开过渡动画。
+- Phase 19 Request Fact / Task Day Slice：Time 先按 canonical Request `observedAt` 切本地日，再按原 Task 分组；day-scope Task 增加 `scopeDay/firstRequestAt/lastRequestAt/requestCount`，不复制 Task identity。
+- 新增 task-scoped canonical Request 懒加载 API，支持 day filter、`(observedAt, requestId)` 稳定 cursor、bounded page size 和 `projectionGeneration`；新增 covering index `idx_canonical_requests_task_observed`，schema 继续保持 v14。
+- Project/Time 使用不同任务表语义：Project 保留完整 Task “开始/耗时”，Time 改为“当日任务活动 / 活动任务 / 当日首末请求 / Requests”；Task 展开可审计逐 Request Token、model/tier、USD/coverage，并保持 SSE keyed DOM/scroll/focus/anchor 稳定。
+
+### Changed
+
+- Agent Task 从 10 条/页分页改为连续纵向滚动，默认视口约显示 5 个 Task；超过 5 个通过该 Agent 自己的纵向滚动条浏览。Task 视口只在仍可向当前方向滚动时消费滚轮，到顶/到底或无纵向 overflow 时自动把 wheel delta 交给整体 workspace。
+- Canonical Request drawer 改为 single-open：展开新的 Task Request 审计时，之前展开的 drawer 原位动画收起，仅保留最近展开项为 open，同时保留旧项已经加载的缓存。
+- Service tier pricing 改为 explicit-fast：只有原始值明确为 `fast` 才应用 Fast multiplier；`default`、`standard`、`priority`、缺失和其他未知值全部按 standard。pricing policy 升级到 `subscription-standard-v2 / 2026-08-28-explicit-fast`，启动时会从持久化 canonical evidence 重建旧 calendar cost projection，不回放 `.codex`。
+- Task 的 `N Requests` 改为明确的可交互胶囊，补齐 pointer、hover、active 与 focus 反馈；表格可见标题与审计 drawer 不再跟随父表横向滚动。服务层级统一显示为 `standard` 或 `fast · N 倍率`，倍率直接取 request-level pricing evidence，而不是硬编码。
+- Time Task 表移除可见的“当日任务活动”caption，并补充“推理强度”；Canonical Request 明细移除独立 Coverage 列、补充所属 Task 推理强度，并将 `service_tier` 显示为更明确的“服务层级”。
+- Request/Task 模型采用与现有蓝灰角色体系一致的轻量强调样式；Request pricing coverage 继续通过 USD 悬停说明保留，不增加额外宽列。
+
+### Fixed
+
+- 修复 Canonical Requests 作为 Task 表内部 `<tr>` 时继承父级横向滚动、导致标题和明细随主表一起位移的问题；明细现在作为 Agent 内独立审计 drawer，父表与 Request 表分别拥有自己的滚动边界。
+- 修复 `partial.amountUsd` 已有可证明金额时前端仍显示 `—` 的问题。service tier 缺失现在显示部分可证明的基础 USD 金额，并明确不应用无法证明的 Fast/priority 倍率。
+
+- 修复 `history_mode=legacy` 把旧 root session 历史复制进新 root 时，`canonical_requests.request_id` 全局唯一约束触发启动/选会话崩溃的问题。cross-root copied Task/Request 现在只保留 inherited provenance；全局 request identity 继续作为重复 Token/Cost 的 accounting guard，而不是放宽为 `(root_session_id, request_id)`。
+- 修复 copy root 先索引时 provenance 指针为空的问题：原始 canonical Request 后续出现后会自动 backfill `canonical_request_id`；projection semantics 升级到 v2，SQLite schema 保持 v14，并从持久化 raw evidence 一次性重建旧 projection。
+- 修复 HTTP handler 未等待异步 API 路径导致 projection rejection 逃出请求级 `try/catch`、请求悬挂甚至进程退出的问题；现在统一返回受控 500。
+
 ## [1.0.0] - 2026-08-27
 
 这是首个正式稳定版本。`v1.0.0` 冻结当前经真实 rollout reconciliation、桌面/窄屏浏览器回归和全量自动化验证后的 Canonical Request 统计架构，作为后续功能迭代的稳定基线。
@@ -72,5 +102,6 @@
 - 项目级多智能体协作规范、交付文档和架构决策记录。
 
 [Unreleased]: docs/ROADMAP.md
+[1.1.0]: docs/releases/v1.1.0.md
 [1.0.0]: docs/DELIVERY.md
 [0.1.0]: docs/DELIVERY.md

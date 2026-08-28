@@ -170,12 +170,13 @@ test("T-COST-013 inconsistent usage never produces false precision", () => {
   }
 });
 
-test("T-COST-030 service tier normalization is evidence preserving", () => {
+test("T-COST-030 only an explicit fast tier enables Fast pricing", () => {
   assert.equal(normalizeServiceTier("default"), "standard");
   assert.equal(normalizeServiceTier("fast"), "fast");
-  assert.equal(normalizeServiceTier("priority"), "fast");
-  assert.equal(normalizeServiceTier(null), "unknown");
-  assert.equal(normalizeServiceTier("mystery"), "unknown");
+  assert.equal(normalizeServiceTier("FAST"), "fast");
+  assert.equal(normalizeServiceTier("priority"), "standard");
+  assert.equal(normalizeServiceTier(null), "standard");
+  assert.equal(normalizeServiceTier("mystery"), "standard");
 });
 
 test("T-COST-020 long context uses a strict greater-than 272K boundary", () => {
@@ -300,7 +301,7 @@ test("T-COST-031 Fast multiplier follows model family", () => {
   }
 });
 
-test("T-COST-032 missing tier keeps known base amount but lowers feature coverage", () => {
+test("T-COST-032 missing or non-fast tier uses complete standard pricing", () => {
   const estimate = estimateRequestCost(request({
     serviceTier: null,
     inputTokens: 100_000,
@@ -308,15 +309,28 @@ test("T-COST-032 missing tier keeps known base amount but lowers feature coverag
     outputTokens: 0,
     totalTokens: 100_000,
   }));
-  assert.equal(estimate.status, "partial");
+  assert.equal(estimate.status, "estimated");
   assert.equal(estimate.amountUsd, 0.5);
-  assert.equal(estimate.featureCoverage.serviceTier, "unknown");
-  assert.equal(estimate.reason, "service_tier_unknown");
+  assert.equal(estimate.serviceTier, "standard");
+  assert.equal(estimate.featureCoverage.serviceTier, "verified");
+  assert.equal(estimate.reason, null);
+
+  const priority = estimateRequestCost(request({
+    serviceTier: "priority",
+    inputTokens: 100_000,
+    cachedInputTokens: 0,
+    outputTokens: 0,
+    totalTokens: 100_000,
+  }));
+  assert.equal(priority.status, "estimated");
+  assert.equal(priority.amountUsd, 0.5);
+  assert.equal(priority.serviceTier, "standard");
+  assert.equal(priority.multipliers.fast, 1);
 });
 
 test("T-COST-034 Fast and long context are never multiplied together", () => {
   const estimate = estimateRequestCost(request({
-    serviceTier: "priority",
+    serviceTier: "fast",
     inputTokens: 300_000,
     cachedInputTokens: 0,
     outputTokens: 10_000,
@@ -372,8 +386,8 @@ test("T-COST-041 unresolved pricing evidence makes a task partial without erasin
   const [priced] = priceTasksByRequestEvents([task], events);
   assert.equal(priced.costEstimate.status, "partial");
   assert.equal(priced.costEstimate.amountUsd, 1);
-  assert.equal(priced.costEstimate.estimatedRequests, 1);
-  assert.equal(priced.costEstimate.partialRequests, 1);
+  assert.equal(priced.costEstimate.estimatedRequests, 2);
+  assert.equal(priced.costEstimate.partialRequests, 0);
   assert.equal(priced.costEstimate.unavailableRequests, 1);
   assert.equal(priced.costEstimate.featureCoverage.serviceTier, "partial");
 });

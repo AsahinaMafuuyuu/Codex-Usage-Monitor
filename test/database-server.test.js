@@ -7,6 +7,7 @@ import { DatabaseSync } from "node:sqlite";
 import test from "node:test";
 import { MonitorDatabase } from "../src/database.js";
 import { UsageMonitor } from "../src/monitor.js";
+import { SUBSCRIPTION_PRICING_CATALOG } from "../src/pricing.js";
 import { CodexRepository } from "../src/repository.js";
 import { resolveCodexHome, resolveDatabasePath, startApplication } from "../src/server.js";
 import { CodexSourceLocator, recoverLegacySourceKey } from "../src/source-locator.js";
@@ -113,6 +114,50 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   assert.equal(second.monitor.health().timeline.replayedFiles, 0);
   assert.equal(second.monitor.health().timeline.tailedFiles, 0);
   assert.equal(second.database.getModelUsageEvents(ROOT).length, 1);
+});
+
+test("pricing policy changes rebuild persisted calendar cost from stored canonical evidence", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-pricing-policy-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "08", "24");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(sessions, { recursive: true });
+  await writeFile(
+    join(sessions, `rollout-pricing-policy-${ROOT}.jsonl`),
+    makeCalendarRootRollout(ROOT, TURN, 100, "2026-08-24T12:00:00.000Z"),
+  );
+  const first = await bootMonitor(codexHome, databasePath);
+  let reopened = null;
+  t.after(async () => {
+    await first.monitor.close().catch(() => {});
+    try { first.database.close(); } catch {}
+    try { reopened?.close(); } catch {}
+    await rm(directory, { recursive: true, force: true });
+  });
+  await first.monitor.timeline();
+  first.monitor.close();
+  first.database.db.prepare(`
+    UPDATE session_day_usage
+    SET cost_amount_usd=999, cost_status='partial', pricing_policy_version='stale-policy'
+  `).run();
+  first.database.db.prepare(`
+    INSERT INTO derived_state (key, value) VALUES ('pricing_policy_version', 'stale-policy')
+    ON CONFLICT(key) DO UPDATE SET value='stale-policy'
+  `).run();
+  first.database.close();
+
+  reopened = new MonitorDatabase(databasePath);
+  const row = reopened.db.prepare(`
+    SELECT cost_amount_usd, cost_status, pricing_policy_version
+    FROM session_day_usage WHERE root_session_id=?
+  `).get(ROOT);
+  assert.equal(Number(row.cost_amount_usd), 0.0003);
+  assert.equal(row.cost_status, "estimated");
+  assert.equal(row.pricing_policy_version, SUBSCRIPTION_PRICING_CATALOG.policyVersion);
+  assert.equal(
+    reopened.db.prepare("SELECT value FROM derived_state WHERE key='pricing_policy_version'").get().value,
+    SUBSCRIPTION_PRICING_CATALOG.policyVersion,
+  );
 });
 
 test("parser semantics version reindexes stale cursor diagnostics without changing schema version", async (t) => {
@@ -1181,6 +1226,38 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assertSecurityHeaders(missingStatic.headers);
 });
 
+test("HTTP async API failures return 500 without escaping the request error boundary", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-server-async-error-"));
+  const codexHome = join(directory, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  const app = await startApplication({
+    codexHome,
+    databasePath: join(directory, "usage.sqlite"),
+    port: 49_160,
+    openBrowser: false,
+  });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  const { base, cookie } = await authenticateApplication(app);
+  const originalSelectSession = app.monitor.selectSession.bind(app.monitor);
+  app.monitor.selectSession = async () => {
+    throw new Error("synthetic async projection failure");
+  };
+
+  const failed = await fetch(`${base}/api/sessions/${ROOT}`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(failed.status, 500);
+  assert.deepEqual(await failed.json(), { error: "本地监控器处理请求失败" });
+
+  app.monitor.selectSession = originalSelectSession;
+  const health = await fetch(`${base}/api/health`, { headers: { Cookie: cookie } });
+  assert.equal(health.status, 200);
+});
+
 test("T-DAY-050..054 API keeps full and day snapshots distinct and aligned with Timeline", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-api-"));
   const codexHome = join(directory, ".codex");
@@ -1217,6 +1294,16 @@ test("T-DAY-050..054 API keeps full and day snapshots distinct and aligned with 
   assert.equal(day1.scope.timezone, "America/Los_Angeles");
   assert.equal(day1.summary.totalUsage.totalTokens, 100);
   assert.equal(day1.summary.taskCount, 1);
+  assert.equal(day1.agents[0].tasks[0].scopeKind, "day_slice");
+  assert.equal(day1.agents[0].tasks[0].scopeDay, "2026-08-26");
+  assert.equal(
+    Date.parse(day1.agents[0].tasks[0].firstRequestAt),
+    Date.parse("2026-08-26T23:58:00-07:00"),
+  );
+  assert.equal(
+    Date.parse(day1.agents[0].tasks[0].lastRequestAt),
+    Date.parse("2026-08-26T23:58:00-07:00"),
+  );
 
   const day2Response = await fetch(`${base}/api/sessions/${ROOT}?day=2026-08-27`, {
     headers: { Cookie: cookie },
@@ -1245,6 +1332,95 @@ test("T-DAY-050..054 API keeps full and day snapshots distinct and aligned with 
   assert.equal(timelineDay2.modelRequestCount, day2.summary.modelRequestCount);
   assert.equal(timelineDay1.costEstimate.amountUsd, day1.summary.totalCostEstimate.amountUsd);
   assert.equal(timelineDay2.costEstimate.amountUsd, day2.summary.totalCostEstimate.amountUsd);
+});
+
+test("Phase 19 request drill-down returns only canonical task requests with stable day-scoped pagination", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-request-drilldown-"));
+  const codexHome = join(directory, ".codex");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(codexHome, { recursive: true });
+  const seed = new MonitorDatabase(databasePath);
+  seed.replaceSession(crossMidnightSnapshot());
+  const queryPlan = seed.db.prepare(`
+    EXPLAIN QUERY PLAN
+    SELECT request_id
+    FROM canonical_requests
+    WHERE root_session_id=? AND thread_id=? AND turn_id=?
+      AND (observed_at>? OR (observed_at=? AND request_id>?))
+    ORDER BY observed_at, request_id
+    LIMIT ?
+  `).all(ROOT, ROOT, TURN, "", "", "", 201);
+  assert.match(
+    queryPlan.map((row) => row.detail).join("\n"),
+    /idx_canonical_requests_task_observed/u,
+  );
+  seed.close();
+
+  const app = await startApplication({
+    codexHome,
+    databasePath,
+    port: 49_175,
+    openBrowser: false,
+  });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { base, cookie } = await authenticateApplication(app);
+  const endpoint = `${base}/api/sessions/${ROOT}/tasks/${ROOT}/${TURN}/requests`;
+
+  const firstResponse = await fetch(`${endpoint}?limit=1`, { headers: { Cookie: cookie } });
+  assert.equal(firstResponse.status, 200);
+  const first = await firstResponse.json();
+  assert.deepEqual(first.scope, { type: "session" });
+  assert.equal(first.task.turnId, TURN);
+  assert.equal(first.requests.length, 1);
+  assert.equal(Date.parse(first.requests[0].observedAt), Date.parse("2026-08-26T23:58:00-07:00"));
+  assert.equal(first.requests[0].usage.totalTokens, 100);
+  assert.equal(first.requests[0].costEstimate.status, "unavailable");
+  assert.equal(first.requests[0].costEstimate.reason, "missing_model");
+  assert.ok(first.requests[0].requestId);
+  assert.ok(first.nextCursor);
+  assert.ok(Number.isInteger(first.projectionGeneration));
+
+  const secondResponse = await fetch(`${endpoint}?limit=1&cursor=${encodeURIComponent(first.nextCursor)}`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(secondResponse.status, 200);
+  const second = await secondResponse.json();
+  assert.equal(second.requests.length, 1);
+  assert.equal(Date.parse(second.requests[0].observedAt), Date.parse("2026-08-27T00:02:00-07:00"));
+  assert.notEqual(second.requests[0].requestId, first.requests[0].requestId);
+  assert.equal(second.nextCursor, null);
+
+  const numberedResponse = await fetch(`${endpoint}?limit=1&page=2`, { headers: { Cookie: cookie } });
+  assert.equal(numberedResponse.status, 200);
+  const numbered = await numberedResponse.json();
+  assert.equal(numbered.requests.length, 1);
+  assert.equal(Date.parse(numbered.requests[0].observedAt), Date.parse("2026-08-27T00:02:00-07:00"));
+  assert.deepEqual(numbered.pagination, {
+    page: 2,
+    pageSize: 1,
+    totalItems: 2,
+    totalPages: 2,
+  });
+  assert.equal(numbered.nextCursor, null);
+
+  const dayResponse = await fetch(`${endpoint}?day=2026-08-27`, { headers: { Cookie: cookie } });
+  assert.equal(dayResponse.status, 200);
+  const day = await dayResponse.json();
+  assert.equal(day.scope.type, "day");
+  assert.equal(day.scope.day, "2026-08-27");
+  assert.equal(day.requests.length, 1);
+  assert.equal(Date.parse(day.requests[0].observedAt), Date.parse("2026-08-27T00:02:00-07:00"));
+  assert.equal(day.requests[0].usage.totalTokens, 50);
+
+  const invalidCursor = await fetch(`${endpoint}?cursor=not-a-cursor`, { headers: { Cookie: cookie } });
+  assert.equal(invalidCursor.status, 400);
+  const invalidLimit = await fetch(`${endpoint}?limit=9999`, { headers: { Cookie: cookie } });
+  assert.equal(invalidLimit.status, 400);
+  const invalidPage = await fetch(`${endpoint}?page=0`, { headers: { Cookie: cookie } });
+  assert.equal(invalidPage.status, 400);
 });
 
 test("T-DAY-060..062 scoped SSE rematerializes the listener scope after updates", async (t) => {

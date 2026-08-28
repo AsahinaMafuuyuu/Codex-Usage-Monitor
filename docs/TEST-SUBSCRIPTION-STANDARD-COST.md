@@ -25,7 +25,7 @@
   -> 真实历史只读 reconciliation / 浏览器验收
 ```
 
-禁止通过放宽 272K 边界、把 unknown 当 default、套最近模型价或把 partial 当 complete 来让测试变绿。
+禁止通过放宽 272K 边界、套最近模型价、伪造 raw service-tier evidence 或把 partial 当 complete 来让测试变绿。非显式 `fast` 按 standard 是 ADR-0023 的正式 pricing policy，不等于改写原始 evidence。
 
 ## 2. Fixture 基线
 
@@ -169,8 +169,8 @@ Task total=400K，但两个 request 都按 normal；必须防止 Task-level fals
 
 - `default -> standard`。
 - `fast -> fast`。
-- `priority -> fast`。
-- missing/未知值 -> unknown。
+- `priority -> standard`。
+- missing/未知值 -> standard。
 
 ### T-COST-031 Fast multiplier by model family
 
@@ -178,10 +178,10 @@ Task total=400K，但两个 request 都按 normal；必须防止 Task-level fals
 - GPT-5.5 Fast = 2.5×。
 - GPT-5.4 Fast = 2×。
 
-### T-COST-032 missing tier
+### T-COST-032 missing/non-fast tier
 
-- 没有 event-level service tier 时不得猜 Fast。
-- base model cost 可作为已知组成，但 feature coverage 必须披露 tier unknown；聚合状态按设计降为 partial 或相应 coverage 状态。
+- 没有 event-level service tier 时不得启用 Fast，直接使用 standard。
+- `priority`、未知字符串和 missing tier 都必须得到 `serviceTier=standard`、`multipliers.fast=1`；若其他 pricing evidence 完整，状态保持 `estimated`。
 
 ### T-COST-033 settings as-of ordinal
 
@@ -200,7 +200,7 @@ ordinal 40 request B
 
 ### T-COST-034 Fast + long-context 冲突
 
-- 同一 request 同时 `serviceTier=fast/priority` 且已证明 `input>272K` 时，不叠乘。
+- 同一 request 同时 `serviceTier=fast` 且已证明 `input>272K` 时，不叠乘。
 - 返回 `unsupported_feature_combination`。
 
 ## 7. Unit：Request → Task → Agent → Session
@@ -326,7 +326,7 @@ new subscription-standard-equivalent
 ### T-COST-082 service-tier inventory
 
 - 统计 default / fast / priority / unknown 的 event 数和 token 覆盖。
-- unknown 不能被合并到 default。
+- raw inventory 必须继续区分 default / fast / priority / unknown；pricing 层只有显式 fast 进入 Fast，其余 raw bucket 统一按 standard 解释。
 
 ### T-COST-083 source read-only
 

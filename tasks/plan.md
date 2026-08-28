@@ -1195,3 +1195,140 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] 页面点击不再是索引器入口。
 
 **Delivered evidence (2026-08-27):** 真实污染 session 的 639 raw Task 收敛为 67 canonical + 572 inherited + 0 unresolved；12,783 verified Request evidence 收敛为 1,464 canonical + 11,319 inherited + 0 unresolved，六字段守恒。canonical total token `175,379,870`，重复 provenance `1,564,379,574`。52,552 条 JSONL record 中原 1,978 unknown 已审计为 1,104 patch end + 610 user message + 183 thread rollback + 81 web-search end，均为 non-accounting；allowlist 后 `unknownRecords=0` 且 Request/Token reconciliation 不变。最终 warm Timeline P95 `19.76ms`、Session-Day P95 `65.43ms`；20-file SHA-256 manifest before/after 均为 `3ada9c1437ab51d5bac24451e6709182675fbe47a8cbc0754108bf8b5a2b7f30`。新增 restore identity、migration backfill、source-scoped replace、canonical Agent/unattributed 与 parser-semantics regressions 后，`npm test` 109 / 108 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 和 1440px/720px Chrome/CDP 全部通过。
+
+## Phase 18.1: Cross-root ownership hardening
+
+- [x] 复现新 root 携带旧 root legacy history 时 `canonical_requests.request_id` 全局唯一冲突；禁止通过联合主键或 `INSERT OR IGNORE` 掩盖重复计量。
+- [x] 用 root 创建时间 causal evidence + 全局 request identity ownership 双层防线，把 cross-root copy 降级为 inherited provenance；真正的新 Request 即使与 inherited history 共用 turn 仍可独立 canonicalize。
+- [x] 支持当前 legacy 格式下 copy-first/original-later provenance pointer backfill；全量 rebuild 按 session 创建时间稳定排序。
+- [x] projection semantics 升级为 v2，schema 保持 v14；旧 projection 只从持久化 raw evidence 一次性重建，不 replay `.codex`。
+- [x] HTTP handler 等待异步 API Promise，使 projection/index rejection 返回受控 500 而不是悬挂/进程级 rejection。
+- [x] 新增 `T-PROJ-007~011` 与 HTTP async error-boundary regression，并用真实故障 root 做临时 SQLite 集成验证。
+
+**Delivered evidence (2026-08-28):** 正式监控 SQLite 副本从 projection v1 原地重建为 v2，schema 保持 v14，耗时 `2766ms`；真实故障 root 写入后为 104 canonical verified Request + 278 inherited verified Request + 0 unresolved，37 canonical Task + 12 inherited Task，2 个参与 rollout SHA-256 前后不变。最终 `npm test` 115 / 114 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 通过。
+
+## Phase 19: Request Fact / Task Day Slice Scope Contract
+
+### Overview
+
+冻结最终领域语义：Request 是 Token/Cost/日期计量原子，Task 是 Session/Project 的业务工作单元，Time 先按 Request `observedAt` 切日，再以 Task Day Slice 分组。补齐 Time UI 的“活动任务/当日 Request”表达和按需 Request audit detail，同时保持 canonical accounting、cross-root provenance 与 SQL projection 性能边界。
+
+事实来源：`docs/DESIGN-REQUEST-FACT-TASK-DAY-SLICE.md`、`docs/TEST-REQUEST-FACT-TASK-DAY-SLICE.md`、ADR-0021、`docs/DELIVERY-REQUEST-FACT-TASK-DAY-SLICE.md`。
+
+### Task 1: Freeze business scope tests
+
+- [x] 以 `test/request-scope-business.test.js` 锁定 Full Task、Task Day Slice、Full=ΣDay、无当日 Request 不显示、cross-root mixed-turn、六字段 conservation、copied timestamp 不污染日期。
+- [x] 单元测试只测试领域行为，不混入 HTTP/CSP/CSS/schema-shape 样板。
+
+### Task 2: Expose Task Day Slice metadata
+
+- [x] Day scope 补充 `scopeKind/scopeDay/firstRequestAt/lastRequestAt/requestCount`；不复制 Task identity，不改变 canonical Request accounting。
+- [x] Project scope 保持完整 Task lifecycle 与完整 Request 汇总。
+
+### Task 3: Add lazy Request audit drill-down
+
+- [x] 增加 task-scoped canonical Request read API，Project 返回完整 Task Request，Time `?day=` 只返回当天 Request。
+- [x] 初始 snapshot 不内嵌 Request detail；增加定向 SQL index 与稳定分页，避免长 Task 放大 payload/DOM。
+
+### Task 4: Recompose Project/Time task presentation
+
+- [x] Project 继续“任务记录”；Time 使用“当日任务活动 / 活动任务 / Requests”。
+- [x] Time 表使用当日 Request window/count，不能把 full Task startedAt/duration 冒充日内计量。
+- [x] Task 展开按需加载 Request，继续保护 ADR-0017 的滚动/展开/focus/visual-anchor。
+
+### Task 5: Reconcile correctness and performance
+
+- [x] raw=canonical+inherited+unresolved 六字段守恒；Full canonical=ΣDay；Session/Agent/Task rollup 对账。
+- [x] warm Timeline <200ms、day/session <300ms、request drill-down 首批 <100ms；cached scope switch 不 replay rollout。
+- [x] `npm test`、`npm run check`、`git diff --check`、真实 hash/reconciliation、1440/720 browser gate 全通过后才更新 Delivery 为 Implemented。
+
+### Checkpoint
+
+- [x] Session 回答“做了什么”，Time 回答“什么时候发生消耗”，二者共享同一 canonical Request 事实源。
+- [x] UI 展示单位和 accounting unit 不再混淆。
+- [x] 不通过 root-local identity、Task-start day 或 eager Request payload 换取表面简化。
+
+**Delivered evidence (2026-08-28):** Phase 19 保持 schema v14 / projection v2，不重放 rollout 来制造 UI 数据。业务 unit 8/8、ownership/DB/API 46/46、UI contract 2/2 Green；全量 `npm test` 124 / 123 passed / 0 failed / 1 optional skip。真实正式 SQLite P95：Timeline `191.237ms`、Session `47.652ms`、Day detail `34.626ms`、Request drill-down `4.498ms`，后者命中 `idx_canonical_requests_task_observed` covering index。真实 session 1,022 canonical Request / 0 inherited / 0 unresolved，六字段 canonical=Σday=full；rollout manifest SHA-256 前后均为 `5d684e43b671aeb19b92bdbfca1a7b2b02e335774f43c952ae1b6843ea8ef379`。Chrome/CDP 1440/720 通过，真实 Task 懒加载 24 条 canonical Request 且 SSE 后展开/DOM/scroll/focus/anchor 保持。
+
+## Phase 20: Independent Task / Request Audit Navigation
+
+### Overview
+
+修复 Phase 19 inline Request `<tr>` 与父 Task 横向 overflow 共享坐标系的问题，并给长 Agent/Task 增加有界、可定位的编号分页。该阶段只改变本地只读 API 的分页能力与 UI 容器/交互，不改变 schema v14、projection v2、Request accounting、Task identity、day scope 或 pricing 口径。
+
+事实来源：ADR-0022、`docs/API.md`、`scripts/verify-live-ui.js`。
+
+### Task 1: Add bounded numbered pagination
+
+- [x] 每个 Agent 的 Task 固定 10 条/页，支持首/末页、前/后页、页码与直接跳转；分页状态按 session/day/thread 隔离。
+- [x] Request API 保留 cursor，同时增加互斥的 `page` 模式和 `pagination` 元数据；UI 固定 10 Request/页。
+- [x] DB 编号分页继续使用 `(observed_at, request_id)` 稳定顺序，不复制第二套 accounting 数据。
+
+### Task 2: Isolate nested scroll ownership
+
+- [x] Canonical Requests 从父 Task `<table>` 的 detail `<tr>` 移为 Agent card 内独立 audit drawer。
+- [x] 父 `.task-table-wrap` 只移动 Task 数据列；Request drawer 标题保持固定，`.request-audit-scroll` 自己移动 Request 列。
+- [x] Task 表可见 caption 固定在滚动容器视口左侧；Time 隐藏 caption 契约保持不变。
+
+### Task 3: Improve interaction affordance
+
+- [x] `N Requests` 使用主题化胶囊，补齐 pointer / hover / active / focus 反馈。
+- [x] Request drawer 顶部增加居中三横线 grip；收起保留稳定 DOM，使用 grid/opacity/translate 过渡并尊重 reduced-motion。
+- [x] service tier 规范化为 `standard` 或 `fast · N 倍率`；Fast 倍率取 request-level pricing evidence，禁止把 long-context output 1.5×硬编码成 Fast。
+
+### Task 4: Regression and delivery gate
+
+- [x] API regression 锁定 `page=2`、total pages、cursor compatibility 与非法 page。
+- [x] Chrome/CDP 锁定 Request 10 条/页、Task 10 条/页、跳转控件、父/子 scrollbar 独立、SSE detail identity、collapse stable DOM/transition，以及 720px 横向滚动保持。
+- [x] 静态 CSP/UI contract 覆盖分页、drawer、胶囊、三横线和无 inline style。
+- [x] `npm test`、`npm run check`、`git diff --check` 全通过后提交。
+
+### Checkpoint
+
+- [x] 长 Agent 不再一次性展示全部 Task；长 Task 不再一次性展示全部 Request。
+- [x] Canonical Requests 不再受父 Task scrollbar 位移影响，每个 Request 表拥有自己的横向滚动边界。
+- [x] 所有 UI 改动保持现有 parchment / clay / blue-gray 主题与键盘/窄屏可用性。
+
+## Phase 21: Explicit-Fast Service Tier Policy
+
+### Overview
+
+冻结服务层级的新业务口径：只有 Request 原始 `service_tier` 明确为 `fast` 才应用 Fast multiplier，其他所有值按 standard。该阶段只修改 pricing interpretation、派生 USD/coverage 和对应 UI，不改变 Token/Request/Task accounting。
+
+事实来源：ADR-0023。
+
+### Tasks
+
+- [x] `normalizeServiceTier` 改为 explicit-fast；`priority`、missing、unknown 均归 standard。
+- [x] service tier 缺失不再产生 `service_tier_unknown` partial；其他 pricing evidence 完整时 Request 为 estimated。
+- [x] UI 只显示 `standard` 或 `fast · N 倍率`，并同步 tooltip。
+- [x] pricing policy version 升级，并在启动时检测旧 `pricing_policy_version`，从持久化 projection 重建 calendar cost，不回放 `.codex`。
+- [x] pricing unit 与数据库 restart regression 覆盖新语义；全量测试通过后提交。
+
+**Delivered evidence (2026-08-28):** pricing policy 为 `subscription-standard-v2 / 2026-08-28-explicit-fast`。定向测试证明 `fast/FAST -> fast`，`default/standard/priority/missing/unknown -> standard`；缺 tier 不再生成 `service_tier_unknown` partial。数据库 regression 证明旧 `pricing_policy_version` 会从已持久化 canonical evidence 恢复正确 calendar cost。全量 `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check`、`git diff --check` 通过；Chrome/CDP 1440/720 live UI 复验通过。
+
+## Phase 22: Task Scroll / Request Pagination Ergonomics
+
+### Overview
+
+按 ADR-0024 调整 Agent Task 与 Canonical Request 的列表交互：Task 使用连续纵向滚动，Request 保留自适应分页；不改变 Request API、schema、accounting 或 pricing。
+
+### Tasks
+
+- [x] 移除 Agent Task 10 条分页和对应本地 page state；全部 Task 保持稳定 key reconcile。
+- [x] `.task-table-wrap` 增加约 5 行高度的纵向 overflow，并保持横向滚动、sticky 表头和 SSE DOM identity。
+- [x] Task wheel 增加 edge chaining：内部可滚时优先滚 Task；无纵向 overflow 或到达滚动方向边界时把 wheel delta 继续交给外层 workspace。
+- [x] Request 默认 10 条/页，增加 5/10 页大小切换；少于 10 条时隐藏分页条。
+- [x] Request 分页条整体居中；页码窗口限制为 5 个语义槽位；只保留前/后翻页，导航使用 Lucide chevron 严格居中；跳页改为无 spinner 的单页码文本输入。
+- [x] Request drawer 改为 single-open：展开最新 Task 时其余已展开 drawer 原位动画收起并保留已加载缓存。
+- [x] 页码导航与翻页内容增加轻量 opacity/translate 过渡，并服从 reduced-motion。
+- [x] 更新静态 UI contract 与 Chrome/CDP：验证 23 Task 全量 DOM + 纵向滚动/edge chaining、Request single-open、5/10 切换、导航 icon 居中、分页动画、独立横向滚动和 720px 状态保持。
+
+### Checkpoint
+
+- [x] Task 保持连续业务序列，不再用页码切断；超过约 5 行后只在 Agent 自身任务视口滚动。
+- [x] Task 视口不会吞掉边界滚轮：到底/到顶或没有滚动条时继续滚动整体 workspace。
+- [x] Request 仍保持 bounded fetch/DOM；默认 10 条，必要时可切 5 条精查。
+- [x] 小结果集不展示无意义分页导航；长分页使用边界页 + 当前页的紧凑窗口，并且同时只展示一个 Request drawer。
+
+**Delivered evidence (2026-08-28):** `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check` 与 `git diff --check` 通过。Chrome/CDP 实测 Task synthetic 23 rows 全部保留，任务视口 `clientHeight=513 / scrollHeight=2287`、纵向 `scrollTop 80→240`；普通 SSE snapshot 保持同一 `.task-table-wrap` 且 `scrollLeft=473 / scrollTop=120` 不变。Task 到底时真实 wheel 使 workspace `931→1251` 而 wrap 保持 `1774/1774`；无纵向 overflow 时 workspace `639→319` 接管。真实 24-Request Task 默认 10 行，切换 5 条后变为 `第 1 / 5 页`；分页 `justify-content=center`，jump input=`type=text`，Lucide nav icon center delta=`0/0`，pagination animation=`pagination-enter`。展开第二个有 Request 的 Task 后 `openCount=1`，旧 Task `aria-expanded=false`、新 Task=`true`；父/子横向滚动和 720px 回归继续通过。

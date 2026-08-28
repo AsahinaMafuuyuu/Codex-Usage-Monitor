@@ -6,6 +6,7 @@ import { join } from "node:path";
 import {
   estimateRequestCost,
   estimateTaskCost,
+  SUBSCRIPTION_PRICING_CATALOG,
 } from "../src/pricing.js";
 import { scanRolloutMetadata, SessionRolloutParser } from "../src/rollout-parser.js";
 
@@ -164,7 +165,7 @@ function createReport() {
   return {
     codexHome,
     policy: "subscription-standard-equivalent",
-    policyVersion: "2026-08-26",
+    policyVersion: SUBSCRIPTION_PRICING_CATALOG.policyVersion,
     requestBoundaryGate: "model_sampling_usage_boundary_verified",
     rolloutFiles: 0,
     metadataSkippedFiles: 0,

@@ -66,16 +66,17 @@ codex-usage-monitor\
 ## 页面能力
 
 - 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话；已有 SQLite projection 时点击只读 cached canonical snapshot，不在请求路径同步解析 rollout。新增/变化 session 由后台 indexer 处理；目录缺失时明确归入“未归类”。
-- 左侧可切换“工程”和“时间”两种导航；工程模式打开完整 session，时间模式以 `(sessionId, local day)` 为选择身份，右侧 Task / Agent / Token / Request / Cost 只统计当天。时间视图按月→日→session 展开，并展示与右侧同口径的 total token 和订阅标准价 USD 等值。
+- 左侧可切换“工程”和“时间”两种导航；工程模式打开完整 session，并以“任务记录”展示完整 Task lifecycle；时间模式以 `(sessionId, local day)` 为选择身份，直接展示当天真正发生的 canonical Request，再按 Task Day Slice 分组。Time 表显示“当日首请求 / 当日末请求 / Requests / 推理强度”，不会把完整 Task 的开始时间或耗时冒充为当天计量时间。
+- Task 可按需展开 canonical Request 审计表，查看每个 Request 的时间、Input/Cached/Cache Write/Output/Reasoning/Total、模型、所属 Task 推理强度、service tier 与 USD。Project 展开完整 Task Request；Time 只展开当天 Request。每个智能体的 Task 不再分页，而是在约 5 行高的独立纵向视口中连续滚动：内部仍有剩余滚动距离时优先滚 Task，到顶/到底或没有纵向 overflow 时把滚轮继续交给整体 workspace。Request 默认 10 条/页并可切 5/10，少于 10 条时不显示分页条；长分页最多保留 5 个语义槽位（边界页 / 当前页 / 省略号），外侧只保留前后翻页。前后导航使用居中的 Lucide chevron，并给页码与翻页内容加入轻量过渡。Request drawer 同时只展开最近一个，其余原位收起但保留已加载缓存。Request 明细继续拥有独立横向滚动区和三横线收起把手，父任务表横向滚动不会带动 Canonical Requests 标题或明细。初始 snapshot/SSE 仍不内嵌全部 Request。
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
-- 逐任务费用只汇总其 verified Request Ledger usage unit 的 request cost：按事件发生时间选择历史模型价，并在 event-level evidence 可证明时处理 `input >272K` 长上下文和 Fast；未知历史价格、service tier 或冲突 evidence 显式降低 coverage，不猜测。
+- 逐任务费用只汇总其 verified Request Ledger usage unit 的 request cost：按事件发生时间选择历史模型价，并按单 Request 处理 `input >272K` 长上下文。Fast 只有在原始 `service_tier` 明确为 `fast` 时启用；`default/standard/priority/缺失/其他值` 全部按标准层级计费。未知历史价格或其他冲突 evidence 仍显式降低 coverage。
 - Request Ledger 任务质量只区分 `complete`、`provisional`、`partial` 和 `unknown`。
 - 通过文件观察与 1 秒轮询把变化 session 放入后台 dirty queue；Indexer 执行 parse/tail → Request identity/ownership → canonical projection → generation commit，并用 SSE 刷新页面。
-- 实时 snapshot 使用 session/Agent/Task 稳定 key 原位 reconcile：常规 token/费用/状态更新不会替换任务表滚动容器或 Agent `<details>`；横向滚动、键盘焦点和用户展开状态保持，结构新增时以当前可见 Agent/Task 做视觉锚点补偿。
+- 实时 snapshot 使用 session/Agent/Task 稳定 key 原位 reconcile：常规 token/费用/状态更新不会替换任务表滚动容器、已展开 Request drawer 或 Agent `<details>`；横向滚动、键盘焦点和用户展开状态保持，结构新增时以当前可见 Agent/Task 做视觉锚点补偿。Request drawer 收起/展开保留原 DOM 并使用可降级到 `prefers-reduced-motion` 的过渡动画。
 - 任务表不显示指令正文；受认证的旧 preview API 暂时保留，供后续完整对话功能重新设计。
-- 任务表固定 13 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏当前审计字段。
+- 任务表固定 14 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏当前审计字段。可见表标题保持在滚动容器视口左侧，横向移动只作用于数据列。
 - 展示独立的账号级 `rate_limits` 快照；同一 reset 窗口内若并发 rollout 返回互相回退的 `used_percent`，运行时按该窗口观测到的最大已用比例保守收敛，避免把 100% 错降成 97%。页面统一显示 `100 - used_percent` 的剩余额度；额度卡右上角使用本地安装的 Lucide `refresh-cw` 图标，点击后立即重新扫描本机最新 rollout，刷新期间图标旋转。
 
 ### 额度刷新语义
@@ -99,7 +100,9 @@ codex-usage-monitor\
 - schema v14 中 token 仍只来自经相邻 `total_token_usage` 逐字段验证的 Request Ledger；`last_token_usage` 只作为候选新增量被验证，绝不裸累加。业务聚合进一步只消费 `canonical_requests`，fork copied history 不会形成新的 Token/Cost。
 - `user_message`、`patch_apply_end`、`web_search_end`、`thread_rolled_back` 等已审计 record 只是消息/工具/会话状态证据，不生成 model Request，也不直接增加 Task usage。2026-08-27 的真实污染 session 中这四类共 1,978 条，已从 `unknownRecords` 收敛为显式 non-accounting allowlist；重新审计后 `unknownRecords=0`，Request/Token reconciliation 完全不变。
 - Request identity 优先使用 `token_count` 可证明的原生 `request_id/model_request_id/response_id`；当前真实 legacy 样本没有这些字段，因此确定性使用 `turnId + generation + cumulative usage + last usage` 重建。`thread/source/timestamp/call_id` 不参与 identity。
+- cross-root legacy history 也只保留 provenance：Task 明确早于 root session 创建时间时不会重新取得 accounting ownership；即使 copied Task 时间戳被改写，只要相同 request identity 已由其他 root 占有，也不会重复生成 canonical Request。该修复使用 projection v2，SQLite schema 仍保持 v14，旧 projection 只从已持久化 raw evidence 重建，不回放 `.codex`。
 - `modelRequestCount` 表示 canonical verified model usage Request；这是本地 rollout 可证明的 model-sampling Request identity，仍不宣称与服务端 invoice/HTTP 请求一一对应。
+- Task Day Slice 只是 Time 查询 projection，同一 Task 可以出现在多个日期但仍只有一个 Task identity；day-scope API 提供 `scopeDay/firstRequestAt/lastRequestAt/requestCount` 描述当日 Request 子集。
 - 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
 - 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度；页面显示的是剩余比例，底层仍保留 Codex 原始 `used_percent` 语义。只有 `resetsAt + windowMinutes` 能确认处于同一窗口时才做单调收敛，进入新 reset 后允许比例重新降低。
 - 美元值是 **Subscription Standard-Rate Equivalent**：逐 verified usage unit 使用事件发生时的历史订阅标准价，并仅对可证明的长上下文/Fast feature 应用规则。它不是 Plus 实际扣费，也不能从 5 小时/周额度反推。Regional processing、web/image/voice/tool fee 仍不在当前 policy；partial 金额只表示当前可证明部分。

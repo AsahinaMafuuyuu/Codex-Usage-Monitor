@@ -14,11 +14,13 @@ Codex `history_mode=legacy` 子智能体 rollout 可复制祖先历史；新版�
 - reconstructed identity 一旦从持久化 Request Ledger 生成并保存，在 restore/rebuild 路径中就是 authoritative derived evidence；schema v13→v14 可以从已有 ledger backfill identity，不能要求重新读取缺失 source 才保持 identity 稳定。
 - 同一 root session 的 Task 以 `turnId` 为 identity evidence，通过 agent lineage 选 canonical owner；descendant copy 只保留 provenance。
 - verified Request 只有在 event thread 与 canonical Task owner 一致且 request identity 可证明时进入正式聚合；同 identity 的 copied/rebroadcast evidence 标记 `inherited_copy` 并指向 `canonicalRequestId`；冲突/无 owner/identity 不足进入 unresolved。
+- Cross-root legacy history 同样不能重新取得 accounting ownership：Task 明确早于 root session 创建时间时只保留 inherited provenance；即使未来 copied Task 时间戳被改写，只要 request identity 已由其他 root 的 `canonical_requests` 占有，当前 verified evidence 仍降级为 `inherited_copy`。全局 `request_id` 唯一约束继续作为重复计量的最后一道防线。
 - Time 模式按 canonical Request `observedAt` 本地日切片，再按 Task/Agent/Session 分组；Task lifecycle 不再决定日期用量。
 - schema v14 保留 `model_usage_events` raw evidence，同时建立 `canonical_requests`、Task/Event ownership provenance 和 versioned day/cost projection；Timeline/日视图不再每次扫描全历史 Request Event 重新定价。
 - session 同步改为 background indexer；点击只消费已有 projection。
 - parser semantics version 与 SQLite schema version 分离：仅 record 分类/allowlist 语义变化时，通过 parser-version stale gate 后台 reindex cursor diagnostics，不通过 SQL schema migration 或手工清零 warning 冒充重新验证。
 - projection rebuild 在单一 SQLite transaction 内更新并推进 `projection_generation`；graceful shutdown 先取消 queued job，再等待 active parse/write，最后才允许关闭 SQLite。
+- projection semantics 也独立版本化：cross-root ownership hardening 提升 projection version，但 SQLite schema 仍保持 v14；发现旧 projection version 时只用已持久化 raw Request evidence 重建，不要求 replay rollout。
 - migration/cutover 必须做 evidence reconciliation，禁止无法解释的 verified Token 丢失。
 - 无 Request Task 只有在 cumulative 前后严格相等且无异常时才可 `verified_zero`。
 
@@ -37,5 +39,6 @@ Codex `history_mode=legacy` 子智能体 rollout 可复制祖先历史；新版�
 - schema/projection 需要版本升级与历史重建；旧 raw rows 可作为审计证据保留，但不再直接作为 runtime aggregate。
 - 页面首次点击不应承担 parser/repricing；后台同步完成后通过 SSE 更新。
 - source present 时按 present source 做 authoritative replace：只删除并重建该 source 的 stale Task/Event；source missing 时保留上一次已验证 raw/canonical 历史，不因当前文件集合缩小而删除已验证用量。Agent aggregate、Timeline unattributed fallback 与 full/day snapshot 都必须消费 canonical ownership。
+- 在当前已验证的 legacy 格式（copied Task 保留原 `startedAt`）下，Cross-root provenance 不依赖索引先后：copy 先索引时可暂时保持 inherited 且无 pointer；原始 canonical Request 后续出现后必须 backfill `canonical_request_id`。全量 projection rebuild 按 session 创建时间稳定排序，减少 first-seen 顺序对 ownership 的影响；若未来格式同时改写 Task 时间且原始 root 尚未建立 canonical identity，则必须继续按 unresolved/新证据规则演进，不能猜 owner。
 - `patch_apply_end`、`user_message`、`thread_rolled_back`、`web_search_end` 经真实样本审计后属于 non-accounting record：不生成 model Request，也不直接增加 Task usage；未知的新 record/event 仍继续触发 `unknownRecords` warning。
 
