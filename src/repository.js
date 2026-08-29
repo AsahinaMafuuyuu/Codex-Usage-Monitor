@@ -15,7 +15,7 @@ export class CodexRepository {
     this.entriesByRoot = new Map();
     this.sessions = new Map();
     this.sessionNames = new Map();
-    this.sessionIndexSignature = null;
+    this.sessionIndexSignatures = { current: null, backup: null };
     this.state = { threads: new Map(), parentByChild: new Map(), errors: [] };
     this.indexErrors = [];
     this.lastIndexedAt = null;
@@ -23,9 +23,9 @@ export class CodexRepository {
 
   async initialize() {
     this.state = await readCodexState(this.codexHome);
-    const sessionIndexPath = join(this.codexHome, "session_index.jsonl");
-    this.sessionNames = readSessionIndex(sessionIndexPath);
-    this.sessionIndexSignature = await readFileSignature(sessionIndexPath);
+    const sessionNameCatalog = await readSessionNameCatalog(this.codexHome);
+    this.sessionNames = sessionNameCatalog.names;
+    this.sessionIndexSignatures = sessionNameCatalog.signatures;
     const files = await findRolloutFiles(this.codexHome);
     const scanned = await mapWithConcurrency(files, 12, async (path) => {
       try {
@@ -41,6 +41,7 @@ export class CodexRepository {
     this.addStateOnlyRoots();
     this.rebuildSessions(this.sessionNames);
     this.database.upsertSessions([...this.sessions.values()]);
+    this.hydrateStoredSessions();
     this.lastIndexedAt = new Date().toISOString();
     return this.summary();
   }
@@ -81,30 +82,56 @@ export class CodexRepository {
   }
 
   async refreshSessionNames() {
-    const sessionIndexPath = join(this.codexHome, "session_index.jsonl");
-    const signature = await readFileSignature(sessionIndexPath);
-    if (!signature) {
-      this.sessionIndexSignature = null;
-      return [];
-    }
-    if (signature === this.sessionIndexSignature) return [];
+    const catalog = await readSessionNameCatalog(this.codexHome);
+    if (!catalog.signatures.current && this.sessionIndexSignatures.current) return [];
+    if (sameSessionIndexSignatures(catalog.signatures, this.sessionIndexSignatures)) return [];
 
-    const nextNames = readSessionIndex(sessionIndexPath);
+    const nextNames = catalog.names;
     const changedIds = changedSessionNameIds(this.sessionNames, nextNames);
     this.sessionNames = nextNames;
-    this.sessionIndexSignature = signature;
+    this.sessionIndexSignatures = catalog.signatures;
     if (!changedIds.length) return [];
 
+    for (const rootId of changedIds) {
+      if (!this.hasLiveSessionRoot(rootId)) continue;
+      const session = this.buildSession(rootId);
+      if (session) this.sessions.set(rootId, session);
+    }
+    this.hydrateStoredSessions();
     const changedSessions = [];
     for (const rootId of changedIds) {
-      if (!this.sessions.has(rootId)) continue;
-      const session = this.buildSession(rootId);
+      const session = this.sessions.get(rootId);
       if (!session) continue;
-      this.sessions.set(rootId, session);
       changedSessions.push(session);
     }
     if (changedSessions.length) this.database.upsertSessions(changedSessions);
     return changedSessions;
+  }
+
+  hydrateStoredSessions() {
+    if (typeof this.database?.listSessions !== "function") return;
+    for (const stored of this.database.listSessions()) {
+      const live = this.hasLiveSessionRoot(stored.id) ? this.buildSession(stored.id) : null;
+      const indexedName = nonEmptyText(this.sessionNames.get(stored.id)?.threadName);
+      this.sessions.set(stored.id, {
+        ...stored,
+        ...(live ?? {}),
+        id: stored.id,
+        title: indexedName ?? live?.title ?? "",
+        source: live?.source ?? stored.source ?? null,
+        projectPath: live?.projectPath ?? stored.projectPath ?? null,
+        createdAt: live?.createdAt ?? stored.createdAt ?? null,
+        updatedAt: live?.updatedAt ?? stored.updatedAt ?? null,
+        archived: live?.archived ?? Boolean(stored.archived),
+        cliVersion: live?.cliVersion ?? stored.cliVersion ?? null,
+        rolloutKey: live?.rolloutKey ?? stored.rolloutKey ?? null,
+        rolloutPath: live?.rolloutPath ?? this.sourceLocator.pathForKey(stored.rolloutKey),
+      });
+    }
+  }
+
+  hasLiveSessionRoot(rootId) {
+    return this.entriesByRoot.has(rootId) || this.state.threads.has(rootId);
   }
 
   makeEntry(path, result) {
@@ -318,6 +345,29 @@ function readSessionIndex(filePath) {
     }
   }
   return result;
+}
+
+async function readSessionNameCatalog(codexHome) {
+  const backupPath = join(codexHome, "session_index.jsonl.bak");
+  const currentPath = join(codexHome, "session_index.jsonl");
+  const [backupSignature, currentSignature] = await Promise.all([
+    readFileSignature(backupPath),
+    readFileSignature(currentPath),
+  ]);
+  const names = new Map();
+  for (const [id, record] of readSessionIndex(backupPath)) names.set(id, record);
+  for (const [id, record] of readSessionIndex(currentPath)) names.set(id, record);
+  return {
+    names,
+    signatures: {
+      current: currentSignature,
+      backup: backupSignature,
+    },
+  };
+}
+
+function sameSessionIndexSignatures(left, right) {
+  return left.current === right.current && left.backup === right.backup;
 }
 
 async function readFileSignature(filePath) {
