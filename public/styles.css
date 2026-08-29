@@ -1523,27 +1523,14 @@ summary:focus-visible,
   letter-spacing: -.025em;
 }
 .empty-state > p:last-child { max-width: 500px; color: var(--muted); line-height: 1.75; }
-.empty-orbit {
-  position: relative;
-  width: 68px;
-  height: 68px;
+.empty-state-mark {
+  width: 150px;
+  height: 150px;
   margin-bottom: 26px;
-  border: 1px solid var(--clay);
+  object-fit: cover;
+  object-position: center;
   border-radius: 50%;
 }
-.empty-orbit::before,
-.empty-orbit::after {
-  content: "";
-  position: absolute;
-  left: 15px;
-  top: 33px;
-  width: 38px;
-  height: 1px;
-  background: var(--clay);
-  transform: rotate(55deg);
-}
-.empty-orbit::after { transform: rotate(-55deg); }
-.empty-orbit span { position: absolute; inset: 28px; background: var(--clay); border-radius: 50%; }
 
 .loading-state p { color: var(--muted); }
 .scan-line { width: min(360px, 72vw); height: 2px; overflow: hidden; background: var(--line); }
