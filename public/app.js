@@ -531,8 +531,8 @@ function renderDashboard() {
 function renderQuota() {
   const quota = state.snapshot?.quota;
   if (!quota) {
-    elements["quota-plan"].textContent = "暂无本地快照";
-    elements["quota-windows"].innerHTML = '<span class="empty-agent">等待下一条 rate_limits 记录</span>';
+    elements["quota-plan"].textContent = "暂无官方额度";
+    elements["quota-windows"].innerHTML = '<span class="empty-agent">等待 Codex Usage 返回额度</span>';
     syncQuotaRefreshButton();
     return;
   }
@@ -552,7 +552,7 @@ function renderQuota() {
 
 async function refreshQuota() {
   if (state.quotaRefreshing) return;
-  const previousObservedAt = state.snapshot?.quota?.observedAt ?? null;
+  const previousQuotaSignature = quotaValueSignature(state.snapshot?.quota);
   state.quotaRefreshing = true;
   syncQuotaRefreshButton();
   try {
@@ -560,12 +560,12 @@ async function refreshQuota() {
     if (state.snapshot) state.snapshot.quota = payload.quota;
     renderQuota();
     const currentObservedAt = payload.quota?.observedAt ?? null;
-    if (currentObservedAt && currentObservedAt !== previousObservedAt) {
+    if (payload.quota && quotaValueSignature(payload.quota) !== previousQuotaSignature) {
       toast(`额度已更新 · ${formatDate(currentObservedAt)}`);
     } else if (payload.quota) {
-      toast("已重新扫描本地额度，暂未发现新的快照");
+      toast("已查询官方 Codex Usage，额度暂无变化");
     } else {
-      toast("已重新扫描，但尚未发现 rate_limits 记录");
+      toast("官方 Codex Usage 暂未返回额度");
     }
   } catch (error) {
     toast(`额度刷新失败：${error.message}`);
@@ -573,6 +573,17 @@ async function refreshQuota() {
     state.quotaRefreshing = false;
     syncQuotaRefreshButton();
   }
+}
+
+function quotaValueSignature(quota) {
+  if (!quota) return "";
+  return JSON.stringify({
+    planType: quota.planType ?? null,
+    limitId: quota.limitId ?? null,
+    primary: quota.primary ?? null,
+    secondary: quota.secondary ?? null,
+    credits: quota.credits ?? null,
+  });
 }
 
 function syncQuotaRefreshButton() {
@@ -583,7 +594,7 @@ function syncQuotaRefreshButton() {
   button.setAttribute("aria-busy", String(state.quotaRefreshing));
   if (state.quotaRefreshing) {
     button.setAttribute("aria-label", "正在刷新账号额度");
-    button.title = "正在重新扫描本地 Codex 额度快照";
+    button.title = "正在查询官方 Codex Usage";
     return;
   }
   button.setAttribute("aria-label", "刷新账号额度");

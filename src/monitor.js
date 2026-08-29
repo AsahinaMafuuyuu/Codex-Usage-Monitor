@@ -2,20 +2,27 @@ import { EventEmitter } from "node:events";
 import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
+import { CodexUsageClient, CodexUsageUnavailableError } from "./codex-usage-client.js";
 import { estimateRequestCost, pricingCatalogSummary } from "./pricing.js";
 import {
   readTaskPreview,
-  scanLatestQuota,
   SessionRolloutParser,
 } from "./rollout-parser.js";
 import { materializeScopedSnapshot, resolveLocalDayRange } from "./snapshot-scope.js";
 import { reconcileRateLimitSnapshots } from "./usage.js";
 
 export class UsageMonitor extends EventEmitter {
-  constructor({ repository, database }) {
+  constructor({
+    repository,
+    database,
+    quotaClient = new CodexUsageClient({ codexHome: repository.codexHome }),
+    quotaRefreshIntervalMs = 60_000,
+  }) {
     super();
     this.repository = repository;
     this.database = database;
+    this.quotaClient = quotaClient;
+    this.quotaRefreshIntervalMs = quotaRefreshIntervalMs;
     this.selectedSessionId = null;
     this.parser = null;
     this.selectedEntries = [];
@@ -25,6 +32,8 @@ export class UsageMonitor extends EventEmitter {
     this.pendingTimer = null;
     this.pollTimer = null;
     this.reconcileTimer = null;
+    this.quotaPollTimer = null;
+    this.quotaRefreshPromise = null;
     this.lastUpdateAt = null;
     this.lastErrors = [];
     this.timelinePromise = null;
@@ -47,13 +56,19 @@ export class UsageMonitor extends EventEmitter {
   async initialize() {
     await this.repository.initialize();
     this.refreshTimelineDirtySessions();
-    this.currentQuota = this.database.getLatestQuota();
-    await this.refreshGlobalQuota();
+    const persistedQuota = this.database.getLatestQuota();
+    this.currentQuota = persistedQuota?.source === "official-usage-api" ? persistedQuota : null;
     this.startWatchers();
     this.pollTimer = setInterval(() => void this.pollSelectedFiles(), 1000);
     this.pollTimer.unref();
     this.reconcileTimer = setInterval(() => void this.reconcile(), 10_000);
     this.reconcileTimer.unref();
+    this.quotaPollTimer = setInterval(
+      () => void this.refreshQuotaFromOfficial({ emit: true }),
+      this.quotaRefreshIntervalMs,
+    );
+    this.quotaPollTimer.unref();
+    void this.refreshQuotaFromOfficial({ emit: true });
     void this.runBackgroundIndexer();
     return this.health();
   }
@@ -289,14 +304,13 @@ export class UsageMonitor extends EventEmitter {
         parsed = await parser.parseFiles(files);
       }
       if (this.closed) return;
-      this.database.replaceSession(parsed);
+      this.database.replaceSession(parsed, { persistQuotas: false });
       this.timelineDirtySessions.delete(sessionId);
       this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
       this.parser = parser;
       this.selectedSessionId = sessionId;
       this.selectedEntries = files;
       this.lastUpdateAt = new Date().toISOString();
-      this.saveLatestParsedQuota(parsed.quotas);
     })();
     try {
       await this.selectionPromise;
@@ -343,7 +357,7 @@ export class UsageMonitor extends EventEmitter {
   }
 
   quota() {
-    const quota = this.currentQuota ?? this.database.getLatestQuota();
+    const quota = this.currentQuota;
     if (!quota) return null;
     const ageMs = Date.now() - Date.parse(quota.observedAt);
     return { ...quota, stale: !Number.isFinite(ageMs) || ageMs > 5 * 60 * 1000, ageMs };
@@ -491,8 +505,6 @@ export class UsageMonitor extends EventEmitter {
           selectedChanged ||= result.changed;
           requiresRebuild ||= result.rebuilt;
           if (!this.selectedEntries.some((item) => item.path === entry.path)) this.selectedEntries.push(entry);
-        } else {
-          await this.refreshQuotaFromFile(entry);
         }
       } catch (error) {
         this.recordError(`处理文件更新失败：${path}`, error);
@@ -533,10 +545,9 @@ export class UsageMonitor extends EventEmitter {
   persistAndBroadcast() {
     if (this.closed || !this.parser || !this.selectedSessionId) return;
     const parsed = this.parser.snapshot();
-    this.database.replaceSession(parsed);
+    this.database.replaceSession(parsed, { persistQuotas: false });
     this.timelineDirtySessions.delete(this.selectedSessionId);
     this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
-    this.saveLatestParsedQuota(parsed.quotas);
     this.lastUpdateAt = new Date().toISOString();
     this.emit("update", { sessionId: this.selectedSessionId });
   }
@@ -564,87 +575,43 @@ export class UsageMonitor extends EventEmitter {
           if (error?.code !== "ENOENT") this.recordError(`后台 stat 校验失败：${entry.path}`, error);
         }
       }
-      await this.refreshGlobalQuota();
     } catch (error) {
       this.recordError("后台校验失败", error);
     }
   }
 
-  async refreshGlobalQuota() {
-    const recent = this.repository
-      .allFiles()
-      .sort((a, b) => (b.modifiedAtMs ?? 0) - (a.modifiedAtMs ?? 0))
-      .slice(0, 12);
-    let latest = this.currentQuota ?? this.database.getLatestQuota();
-    for (const entry of recent) {
-      try {
-        const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
-        if (!quota) continue;
-        this.database.saveQuota(quota);
-        latest = reconcileRateLimitSnapshots(latest, quota);
-      } catch (error) {
-        if (error?.code !== "ENOENT") this.recordError(`额度扫描失败：${entry.path}`, error);
-      }
-    }
-    this.currentQuota = latest;
-    return latest;
-  }
-
   async refreshQuotaNow() {
-    const additions = await this.repository.discoverNewFiles();
-    for (const entry of additions) this.markTimelineDirty(entry.rootSessionId);
-
-    const candidates = [];
-    for (const entry of this.repository.allFiles()) {
-      try {
-        const fileStat = await stat(entry.path);
-        candidates.push({ entry, modifiedAtMs: fileStat.mtimeMs });
-      } catch (error) {
-        if (error?.code !== "ENOENT") this.recordError(`额度刷新 stat 失败：${entry.path}`, error);
-      }
-    }
-    candidates.sort((left, right) => right.modifiedAtMs - left.modifiedAtMs);
-
-    let latest = this.currentQuota ?? this.database.getLatestQuota();
-    for (const { entry } of candidates.slice(0, 24)) {
-      try {
-        const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
-        if (!quota) continue;
-        this.database.saveQuota(quota);
-        latest = reconcileRateLimitSnapshots(latest, quota);
-      } catch (error) {
-        if (error?.code !== "ENOENT") this.recordError(`手动额度刷新失败：${entry.path}`, error);
-      }
-    }
-    this.currentQuota = latest;
-    const quota = this.quota();
-    if (quota) this.emit("quota", quota);
-    return quota;
+    return this.refreshQuotaFromOfficial({ emit: true, throwOnError: true });
   }
 
-  async refreshQuotaFromFile(entry) {
-    try {
-      const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
-      if (!quota) return;
-      this.database.saveQuota(quota);
+  async refreshQuotaFromOfficial({ emit = true, throwOnError = false } = {}) {
+    if (this.quotaRefreshPromise) return this.quotaRefreshPromise;
+    this.quotaRefreshPromise = (async () => {
+      let candidate;
+      try {
+        candidate = await this.quotaClient.fetchQuota();
+      } catch (error) {
+        const isMissingAuth =
+          error instanceof CodexUsageUnavailableError
+          && error.code === "chatgpt_auth_unavailable";
+        if (throwOnError) throw error;
+        if (!isMissingAuth) this.recordError("官方 Codex Usage 额度查询失败", error);
+        return this.quota();
+      }
+      this.database.saveQuota(candidate);
       this.currentQuota = reconcileRateLimitSnapshots(
-        this.currentQuota ?? this.database.getLatestQuota(),
-        quota,
+        this.currentQuota,
+        candidate,
       );
-      this.emit("quota", this.quota());
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      const quota = this.quota();
+      if (emit && quota) this.emit("quota", quota);
+      return quota;
+    })();
+    try {
+      return await this.quotaRefreshPromise;
+    } finally {
+      this.quotaRefreshPromise = null;
     }
-  }
-
-  saveLatestParsedQuota(quotas) {
-    const snapshots = [...(quotas ?? [])].sort((a, b) => a.observedAt.localeCompare(b.observedAt));
-    let current = this.currentQuota ?? this.database.getLatestQuota();
-    for (const quota of snapshots) {
-      this.database.saveQuota(quota);
-      current = reconcileRateLimitSnapshots(current, quota);
-    }
-    this.currentQuota = current;
   }
 
   recordError(context, error) {
@@ -663,12 +630,18 @@ export class UsageMonitor extends EventEmitter {
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    if (this.quotaPollTimer) clearInterval(this.quotaPollTimer);
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];
     this.pendingPaths.clear();
     this.timelineDirtySessions.clear();
     this.timelineStats.dirtySessions = 0;
-    const active = [this.pendingProcessPromise, this.selectionPromise, this.indexerPromise].filter(Boolean);
+    const active = [
+      this.pendingProcessPromise,
+      this.selectionPromise,
+      this.indexerPromise,
+      this.quotaRefreshPromise,
+    ].filter(Boolean);
     this.closePromise = Promise.allSettled(active).then(() => undefined);
     return this.closePromise;
   }

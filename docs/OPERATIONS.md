@@ -51,7 +51,11 @@ npm run start:no-open
 - `parser`：坏行、尾部 partial bytes、跳过/未知记录、discontinuity，以及重启时 restored/replayed 文件数。
 - `recentErrors`：最近最多 5 条本地异常。
 
-页面额度卡超过 5 分钟会显示可能过期；这通常表示最近没有新的 rate-limit 记录，并不自动代表账号异常。
+账号额度在启动时查询一次，并默认每 60 秒向 Codex 官方 Usage 查询。`/api/quota?refresh=1` 可立即手动查询；超过 5 分钟没有成功新观测时 quota 会被标记 `stale=true`。网络暂时失败不会阻断本地 session/token 监控，页面继续保留最后一次成功的官方额度。
+
+额度查询只读使用当前 Codex home 的 `config.toml` 和 file-backed `auth.json`。监控器不会刷新 OAuth token、不会写回凭据，也不会把 access token / account id 存入自身 SQLite 或日志。若 Codex 使用监控器无法读取的 credential store，或当前没有 ChatGPT 登录凭据，手动刷新会明确返回不可用；应由 Codex 自身完成登录/认证维护。
+
+网络路径优先使用 `HTTPS_PROXY` / `ALL_PROXY`。Windows 未设置这些环境变量时，监控器会只读当前用户 WinINET 的 `ProxyEnable/ProxyServer` 并为 HTTPS Usage 建立 CONNECT tunnel；这用于兼容浏览器/Codex 可联网但 Node 直连被代理环境阻断的机器。`NO_PROXY` 仍优先于代理发现。
 
 schema version 与 parser semantics version 是两个不同概念。Phase 18 当前 SQLite 仍是 schema v14，但事件分类/allowlist 发生兼容性变化时，旧 session 会被标记为 parser-stale 并进入后台 reindex；不要手工更新 `ingest_cursors.unknown_records` 来“修复” health。真实重扫完成后 cursor diagnostics 才是新的事实。
 

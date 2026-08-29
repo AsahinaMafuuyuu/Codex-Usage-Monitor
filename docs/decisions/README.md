@@ -28,6 +28,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0022](0022-independent-task-request-audit-navigation.md) | Accepted | 将 Canonical Requests 移出父表 overflow，建立独立滚动与稳定 drawer；Task 分页交互后由 ADR-0024 替代 |
 | [0023](0023-explicit-fast-service-tier-policy.md) | Accepted | 只有原始 service tier 明确为 `fast` 才应用 Fast；其余值统一按 standard 定价 |
 | [0024](0024-task-scroll-request-pagination-ergonomics.md) | Accepted | Task 使用约 5 行纵向滚动视口；Request 使用自适应 5/10 条分页与居中导航 |
+| [0025](0025-official-codex-usage-polling.md) | Accepted | 账号额度只读查询 Codex 官方 Usage，并以 60 秒周期刷新；Task/Token/Cost 继续保持本地事实源 |
 
 ## 新增 ADR
 

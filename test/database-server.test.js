@@ -670,23 +670,33 @@ test("calendar-only persistence does not archive historical quota snapshots", as
   assert.equal(database.db.prepare("SELECT COUNT(*) AS count FROM quota_snapshots").get().count, 2);
 });
 
-test("global quota does not regress within the same reset window when concurrent snapshots arrive out of order", async (t) => {
+test("official quota does not regress within the same reset window when refreshes arrive out of order", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-quota-race-"));
   const codexHome = join(directory, ".codex");
-  const sessions = join(codexHome, "sessions", "2026", "08", "26");
-  await mkdir(sessions, { recursive: true });
-  await writeFile(
-    join(sessions, `rollout-quota-full-${ROOT}.jsonl`),
-    makeQuotaRollout(ROOT, "2026-08-26T08:39:21.277Z", 100, 31, 1_787_748_993, 1_788_317_703),
-  );
-  await writeFile(
-    join(sessions, `rollout-quota-lagging-${OTHER_ROOT}.jsonl`),
-    makeQuotaRollout(OTHER_ROOT, "2026-08-26T08:39:21.958Z", 97, 31, 1_787_748_993, 1_788_317_703),
-  );
+  await mkdir(codexHome, { recursive: true });
+  const snapshots = [
+    {
+      limitId: "codex",
+      planType: "plus",
+      primary: { usedPercent: 100, windowMinutes: 300, resetsAt: "2026-08-26T12:56:33.000Z" },
+      secondary: { usedPercent: 31, windowMinutes: 10_080, resetsAt: "2026-09-02T02:01:43.000Z" },
+      observedAt: "2026-08-26T08:39:21.277Z",
+      source: "official-usage-api",
+    },
+    {
+      limitId: "codex",
+      planType: "plus",
+      primary: { usedPercent: 97, windowMinutes: 300, resetsAt: "2026-08-26T12:56:33.000Z" },
+      secondary: { usedPercent: 31, windowMinutes: 10_080, resetsAt: "2026-09-02T02:01:43.000Z" },
+      observedAt: "2026-08-26T08:39:21.958Z",
+      source: "official-usage-api",
+    },
+  ];
+  const quotaClient = { fetchQuota: async () => snapshots.shift() };
 
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, quotaClient });
   t.after(() => {
     monitor.close();
     database.close();
@@ -694,14 +704,16 @@ test("global quota does not regress within the same reset window when concurrent
   });
 
   await monitor.initialize();
-  const quota = monitor.quota();
+  await waitFor(() => monitor.quota()?.primary?.usedPercent === 100);
+  const quota = await monitor.refreshQuotaNow();
   assert.equal(quota.primary.usedPercent, 100);
   assert.equal(quota.secondary.usedPercent, 31);
   assert.equal(quota.primary.resetsAt, "2026-08-26T12:56:33.000Z");
   assert.equal(quota.reconciled, true);
+  assert.equal(database.getLatestQuota().source, "official-usage-api");
 });
 
-test("manual quota refresh re-stats existing rollout files and reads the newest local snapshot", async (t) => {
+test("manual quota refresh queries the official quota client instead of rescanning rollout quota", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-quota-refresh-"));
   const codexHome = join(directory, ".codex");
   const sessions = join(codexHome, "sessions", "2026", "08", "26");
@@ -711,10 +723,35 @@ test("manual quota refresh re-stats existing rollout files and reads the newest 
     rollout,
     makeQuotaRollout(ROOT, "2026-08-26T08:00:00.000Z", 60, 20, 1_787_748_993, 1_788_317_703),
   );
+  const official = [
+    {
+      limitId: "codex",
+      planType: "plus",
+      primary: { usedPercent: 12, windowMinutes: 300, resetsAt: "2026-08-26T12:56:33.000Z" },
+      secondary: { usedPercent: 7, windowMinutes: 10_080, resetsAt: "2026-09-02T02:01:43.000Z" },
+      observedAt: "2026-08-26T08:00:01.000Z",
+      source: "official-usage-api",
+    },
+    {
+      limitId: "codex",
+      planType: "plus",
+      primary: { usedPercent: 25, windowMinutes: 300, resetsAt: "2026-08-26T12:56:33.000Z" },
+      secondary: { usedPercent: 9, windowMinutes: 10_080, resetsAt: "2026-09-02T02:01:43.000Z" },
+      observedAt: "2026-08-26T08:05:01.000Z",
+      source: "official-usage-api",
+    },
+  ];
+  let fetchCount = 0;
+  const quotaClient = {
+    fetchQuota: async () => {
+      fetchCount += 1;
+      return official.shift();
+    },
+  };
 
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, quotaClient });
   t.after(() => {
     monitor.close();
     database.close();
@@ -722,15 +759,66 @@ test("manual quota refresh re-stats existing rollout files and reads the newest 
   });
 
   await monitor.initialize();
-  assert.equal(monitor.quota().primary.usedPercent, 60);
+  await waitFor(() => monitor.quota()?.primary?.usedPercent === 12);
+  assert.equal(monitor.quota().primary.usedPercent, 12);
+  assert.equal(monitor.quotaRefreshIntervalMs, 60_000);
 
   await appendFile(
     rollout,
     makeQuotaEvent("2026-08-26T08:05:00.000Z", 100, 31, 1_787_748_993, 1_788_317_703),
   );
   const refreshed = await monitor.refreshQuotaNow();
-  assert.equal(refreshed.primary.usedPercent, 100);
-  assert.equal(refreshed.secondary.usedPercent, 31);
+  assert.equal(fetchCount, 2);
+  assert.equal(refreshed.primary.usedPercent, 25);
+  assert.equal(refreshed.secondary.usedPercent, 9);
+});
+
+test("official quota polling runs on the configured interval and defaults to sixty seconds", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-quota-poll-"));
+  const codexHome = join(directory, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  let fetchCount = 0;
+  let resolveSecondFetch;
+  const secondFetch = new Promise((resolve) => {
+    resolveSecondFetch = resolve;
+  });
+  const quotaClient = {
+    fetchQuota: async () => {
+      fetchCount += 1;
+      if (fetchCount >= 2) resolveSecondFetch();
+      return {
+        limitId: "codex",
+        planType: "plus",
+        primary: { usedPercent: fetchCount, windowMinutes: 300, resetsAt: "2026-08-26T12:56:33.000Z" },
+        secondary: null,
+        observedAt: new Date(1_787_000_000_000 + fetchCount * 1000).toISOString(),
+        source: "official-usage-api",
+      };
+    },
+  };
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  const repository = new CodexRepository(codexHome, database);
+  const defaultMonitor = new UsageMonitor({ repository, database, quotaClient });
+  assert.equal(defaultMonitor.quotaRefreshIntervalMs, 60_000);
+  const monitor = new UsageMonitor({
+    repository,
+    database,
+    quotaClient,
+    quotaRefreshIntervalMs: 10,
+  });
+  t.after(async () => {
+    await monitor.close();
+    await defaultMonitor.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  await monitor.initialize();
+  await Promise.race([
+    secondFetch,
+    new Promise((_, reject) => setTimeout(() => reject(new Error("quota poll did not run")), 250)),
+  ]);
+  assert.ok(fetchCount >= 2);
 });
 
 test("schema v1 ingest cursors migrate to portable resumable schema v14", async (t) => {
@@ -1783,6 +1871,15 @@ async function authenticateApplication(app) {
   const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
   assert.ok(cookie);
   return { base, cookie };
+}
+
+async function waitFor(predicate, { timeoutMs = 250, intervalMs = 5 } = {}) {
+  const deadline = Date.now() + timeoutMs;
+  while (Date.now() < deadline) {
+    if (predicate()) return;
+    await new Promise((resolve) => setTimeout(resolve, intervalMs));
+  }
+  throw new Error("condition was not met before timeout");
 }
 
 async function readNextSnapshotEvent(stream) {

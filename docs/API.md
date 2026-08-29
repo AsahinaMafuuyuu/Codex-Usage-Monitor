@@ -258,9 +258,9 @@ Request cost 继续严格使用该 Request 自身 event-level pricing evidence�
 { "quota": null }
 ```
 
-有数据时 `quota` 包含 limit ID/name、plan type、primary/secondary 窗口、观测时间、来源路径、`ageMs` 和 `stale`。超过 5 分钟或时间不可解析时 `stale=true`。若同一 `limitId`、plan、`windowMinutes` 与 `resetsAt` 下的并发快照出现 `usedPercent` 回退，运行时 current quota 对该窗口取已观测最大 `usedPercent`，并附加 `reconciled=true`；`resetsAt` 变化后不继承旧窗口最大值。持久化的 quota snapshot 仍保存各条规范化原始观测。额度不与任务 token 换算；前端把 `usedPercent` 转成 `100 - usedPercent` 的剩余比例展示。
+有数据时 `quota` 包含 limit ID/name、plan type、primary/secondary 窗口、观测时间、`source=official-usage-api`、`ageMs` 和 `stale`。超过 5 分钟或时间不可解析时 `stale=true`。若同一 `limitId`、plan、`windowMinutes` 与 `resetsAt` 下的连续官方观测出现 `usedPercent` 回退，运行时 current quota 对该窗口取已观测最大 `usedPercent`，并附加 `reconciled=true`；`resetsAt` 变化后不继承旧窗口最大值。额度不与任务 token 换算；前端把 `usedPercent` 转成 `100 - usedPercent` 的剩余比例展示。
 
-传入 `GET /api/quota?refresh=1` 会立即重新发现本机 rollout、重新读取最近修改的额度来源并返回新的 current quota。该刷新只读取本机 `.codex` 数据，不调用模型、不请求 OpenAI 服务端，也不会为了取得额度主动产生 Codex 用量；如果 Codex 尚未写入新的 `rate_limits`，返回值会保持不变。
+传入 `GET /api/quota?refresh=1` 会立即读取当前 Codex home 的全局配置/ChatGPT file auth，并查询 Codex 官方 Usage endpoint。默认 ChatGPT 基址规范化为 `https://chatgpt.com/backend-api/wham/usage`；非 `/backend-api` 的自定义 Codex 基址使用 `/api/codex/usage`。服务启动时查询一次，之后每 60 秒自动查询；手动刷新与后台查询共享同一个 in-flight 请求。该请求不是模型调用，也不会制造 Task/Token 用量。认证或网络不可用时显式刷新返回 `503` 与脱敏错误；后台失败不阻断本地用量监控，并保留最后一次成功的官方额度。
 
 ### `GET /api/health`
 

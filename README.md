@@ -77,13 +77,15 @@ codex-usage-monitor\
 - 实时 snapshot 使用 session/Agent/Task 稳定 key 原位 reconcile：常规 token/费用/状态更新不会替换任务表滚动容器、已展开 Request drawer 或 Agent `<details>`；横向滚动、键盘焦点和用户展开状态保持，结构新增时以当前可见 Agent/Task 做视觉锚点补偿。Request drawer 收起/展开保留原 DOM 并使用可降级到 `prefers-reduced-motion` 的过渡动画。
 - 任务表不显示指令正文；受认证的旧 preview API 暂时保留，供后续完整对话功能重新设计。
 - 任务表固定 14 列宽度和数字对齐；窄屏保留独立横向滚动，不隐藏当前审计字段。可见表标题保持在滚动容器视口左侧，横向移动只作用于数据列。
-- 展示独立的账号级 `rate_limits` 快照；同一 reset 窗口内若并发 rollout 返回互相回退的 `used_percent`，运行时按该窗口观测到的最大已用比例保守收敛，避免把 100% 错降成 97%。页面统一显示 `100 - used_percent` 的剩余额度；额度卡右上角使用本地安装的 Lucide `refresh-cw` 图标，点击后立即重新扫描本机最新 rollout，刷新期间图标旋转。
+- 展示独立的账号级 Codex 官方 Usage 额度；服务启动时查询一次，并默认每 60 秒自动查询。页面统一显示 `100 - used_percent` 的剩余额度；额度卡右上角使用本地安装的 Lucide `refresh-cw` 图标，点击后立即查询官方 Usage，刷新期间图标旋转且不会与后台轮询重复发起并发请求。
 
 ### 额度刷新语义
 
-额度卡右上角刷新按钮调用本地只读接口 `GET /api/quota?refresh=1`。一次手动刷新会重新发现 rollout、重新读取文件修改时间，并扫描最近的 `rate_limits` 记录，然后立即更新 5 小时和 1 周剩余额度。
+额度卡右上角刷新按钮调用本地只读接口 `GET /api/quota?refresh=1`。一次手动刷新会由监控器读取当前 Codex home 的 `config.toml` / `auth.json`，使用 Codex 已登录 ChatGPT 账号的现有凭据向官方 Usage endpoint 发起一次只读 GET，然后立即更新 5 小时和 1 周剩余额度。后台使用同一逻辑每 60 秒刷新一次。
 
-这个按钮不会主动向 OpenAI/Codex 发起模型请求，也不会为了查询额度生成一条新的远端请求；因此它只能读取 **Codex 已经写入本机 `.codex` 的最新额度快照**。如果 Codex 尚未产生新的 `rate_limits`，页面会保留当前额度并提示“暂未发现新的快照”。
+这不是模型请求，不会为了查询额度生成一条 Codex 推理请求或消耗 Task Token；但它会向 Codex 官方 Usage 服务发送只读 HTTP 请求。凭据和 account id 只用于请求 header，不进入监控数据库、日志或前端；SQLite 只保存规范化后的额度窗口。配置和认证文件始终只读。
+
+额度网络请求优先遵循 `HTTPS_PROXY/ALL_PROXY`；Windows 没有相应环境变量时会只读当前用户 WinINET 代理设置，因此本机 Codex/浏览器依赖系统代理时无需额外把代理地址写进工程配置。
 
 同一个 `windowMinutes + resetsAt` 窗口中，如果不同 rollout 的并发响应出现 `100% → 97%` 这类回退，current quota 会保守采用该窗口已观测到的最大 `used_percent`。只有进入新的 reset 窗口后，已用比例才允许重新降低。前端展示值始终为：
 
@@ -104,7 +106,7 @@ codex-usage-monitor\
 - `modelRequestCount` 表示 canonical verified model usage Request；这是本地 rollout 可证明的 model-sampling Request identity，仍不宣称与服务端 invoice/HTTP 请求一一对应。
 - Task Day Slice 只是 Time 查询 projection，同一 Task 可以出现在多个日期但仍只有一个 Task identity；day-scope API 提供 `scopeDay/firstRequestAt/lastRequestAt/requestCount` 描述当日 Request 子集。
 - 缓存命中率为 `cachedInputTokens / inputTokens`；缺少有效输入或字段矛盾时显示不可用。
-- 额度卡是账号级快照，不能证明某个任务消耗了多少订阅额度；页面显示的是剩余比例，底层仍保留 Codex 原始 `used_percent` 语义。只有 `resetsAt + windowMinutes` 能确认处于同一窗口时才做单调收敛，进入新 reset 后允许比例重新降低。
+- 额度卡是账号级官方 Usage 快照，不能证明某个任务消耗了多少订阅额度；页面显示的是剩余比例，底层仍保留服务端 `used_percent` 语义。只有 `resetsAt + windowMinutes` 能确认处于同一窗口时才做单调收敛，进入新 reset 后允许比例重新降低。
 - 美元值是 **Subscription Standard-Rate Equivalent**：逐 verified usage unit 使用事件发生时的历史订阅标准价，并仅对可证明的长上下文/Fast feature 应用规则。它不是 Plus 实际扣费，也不能从 5 小时/周额度反推。Regional processing、web/image/voice/tool fee 仍不在当前 policy；partial 金额只表示当前可证明部分。
 - Request Ledger task 的 `complete` 表示其已归属事件均可验证且六类字段完整；若同 task 仍有 unverified/anomaly，只累计已验证下限并降为 `partial`，不从其他统计口径补值。
 - Request Ledger `observedAt` 以规范化 UTC ISO-8601 持久化；页面按监控器/浏览器本地时区解释自然日。
@@ -115,7 +117,7 @@ codex-usage-monitor\
 
 ## 隐私与安全
 
-- 不修改 `config.toml`，不启动 App Server，不启用 Hooks/OTel，不调用模型，不联网。
+- 不修改 `config.toml` / `auth.json`，不启动 App Server，不启用 Hooks/OTel，不调用模型。唯一外网访问是 [ADR-0025](docs/decisions/0025-official-codex-usage-polling.md) 定义的账号额度 GET；Task/Token/Cost 数据不会联网补全。
 - Codex 的 SQLite 和 rollout 文件始终只读。
 - 监控 SQLite 只保存工程目录等历史元数据、`.codex` 相对 source key、任务定位元数据、raw Request evidence、canonical Request/provenance、cursor 和可重算 projection；数据库不保存 prompt、response、消息正文或会话标题。rollout 的绝对机器路径只在当前进程中作为运行 locator 使用。
 - 页面使用一次性随机令牌、严格 Cookie、Host/Origin 校验、CSP 和只读 HTTP 方法。

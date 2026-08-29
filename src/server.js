@@ -5,6 +5,7 @@ import { homedir } from "node:os";
 import { dirname, isAbsolute, join, relative, resolve } from "node:path";
 import { fileURLToPath, pathToFileURL } from "node:url";
 import { spawn } from "node:child_process";
+import { CodexUsageUnavailableError } from "./codex-usage-client.js";
 import { MonitorDatabase } from "./database.js";
 import { UsageMonitor } from "./monitor.js";
 import { CodexRepository } from "./repository.js";
@@ -189,10 +190,17 @@ async function handleApi({ request, response, url, monitor }) {
     return sendJson(response, 200, await monitor.timeline());
   }
   if (url.pathname === "/api/quota") {
-    const quota = url.searchParams.get("refresh") === "1"
-      ? await monitor.refreshQuotaNow()
-      : monitor.quota();
-    return sendJson(response, 200, { quota });
+    try {
+      const quota = url.searchParams.get("refresh") === "1"
+        ? await monitor.refreshQuotaNow()
+        : monitor.quota();
+      return sendJson(response, 200, { quota });
+    } catch (error) {
+      if (error instanceof CodexUsageUnavailableError) {
+        return sendJson(response, 503, { error: error.message, code: error.code });
+      }
+      throw error;
+    }
   }
   if (url.pathname === "/api/health") return sendJson(response, 200, { health: monitor.health() });
 

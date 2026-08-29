@@ -4,6 +4,11 @@
 
 ## [Unreleased]
 
+### Changed
+
+- 账号额度从“重新扫描本机 rollout `rate_limits`”切换为只读查询 Codex 官方 Usage：监控器每次读取当前全局 `config.toml` / `auth.json`，按官方 backend-client 的 `/backend-api/wham/usage` 或 `/api/codex/usage` routing 获取账号级额度；启动时立即查询，并默认每 60 秒自动刷新。
+- 手动 `/api/quota?refresh=1` 与后台额度轮询共享 in-flight 请求；认证/网络失败不会阻断本地 Request Ledger，显式刷新以脱敏 `503` 报告。凭据/account id 不持久化，rollout 中历史 quota 不再作为 current quota 或由 session persistence 继续写入。
+
 ## [1.1.0] - 2026-08-28
 
 `v1.1.0` 是 `v1.0.0` 之后的首个功能增强版本，重点收敛 Canonical Request ownership、Request-day 审计语义、explicit-fast 定价和 Task / Request 浏览交互。SQLite schema 继续保持 v14；升级只会重建派生 projection，不修改原始 `.codex` rollout。

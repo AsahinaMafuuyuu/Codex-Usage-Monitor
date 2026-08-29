@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build a local-only, read-only dashboard that attributes cumulative Codex rollout token snapshots to individual subagent turns, persists derived records in SQLite, and streams updates to a Chinese web interface.
+Build a local-first, read-only dashboard that attributes cumulative Codex rollout token snapshots to individual subagent turns, persists derived records in SQLite, streams updates to a Chinese web interface, and uses one narrowly scoped official Codex Usage GET for account-level quota.
 
 ## Architecture Decisions
 
@@ -11,8 +11,17 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 - Store usage metadata indefinitely, but load task instruction previews directly from source logs only when requested.
 - Use Node.js built-ins only: `node:http`, `node:sqlite`, filesystem watching, SSE, and static browser assets.
 - Bind only to loopback and require a per-launch session token exchanged for a strict cookie.
+- Keep Task/Token/Cost accounting local; allow only account quota to read current Codex global config/auth and poll the official Usage endpoint every 60 seconds per ADR-0025.
 
 ## Task List
+
+### Account quota: official Usage polling
+
+- [x] Read current Codex global `config.toml` and file-backed ChatGPT auth without modifying either file.
+- [x] Match official Codex backend-client Usage URL routing and normalize server quota windows into the existing UI contract.
+- [x] Query once at startup, every 60 seconds thereafter, and on manual refresh with in-flight deduplication.
+- [x] Stop treating rollout `rate_limits` as current account quota while preserving parser compatibility and historical audit evidence.
+- [x] Cover URL/auth/payload mapping, manual refresh, monotonic same-window reconciliation and periodic polling with automated tests.
 
 ### Phase 1: Foundation
 

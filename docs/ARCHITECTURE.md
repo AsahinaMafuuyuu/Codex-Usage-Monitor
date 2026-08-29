@@ -2,7 +2,7 @@
 
 ## 系统边界
 
-Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会话执行。它不 resume 线程、不修改配置，也不向 OpenAI 服务发请求。
+Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会话执行。它不 resume 线程、不修改配置、不调用模型。Task/Token/Cost 事实层不访问远端；唯一网络例外是账号额度按 [ADR-0025](decisions/0025-official-codex-usage-polling.md) 只读查询 Codex 官方 Usage。
 
 ```text
 .codex/session_index.jsonl ----┐
@@ -12,6 +12,7 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
                                                 MonitorDatabase (SQLite/WAL)
                                                           |
                      fs.watch + 1 秒轮询 --> UsageMonitor |
+Codex config/auth --只读--> CodexUsageClient --60 秒--> 官方 Usage
                                                           v
                                                 HTTP JSON + SSE
                                                           |
@@ -31,6 +32,7 @@ Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会�
 | `src/snapshot-scope.js` | 统一解析本地自然日边界，并从 Request Ledger 物化 full/day Task Slice、Agent lineage、Session summary 与 Calendar Slice |
 | `src/pricing.js` | 用历史订阅标准价逐 verified Request Ledger usage unit 计算 request cost，并合并 Task/Agent/Session/Day coverage |
 | `src/source-locator.js` | 在当前 Codex home 的绝对 runtime path 与可持久化 `.codex` 相对 source key 之间做安全转换和旧路径恢复 |
+| `src/codex-usage-client.js` | 每次只读重载 Codex `config.toml` / `auth.json`，按官方 backend-client path style 查询账号 Usage 并规范化额度窗口；不持久化凭据 |
 | `src/database.js` | 管理 schema v14、raw Request evidence、canonical request/ownership provenance、versioned request-day/cost projection、Task Request 定向查询索引、WAL 与可恢复 cursor |
 | `src/monitor.js` | 管理 cached selection、低并发 background indexer、dirty-session queue、增量 tail、SSE 和 graceful shutdown |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
@@ -122,6 +124,8 @@ SQLite schema v14 包含 `sessions`、`agents`、`tasks`、`model_usage_events`�
 SSE listener 保存建立连接时的 scope：无 `day` 时每次重建 full-session snapshot，带 `day` 时每次只重建该日 snapshot，禁止把一个预构造 full snapshot 广播给 day listener。浏览器端仍按 [ADR-0017](decisions/0017-live-interaction-stable-rendering.md) 将“传输快照”与“DOM 重建”解耦。Agent 以 `threadId`、Task 以 `turnId` 做 keyed reconciliation；time scope 收到更新后会重新读取 SQL Timeline 并用既有导航 interaction capture/restore 保留 month/day 展开、滚动与焦点，同时右侧任务表横向滚动、Agent 展开和 visible anchor 保持稳定。Phase 19 的 Request detail 继续挂在稳定 Task row 下；已加载明细记录其 `projectionGeneration`，generation 变化时只重新读取当前展开项，因此 SSE 不会把全部 Request detail eager 塞回主 snapshot。
 
 Parser 对已知但与归因无关的事件做显式 allowlist 跳过；未知 record/event 和缺少必需任务 ID 的记录分别计入 `unknownRecords`、`skippedRecords` 并触发 warning。真实 Phase 18 审计已确认 `patch_apply_end(1104)`、`user_message(610)`、`thread_rolled_back(183)`、`web_search_end(81)` 共 1,978 条均为 non-accounting record：它们不生成 model Request，也不直接改变 Task usage。`thread_rolled_back` 只改变会话上下文，不反向撤销已经发生的模型 usage。显式 allowlist 后同一 20-rollout 样本 `unknownRecords=0`，而 canonical Request/Token 数值保持完全一致。
+
+账号额度使用独立的低频网络通道，不参与 rollout dirty queue。`UsageMonitor.initialize()` 先尝试一次官方 Usage；随后 60 秒 timer 复用同一个 `CodexUsageClient`。每次请求前重新读取当前 Codex 配置和 file-backed ChatGPT auth，从而跟随 Codex 自身的 token/account/base-url 变化。手动刷新与自动刷新通过单一 in-flight promise 去重。官方响应只投影为账号级 `quota_snapshots`；session parser 即使继续识别历史 rollout `rate_limits`，也不再把它们写入 current quota。
 
 ## 界面信息架构
 
