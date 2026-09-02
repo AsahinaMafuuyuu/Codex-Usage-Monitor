@@ -226,7 +226,7 @@ Decision 3 最新增量：
 - `src/rollout-parser.js` 的累计 token 边界差分。
 - SQLite schema / metadata-only persistence。
 - `src/pricing.js` 的 request-level Subscription Standard-Rate Equivalent 计价口径与 coverage。
-- loopback、Cookie、Host/Origin、CSP、只读 HTTP 安全边界。
+- loopback、Cookie、Host/Origin、CSP 与 HTTP method allowlist 安全边界；默认只读，仅 ADR-0029 的本机 Alerts operational POST 例外。
 - quota 的账号级语义。
 
 如果视觉需求确实需要 API/schema 变化，先停止当前视觉 commit，提出独立契约变更，并按仓库 ADR/测试规则另行处理。

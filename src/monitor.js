@@ -1,8 +1,18 @@
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
 import { CodexUsageClient, CodexUsageUnavailableError } from "./codex-usage-client.js";
+import {
+  ADVANCED_USAGE_DIAGNOSTICS_POLICY,
+  analyzeAdvancedUsageDiagnostics,
+} from "./advanced-diagnostics.js";
+import {
+  BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY,
+  analyzeBehavioralUsageDiagnostics,
+} from "./behavioral-diagnostics.js";
+import { analyzeUsageDiagnostics } from "./diagnostics.js";
 import { estimateRequestCost, pricingCatalogSummary } from "./pricing.js";
 import {
   readTaskPreview,
@@ -40,6 +50,7 @@ export class UsageMonitor extends EventEmitter {
     this.indexerPromise = null;
     this.pendingProcessPromise = null;
     this.closePromise = null;
+    this.diagnosticAlertCache = new Map();
     this.timelineDirtySessions = new Set();
     this.timelineStats = {
       dirtySessions: 0,
@@ -416,6 +427,340 @@ export class UsageMonitor extends EventEmitter {
     };
   }
 
+  diagnostics(sessionId, scope = { type: "session" }) {
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!hasImportedRequestProjection(indexState)) return null;
+    const normalizedScope = scope?.type === "day"
+      ? {
+          type: "day",
+          day: scope.day,
+          range: scope.range ?? resolveLocalDayRange(scope.day),
+        }
+      : { type: "session" };
+    const facts = this.database.getDiagnosticFacts(sessionId, {
+      range: normalizedScope.type === "day" ? normalizedScope.range : null,
+    });
+    const enrichedFacts = facts.map((fact) => Object.freeze({
+      ...fact,
+      costEstimate: estimateRequestCost(fact),
+    }));
+    const report = analyzeUsageDiagnostics(enrichedFacts);
+    const projection = this.database.getProjectionState();
+    return {
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            timezone: normalizedScope.range?.timezone ?? null,
+          }
+        : { type: "session" },
+      projectionGeneration: Number(projection?.generation ?? 0),
+      stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+      ...report,
+    };
+  }
+
+  advancedDiagnostics(sessionId, scope = { type: "session" }) {
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!hasImportedRequestProjection(indexState)) return null;
+    const normalizedScope = scope?.type === "day"
+      ? {
+          type: "day",
+          day: scope.day,
+          range: scope.range ?? resolveLocalDayRange(scope.day),
+        }
+      : { type: "session" };
+    const currentFacts = this.database.getDiagnosticFacts(sessionId, {
+      range: normalizedScope.type === "day" ? normalizedScope.range : null,
+    });
+    const projectPath = currentFacts.find((fact) => fact.projectPath)?.projectPath ?? null;
+    const observedTimes = currentFacts
+      .map((fact) => Date.parse(fact.observedAt))
+      .filter(Number.isFinite);
+    const firstObservedMs = observedTimes.length ? Math.min(...observedTimes) : null;
+    const lastObservedMs = observedTimes.length ? Math.max(...observedTimes) : null;
+    let historicalFacts = [];
+    let historicalSessionFacts = [];
+    if (projectPath && firstObservedMs != null && lastObservedMs != null) {
+      const before = new Date(lastObservedMs + 1).toISOString();
+      historicalFacts = this.database.getHistoricalDiagnosticFacts(sessionId, {
+        projectPath,
+        after: new Date(
+          firstObservedMs - ADVANCED_USAGE_DIAGNOSTICS_POLICY.requestHistory.horizonDays * 86_400_000,
+        ).toISOString(),
+        before,
+        maxSamplesPerCohort: ADVANCED_USAGE_DIAGNOSTICS_POLICY.requestHistory.maxSamplesPerCohort,
+      });
+      if (normalizedScope.type === "session") {
+        historicalSessionFacts = this.database.getHistoricalDiagnosticSessionFacts(sessionId, {
+          projectPath,
+          after: new Date(
+            firstObservedMs - ADVANCED_USAGE_DIAGNOSTICS_POLICY.sessionHistory.horizonDays * 86_400_000,
+          ).toISOString(),
+          before,
+          maxSlicesPerCohort: ADVANCED_USAGE_DIAGNOSTICS_POLICY.sessionHistory.maxSlicesPerCohort,
+        });
+      }
+    }
+    const enrich = (facts) => facts.map((fact) => Object.freeze({
+      ...fact,
+      costEstimate: estimateRequestCost(fact),
+    }));
+    const report = analyzeAdvancedUsageDiagnostics({
+      currentFacts: enrich(currentFacts),
+      historicalFacts: enrich(historicalFacts),
+      historicalSessionFacts: enrich(historicalSessionFacts),
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            startAt: new Date(normalizedScope.range.startMs).toISOString(),
+            endAt: new Date(normalizedScope.range.endMs).toISOString(),
+          }
+        : { type: "session" },
+    });
+    const { candidates: _shadowCandidates, ...publicReport } = report;
+    const projection = this.database.getProjectionState();
+    return {
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            timezone: normalizedScope.range?.timezone ?? null,
+          }
+        : { type: "session" },
+      projectionGeneration: Number(projection?.generation ?? 0),
+      stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+      ...publicReport,
+    };
+  }
+
+  behavioralDiagnostics(sessionId, scope = { type: "session" }) {
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!hasImportedRequestProjection(indexState)) return null;
+    const normalizedScope = scope?.type === "day"
+      ? {
+          type: "day",
+          day: scope.day,
+          range: scope.range ?? resolveLocalDayRange(scope.day),
+        }
+      : { type: "session" };
+    const currentFacts = this.database.getDiagnosticFacts(sessionId, {
+      range: normalizedScope.type === "day" ? normalizedScope.range : null,
+    });
+    const projectPath = currentFacts.find((fact) => fact.projectPath)?.projectPath ?? null;
+    const observedTimes = currentFacts
+      .map((fact) => Date.parse(fact.observedAt))
+      .filter(Number.isFinite);
+    const firstObservedMs = observedTimes.length ? Math.min(...observedTimes) : null;
+    const lastObservedMs = observedTimes.length ? Math.max(...observedTimes) : null;
+    let historicalFacts = [];
+    let historicalSessionFacts = [];
+    let historicalAmplificationSamples = [];
+    if (projectPath && firstObservedMs != null && lastObservedMs != null) {
+      const before = new Date(lastObservedMs + 1).toISOString();
+      historicalFacts = this.database.getHistoricalDiagnosticFacts(sessionId, {
+        projectPath,
+        after: new Date(
+          firstObservedMs - BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.requestHistory.horizonDays * 86_400_000,
+        ).toISOString(),
+        before,
+        maxSamplesPerCohort: BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.requestHistory.maxSamplesPerCohort,
+      });
+      if (normalizedScope.type === "session") {
+        historicalSessionFacts = this.database.getHistoricalDiagnosticSessionFacts(sessionId, {
+          projectPath,
+          after: new Date(
+            firstObservedMs - BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.burst.horizonDays * 86_400_000,
+          ).toISOString(),
+          before,
+          maxSlicesPerCohort: BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.burst.maxSlicesPerCohort,
+        });
+        historicalAmplificationSamples = this.database.getHistoricalSubagentAmplificationSamples(sessionId, {
+          projectPath,
+          after: new Date(
+            firstObservedMs - BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.subagentAmplification.horizonDays * 86_400_000,
+          ).toISOString(),
+          before,
+          maxSessions: BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.subagentAmplification.maxSessions,
+        });
+      }
+    }
+    const report = analyzeBehavioralUsageDiagnostics({
+      currentFacts,
+      historicalFacts,
+      historicalSessionFacts,
+      historicalAmplificationSamples,
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            startAt: new Date(normalizedScope.range.startMs).toISOString(),
+            endAt: new Date(normalizedScope.range.endMs).toISOString(),
+          }
+        : { type: "session" },
+    });
+    const { candidates: _shadowCandidates, ...publicReport } = report;
+    const projection = this.database.getProjectionState();
+    return {
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            timezone: normalizedScope.range?.timezone ?? null,
+          }
+        : { type: "session" },
+      projectionGeneration: Number(projection?.generation ?? 0),
+      stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+      ...publicReport,
+    };
+  }
+
+  diagnosticAlerts(sessionId, { includeAcknowledged = false } = {}) {
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!hasImportedRequestProjection(indexState)) return null;
+    const projectionGeneration = Number(this.database.getProjectionState()?.generation ?? 0);
+    const cached = this.diagnosticAlertCache.get(sessionId);
+    if (cached?.projectionGeneration === projectionGeneration) {
+      return materializeDiagnosticAlertReport(cached, {
+        includeAcknowledged,
+        stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+      });
+    }
+    const snapshot = this.snapshot(sessionId, { type: "session" });
+    if (!snapshot) return null;
+    const projectPath = snapshot.session?.projectPath ?? null;
+    if (!projectPath) return null;
+    const policy = {
+      sessionCostBudgetUsd: null,
+      minimumSeverity: "high",
+      cooldownMinutes: 60,
+      snoozedUntil: null,
+      updatedAt: null,
+      ...(this.database.getDiagnosticAlertPolicy(projectPath) ?? {}),
+      projectPath,
+    };
+    const acknowledgements = new Map(
+      this.database.getDiagnosticAlertAcknowledgements(sessionId)
+        .map((entry) => [entry.alertId, entry.acknowledgedAt]),
+    );
+    const local = this.diagnostics(sessionId);
+    const advanced = this.advancedDiagnostics(sessionId);
+    const behavioral = this.behavioralDiagnostics(sessionId);
+    const findings = [
+      ...(local?.findings ?? []),
+      ...(advanced?.findings ?? []),
+      ...(behavioral?.findings ?? []),
+    ];
+    const minimumSeverityRank = diagnosticSeverityRank(policy.minimumSeverity);
+    const alerts = findings
+      .filter((finding) => diagnosticSeverityRank(finding.severity) >= minimumSeverityRank)
+      .map((finding) => diagnosticFindingAlert(sessionId, finding, acknowledgements));
+    const cost = snapshot.summary?.totalCostEstimate ?? null;
+    if (
+      Number.isFinite(policy.sessionCostBudgetUsd) &&
+      policy.sessionCostBudgetUsd > 0 &&
+      cost?.status === "estimated" &&
+      Number.isFinite(cost.amountUsd) &&
+      cost.amountUsd >= policy.sessionCostBudgetUsd
+    ) {
+      alerts.push(diagnosticBudgetAlert({
+        sessionId,
+        projectPath,
+        budgetUsd: policy.sessionCostBudgetUsd,
+        amountUsd: cost.amountUsd,
+        pricingPolicyVersion: pricingCatalogSummary().policyVersion,
+        acknowledgements,
+      }));
+    }
+    alerts.sort(compareDiagnosticAlerts);
+    const snoozed = Number.isFinite(Date.parse(policy.snoozedUntil)) && Date.parse(policy.snoozedUntil) > Date.now();
+    const cacheEntry = {
+      sessionId,
+      projectPath,
+      projectionGeneration,
+      policy: {
+        sessionCostBudgetUsd: policy.sessionCostBudgetUsd,
+        minimumSeverity: policy.minimumSeverity,
+        cooldownMinutes: policy.cooldownMinutes,
+        snoozedUntil: policy.snoozedUntil,
+        updatedAt: policy.updatedAt,
+      },
+      snoozed,
+      allAlerts: alerts,
+    };
+    this.diagnosticAlertCache.set(sessionId, cacheEntry);
+    if (this.diagnosticAlertCache.size > 32) {
+      this.diagnosticAlertCache.delete(this.diagnosticAlertCache.keys().next().value);
+    }
+    return materializeDiagnosticAlertReport(cacheEntry, {
+      includeAcknowledged,
+      stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+    });
+  }
+
+  updateDiagnosticAlertPolicy(sessionId, input = {}) {
+    const snapshot = this.snapshot(sessionId, { type: "session" });
+    const projectPath = snapshot?.session?.projectPath ?? null;
+    if (!projectPath) return null;
+    const current = this.database.getDiagnosticAlertPolicy(projectPath) ?? {};
+    const sessionCostBudgetUsd = input.sessionCostBudgetUsd == null || input.sessionCostBudgetUsd === ""
+      ? null
+      : Number(input.sessionCostBudgetUsd);
+    if (sessionCostBudgetUsd != null && (!Number.isFinite(sessionCostBudgetUsd) || sessionCostBudgetUsd <= 0 || sessionCostBudgetUsd > 1_000_000)) {
+      throw new RangeError("sessionCostBudgetUsd 必须为空或位于 (0, 1000000] USD");
+    }
+    const minimumSeverity = input.minimumSeverity ?? current.minimumSeverity ?? "high";
+    if (!new Set(["warning", "high"]).has(minimumSeverity)) {
+      throw new RangeError("minimumSeverity 仅支持 warning/high");
+    }
+    const cooldownMinutes = input.cooldownMinutes == null
+      ? Number(current.cooldownMinutes ?? 60)
+      : Number(input.cooldownMinutes);
+    if (!Number.isInteger(cooldownMinutes) || cooldownMinutes < 5 || cooldownMinutes > 1_440) {
+      throw new RangeError("cooldownMinutes 必须是 5..1440 的整数");
+    }
+    const policy = this.database.upsertDiagnosticAlertPolicy(projectPath, {
+      sessionCostBudgetUsd,
+      minimumSeverity,
+      cooldownMinutes,
+      snoozedUntil: current.snoozedUntil ?? null,
+    });
+    this.diagnosticAlertCache.clear();
+    return policy;
+  }
+
+  acknowledgeDiagnosticAlert(sessionId, alertId) {
+    const report = this.diagnosticAlerts(sessionId, { includeAcknowledged: true });
+    if (!report) return null;
+    const alert = report.alerts.find((candidate) => candidate.alertId === alertId);
+    if (!alert) return false;
+    const acknowledgement = this.database.acknowledgeDiagnosticAlert(sessionId, alertId);
+    this.diagnosticAlertCache.delete(sessionId);
+    return acknowledgement;
+  }
+
+  snoozeDiagnosticAlerts(sessionId) {
+    const snapshot = this.snapshot(sessionId, { type: "session" });
+    const projectPath = snapshot?.session?.projectPath ?? null;
+    if (!projectPath) return null;
+    const current = this.database.getDiagnosticAlertPolicy(projectPath) ?? {
+      sessionCostBudgetUsd: null,
+      minimumSeverity: "high",
+      cooldownMinutes: 60,
+    };
+    const cooldownMinutes = Number(current.cooldownMinutes ?? 60);
+    const snoozedUntil = new Date(Date.now() + cooldownMinutes * 60_000).toISOString();
+    const policy = this.database.upsertDiagnosticAlertPolicy(projectPath, {
+      sessionCostBudgetUsd: current.sessionCostBudgetUsd ?? null,
+      minimumSeverity: current.minimumSeverity ?? "high",
+      cooldownMinutes,
+      snoozedUntil,
+    });
+    this.diagnosticAlertCache.clear();
+    return policy;
+  }
+
   health() {
     const parserHealth = this.parser?.snapshot().health ?? null;
     const storage = this.database.getHealthStats();
@@ -649,4 +994,79 @@ export class UsageMonitor extends EventEmitter {
 
 function hasImportedRequestProjection(indexState) {
   return Boolean(indexState?.requestLedgerReady && indexState.parseStatus !== "not_imported");
+}
+
+function diagnosticSeverityRank(value) {
+  if (value === "high") return 2;
+  if (value === "warning") return 1;
+  return 0;
+}
+
+function diagnosticFindingAlert(sessionId, finding, acknowledgements) {
+  const alertId = `alert_${finding.findingId}`;
+  return {
+    alertId,
+    kind: "diagnostic_finding",
+    severity: finding.severity,
+    type: finding.type,
+    family: finding.family ?? "local",
+    findingId: finding.findingId,
+    title: finding.type,
+    observedAt: finding.observedAt ?? null,
+    locator: finding.locator ?? finding.supportingLocator ?? null,
+    acknowledgedAt: acknowledgements.get(alertId) ?? null,
+    sessionId,
+  };
+}
+
+function diagnosticBudgetAlert({
+  sessionId,
+  projectPath,
+  budgetUsd,
+  amountUsd,
+  pricingPolicyVersion,
+  acknowledgements,
+}) {
+  const digest = createHash("sha256")
+    .update(JSON.stringify([sessionId, projectPath, budgetUsd, pricingPolicyVersion]))
+    .digest("hex")
+    .slice(0, 24);
+  const alertId = `budget_${digest}`;
+  return {
+    alertId,
+    kind: "session_cost_budget",
+    severity: "high",
+    type: "session_cost_budget",
+    family: "operational",
+    title: "Session 等值费用超过预算",
+    budgetUsd,
+    amountUsd,
+    ratio: budgetUsd > 0 ? amountUsd / budgetUsd : null,
+    pricingPolicyVersion,
+    acknowledgedAt: acknowledgements.get(alertId) ?? null,
+    sessionId,
+  };
+}
+
+function compareDiagnosticAlerts(left, right) {
+  const severity = diagnosticSeverityRank(right.severity) - diagnosticSeverityRank(left.severity);
+  if (severity !== 0) return severity;
+  return String(right.observedAt ?? "").localeCompare(String(left.observedAt ?? ""));
+}
+
+function materializeDiagnosticAlertReport(cacheEntry, { includeAcknowledged, stale }) {
+  const visible = cacheEntry.allAlerts.filter(
+    (alert) => includeAcknowledged || !alert.acknowledgedAt,
+  );
+  return {
+    sessionId: cacheEntry.sessionId,
+    projectPath: cacheEntry.projectPath,
+    projectionGeneration: cacheEntry.projectionGeneration,
+    stale,
+    policy: cacheEntry.policy,
+    snoozed: cacheEntry.snoozed,
+    alerts: cacheEntry.snoozed ? [] : visible,
+    suppressedBySnooze: cacheEntry.snoozed ? visible.length : 0,
+    acknowledgedCount: cacheEntry.allAlerts.filter((alert) => alert.acknowledgedAt).length,
+  };
 }

@@ -1341,3 +1341,88 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] 小结果集不展示无意义分页导航；长分页使用边界页 + 当前页的紧凑窗口，并且同时只展示一个 Request drawer。
 
 **Delivered evidence (2026-08-28):** `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check` 与 `git diff --check` 通过。Chrome/CDP 实测 Task synthetic 23 rows 全部保留，任务视口 `clientHeight=513 / scrollHeight=2287`、纵向 `scrollTop 80→240`；普通 SSE snapshot 保持同一 `.task-table-wrap` 且 `scrollLeft=473 / scrollTop=120` 不变。Task 到底时真实 wheel 使 workspace `931→1251` 而 wrap 保持 `1774/1774`；无纵向 overflow 时 workspace `639→319` 接管。真实 24-Request Task 默认 10 行，切换 5 条后变为 `第 1 / 5 页`；分页 `justify-content=center`，jump input=`type=text`，Lucide nav icon center delta=`0/0`，pagination animation=`pagination-enter`。展开第二个有 Request 的 Task 后 `openCount=1`，旧 Task `aria-expanded=false`、新 Task=`true`；父/子横向滚动和 720px 回归继续通过。
+
+## Phase 23: Usage Diagnostics
+
+### Overview
+
+在 canonical Request accounting 之上增加独立确定性诊断层，让监控器从“统计用了多少”升级为“解释哪里发生 Usage / Cache / Cost 异常”。设计事实源为 `docs/DESIGN-USAGE-DIAGNOSTICS.md`、技术实现为 `docs/TECHNICAL-IMPLEMENTATION-USAGE-DIAGNOSTICS.md`，长期决策见 ADR-0026。
+
+### V1 Tasks
+
+- [x] 冻结 `usage-diagnostics-v1` implementation contract：policy、Finding interface、deterministic identity、Session/Day scope invariant、Cost partial eligibility、pricing long-context seam、lazy SSE 策略和 Request locator。
+- [x] 新增 `src/diagnostics.js` 深模块及 `test/diagnostics.test.js`，实现 rolling median / baseline 规则。
+- [x] analyzer 使用 single-pass rolling state，确保同一 Request 不因 Session/Day scope 改变 baseline，并避免 O(N²) 历史回扫。
+- [x] 实现 Context Inflation relative + absolute gate。
+- [x] 实现 Cache Regression 和首次显著下降 breakpoint locator。
+- [x] 实现 Cost Spike；唯一费用来源继续为现有 `estimateRequestCost()`。
+- [x] 实现 Long Context Trigger，并严格复用 pricing feature evidence。
+- [x] `database.js` 增加一次性 canonical diagnostic facts query，避免 Task/Request N+1。
+- [x] `monitor.js/server.js` 增加 full/day lazy diagnostics read path，dirty session 不同步 replay rollout；常规 Session/SSE snapshot 不计算 diagnostics summary。
+- [x] 前端增加 lazy Session summary、finding panel、轻量 Request warning marker，并用 request ordinal + requestId 复用现有 Canonical Request 分页完成精确定位。
+- [x] 运行真实历史 shadow diagnostics report，审查 finding density / 误报并冻结 V1 policy revision。
+- [x] 完成 unit / DB / API / security / browser / performance / reconciliation / rollout hash gate。
+
+### Checkpoint
+
+- [x] Diagnostics 不改变任何 Request/Token/Cost accounting 数值。
+- [x] finding 可从异常摘要精确追溯到 canonical Request evidence。
+- [x] 初始 Session/SSE payload 不携带 finding 或 diagnostics summary，且 SSE 热路径不执行 analyzer。
+- [x] 常规 warm diagnostics API P95 目标 `<150ms`，大历史 session 单独记录 benchmark。
+- [x] Delivery 文档只有在所有实际验证完成后才从 `Implementation Pending` 改为 `Implemented`。
+
+**Delivered evidence (2026-09-01):** `src/diagnostics.js` 已实现四类 V1 finding 与 `usage-diagnostics-v1` single-pass policy；pricing 新增唯一 `longContextCandidate` seam，DB/API/UI 均保持 schema v14 / projection v2。真实 shadow 扫描 `245 sessions / 30,201 canonical Requests`，得到 `4,068 findings / 3,048 unique affected Requests`，保留当前阈值 revision。真实 HTTP P95：常规 70-Request session `6.206ms`，最大 1,464-Request session `80.049ms`。Chrome/CDP 1440×900 / 720×900 验证 lazy panel、跨页 Request locator、SSE state preservation。正式 accounting 前后均为 `30,201 Requests / 3,712,877,422 total tokens / $2569.48648723 known calendar cost`；450 rollout manifest SHA-256 前后均为 `8d535514aef5b8dff3fa532afeb01922fc2e9e46941bf52d5899fc3cf0a02fee`。
+
+## Phase 24: Advanced Usage Diagnostics
+
+### Overview
+
+在 Phase 23 Local Diagnostics 稳定基线上增加独立 Historical Robust Diagnostics，不改写 `usage-diagnostics-v1`。设计事实源为 `docs/DESIGN-ADVANCED-USAGE-DIAGNOSTICS.md`，技术实现为 `docs/TECHNICAL-IMPLEMENTATION-ADVANCED-USAGE-DIAGNOSTICS.md`，交付契约为 `docs/DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md`，长期约束见 ADR-0027。
+
+当前状态：**Phase 24A Implemented / Verified；Phase 24B1 Behavioral Diagnostics Implemented / Verified；Phase 24B2 Budget / In-app Notification Implemented / Verified；LLM Root-Cause Explanation Pending**。
+
+### Phase 24A Tasks
+
+- [x] Freeze structural contract：exact project/model/known-effort cohort、current Session exclusion、MAD=0、Cost tier/rate isolation、Session-slice weighting、V1/V2 独立 interface、shadow-first lifecycle。
+- [x] 新增 `src/advanced-diagnostics.js` 与 `test/advanced-diagnostics.test.js`，先用 worked examples 完成 Median/MAD/Robust-Z TDD。
+- [x] 实现 strict cohort builder；unknown effort 不 fallback，project/model 不自动 broaden。
+- [x] `database.js` 增加 bounded historical canonical facts query；优先 SQL per-cohort cap，禁止 Project 全历史无界装入内存。
+- [x] benchmark query plan；实测现有 schema v14 index 足够，未新增 persisted diagnostic sample table。
+- [x] 实现 Historical Context / Cache / Cost shadow candidates；Cost 只接受 estimated + same service tier + same rateVersion。
+- [x] 实现 Session Cohort Slice；同一 prior Session 同 cohort 只贡献一个 sample。
+- [x] 实现 Cross-session Regression shadow candidates。
+- [x] 新增 `shadow:advanced-usage-diagnostics`，输出 cohort coverage、insufficient history、unknown effort、degenerate MAD、Robust-Z/effect 分布、threshold-adjacent/high-tail 与 V1 overlap。
+- [x] 人工审查 threshold 边缘与 high tail；冻结 practical-effect gate，未为减少报警数量任意抬阈值。
+- [x] shadow 通过后冻结 `advanced-usage-diagnostics-v1`。
+- [x] 新增独立 lazy `/advanced-diagnostics` full/day read path；Phase 23 `/diagnostics` contract 不变且不同步 replay rollout。
+- [x] UI 在现有 Diagnostics 中区分 Local / Historical / Cross-session，并显示 sample count、median、MAD、Robust-Z、effect 和 cohort evidence。
+- [x] 复用 Canonical Request locator；Cross-session finding 使用 supporting Request locator，不建设第二套 viewer。
+- [x] 新增 advanced benchmark；20 轮 warm common P95 `84.298ms`，largest real project/session P95 `416.362ms`。
+- [x] 执行 unit / DB / API / security / browser / performance / accounting / rollout-hash gates。
+- [x] 所有真实门槛完成后把 Phase 24A Delivery 改为 `Implemented / Verified`。
+
+### Phase 24B Tasks
+
+- [x] Phase 24B1 structural contract：Reasoning 使用 reasoning/output share + absolute reasoning gate；Burst 只计 canonical model Request、60s sliding window + 120s evidence episode；Subagent Amplification 使用 exact-project prior multi-agent Session baseline，不做全局 fallback。
+- [x] Reasoning Anomaly：reasoning/output share + minimum denominator + strict historical cohort + Robust-Z/effect gate；真实 shadow 后冻结并接入 lazy API/UI。
+- [x] Request Burst：canonical Request 60s sliding window + 120s evidence episode；真实 historical Session-slice baseline、shadow、freeze、lazy API/UI。
+- [x] Subagent Amplification：root/descendant canonical Token/Request lineage metric + exact-project prior multi-agent baseline；真实 shadow、freeze、lazy API/UI。
+- [x] 新增 `shadow:behavioral-usage-diagnostics` 与 `benchmark:behavioral-usage-diagnostics`；Behavioral policy 冻结为 `behavioral-usage-diagnostics-v1`。
+- [x] Behavioral UI 分为 `Behavioral · Request / Behavioral · Session`，显示 n/median/MAD/Z/effect 并复用 Canonical Request locator/supporting locator。
+- [x] 20 轮 warm performance gate：common P95 `85.607ms`，最大真实工程最新 Session P95 `381.353ms`。
+- [x] Chrome/CDP 1440×900 / 720×900 真实验证 Behavioral finding、Request locator、SSE state、focus/scroll 与窄屏 viewport。
+- [x] Budget / Notification：ADR-0029；schema v15 operational tables；工程级 Session Standard-Rate Equivalent Budget；Warning/High；Ack；Snooze/cooldown；本机 in-app Alerts；严格 POST allowlist。
+- [x] Alerts projection-generation scoped cache：generation/policy/Ack/Snooze 失效，最多 32 Session；steady-state warm 20 轮 common P95 `2.208ms`、最大真实工程最新 Session P95 `2.335ms`。
+- [x] Phase 24B2 DB/API、安全、1440/720 Chrome、accounting/calendar reconciliation、rollout manifest、全量 test/check/diff gate 完成。
+- [ ] LLM Root-Cause Explanation：实施前必须新增独立 ADR，冻结 explicit opt-in、data egress、model-call cost 与 deterministic finding 分离规则。
+
+### Checkpoint
+
+- [x] Phase 23 Local finding id/severity/policy 在 Phase 24 启用后完全不变。
+- [x] Historical sample 不包含 current Session 或 future facts。
+- [x] MAD=0 / insufficient history 是 coverage 状态，不冒充“没有异常”。
+- [x] 24A 仍 metadata-only / no-model-call / no-new-network。
+- [x] Robust-Z threshold 只在真实 shadow review 后才冻结为 production rule。
+- [x] 24B2 仅增加本机 operational write，不发送外部通知，不改变 deterministic finding/accounting。
+
+**Delivered evidence (2026-09-02):** Phase 24A `advanced-usage-diagnostics-v1` final shadow 为 `4,490 findings / 30,198 Requests`；20 轮最大真实工程 P95 `416.362ms`。Phase 24B1 `behavioral-usage-diagnostics-v1` final shadow 为 `26 findings / 30,198 Requests`（Reasoning `24`、Burst `1`、Subagent Amplification `1`，约 `0.09/100`）；20 轮 warm common P95 `85.607ms`、最大真实工程最新 Session P95 `381.353ms`。Chrome/CDP 已验证 Behavioral Session Burst 的 `n=13 / median=8 / MAD=2 / Z=3.71` 与 Canonical Request evidence locator。Phase 24B2 已完成 schema v15 operational state、Budget/Ack/Snooze 与本机 Alerts；最终 steady-state warm P95 为 `2.208ms / 2.335ms`（common / 最大真实工程最新 Session）。最终 schema v15 reconciliation 为 canonical/calendar `30,201 Requests / 3,712,877,422 total tokens`，known calendar cost `$2569.48648723`，projection v2 generation `8191`；`.codex` 仍为 450 rollout、manifest `8d535514aef5b8dff3fa532afeb01922fc2e9e46941bf52d5899fc3cf0a02fee`。`npm test`=`176 / 175 pass / 0 fail / 1 optional skip`，`npm run check` 与 `git diff --check` Green。LLM Explanation 仍 Pending。

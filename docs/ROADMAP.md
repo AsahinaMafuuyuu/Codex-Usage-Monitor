@@ -2,6 +2,45 @@
 
 路线图描述候选方向，不是已承诺交付。优先级变化应先更新本文件和相关 ADR。
 
+## 已完成：Usage Diagnostics
+
+- Phase 23 V1：基于 canonical Request 实现 Context Inflation、Cache Regression/Breakpoint、Cost Spike、Long Context Trigger。
+- 诊断采用独立、确定性、版本化 projection，不改变 Request Ledger / ownership / pricing accounting，也不读取 Prompt/Response。
+- 第一版 compute-on-read，不新增 SQLite schema；真实历史 shadow report、性能、浏览器与 accounting/read-only 门槛已通过并进入用户可见交付。
+- Phase 24A 已继续交付 `projectPath + model + effort` historical cohort、Median + MAD / Robust-Z 与跨 Session regression；Phase 24B1 已交付 Reasoning anomaly、Request burst 与 Subagent amplification；Phase 24B2 的 Budget / In-app Notification 也已交付。
+
+设计与实现边界见 [DESIGN-USAGE-DIAGNOSTICS.md](DESIGN-USAGE-DIAGNOSTICS.md)、[TECHNICAL-IMPLEMENTATION-USAGE-DIAGNOSTICS.md](TECHNICAL-IMPLEMENTATION-USAGE-DIAGNOSTICS.md) 与 [ADR-0026](decisions/0026-deterministic-usage-diagnostics-projection.md)。
+
+## 已完成：Phase 24A Advanced Usage Diagnostics
+
+Phase 24A、Phase 24B1 与 Phase 24B2 Budget / In-app Notification 均已实现并验证；剩余项只有可选 LLM Root-Cause Explanation。
+
+### Phase 24A：Historical Robust Diagnostics
+
+- strict historical cohort：exact `projectPath + model + known effort`；样本不足时不跨 cohort 猜测。
+- bounded historical request window + Median / MAD / Robust Z-Score。
+- Historical Context / Cache / Cost diagnostics；Cost 额外隔离 service tier 与 pricing rate version。
+- Session Cohort Slice + Cross-session Regression；一个 prior Session 对同 cohort 只贡献一个 sample，避免大 Session 支配 baseline。
+- 已完成 deterministic fixture + real-history shadow，并冻结 `advanced-usage-diagnostics-v1` threshold/effect gates；独立 lazy API/UI、Canonical Request locator、20 轮性能门槛与浏览器回归均已通过。
+
+### Phase 24B1：Behavioral Diagnostics（已完成）
+
+- Reasoning Anomaly：reasoning/output share + minimum denominator + exact project/model/effort historical robust baseline。
+- Request Burst：canonical Request 60 秒 sliding window + prior Session Slice Robust Baseline；120 秒 idle gap 只解释 supporting episode。
+- Subagent Amplification：descendant/root canonical token ratio + exact-project prior multi-agent Session baseline，不跨工程 fallback。
+- `behavioral-usage-diagnostics-v1` 已冻结；final shadow `26 findings / 30,198 Requests`，20 轮最大真实工程 P95 `381.353ms`。
+- 独立 lazy API 与 `Behavioral · Request / Behavioral · Session` UI 均已交付并复用 Canonical Request audit。
+
+### Phase 24B2：Budget / In-app Notification（已完成）
+
+- schema v15 仅新增 alert policy / acknowledgement operational tables，不改变 canonical accounting projection。
+- 工程级 Session `Subscription Standard-Rate Equivalent` Budget、Warning/High 最低等级、Ack、Snooze/cooldown 已交付。
+- 通知仅显示在本机页面，不发送邮件/Webhook/外部通知；本地 POST 仅开放明确 allowlist。
+- projection-generation scoped Alerts cache 已交付，steady-state warm 20 轮 P95 为 common `2.208ms`、最大真实工程最新 Session `2.335ms`。
+- 可选 LLM Root-Cause Explanation 仍 Pending；该能力会突破 no-model-call / no-new-network 边界，实施前必须独立 ADR 和 opt-in/data-egress 设计。
+
+Phase 24A/24B1/24B2 都不修改 Phase 23 `usage-diagnostics-v1` 或 canonical Request accounting。24B2 的本地 operational state 由 [ADR-0029](decisions/0029-local-diagnostic-budget-notification-state.md) 单独约束。设计见 [DESIGN-ADVANCED-USAGE-DIAGNOSTICS.md](DESIGN-ADVANCED-USAGE-DIAGNOSTICS.md)、[TECHNICAL-IMPLEMENTATION-ADVANCED-USAGE-DIAGNOSTICS.md](TECHNICAL-IMPLEMENTATION-ADVANCED-USAGE-DIAGNOSTICS.md)、[DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md](DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md)、[ADR-0027](decisions/0027-historical-robust-usage-diagnostics.md)、[ADR-0028](decisions/0028-deterministic-behavioral-usage-diagnostics.md) 与 [ADR-0029](decisions/0029-local-diagnostic-budget-notification-state.md)。
+
 ## 近期：MVP 稳定性
 
 - 固化更多脱敏 fixture：并发、嵌套、终止、legacy 无 ordinal、未知事件、坏行和归档移动。

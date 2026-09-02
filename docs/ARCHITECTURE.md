@@ -107,7 +107,7 @@ Historical Rate Resolver 使用 `model + observedAt` 选择唯一有效期记录
 
 ## 持久化边界
 
-SQLite schema v14 包含 `sessions`、`agents`、`tasks`、`model_usage_events`、`canonical_requests`、`task_ownership`、`event_ownership`、`quota_snapshots`、`ingest_cursors`、`session_day_usage` 和 `derived_state`。`model_usage_events` 是完整 raw evidence archive；`canonical_requests` 是 Token/Cost 主业务事实；ownership 表保留 copy/unresolved provenance；`session_day_usage` 持久化 canonical request-day Token/Cost/coverage。USD 仍是可重建 derived projection，不是 billing truth。
+SQLite 当前 schema 为 v15。v14 已包含 `sessions`、`agents`、`tasks`、`model_usage_events`、`canonical_requests`、`task_ownership`、`event_ownership`、`quota_snapshots`、`ingest_cursors`、`session_day_usage` 和 `derived_state`；v15 只新增 `diagnostic_alert_policies` 与 `diagnostic_alert_acknowledgements` 两张 operational state 表。`model_usage_events` 是完整 raw evidence archive；`canonical_requests` 是 Token/Cost 主业务事实；ownership 表保留 copy/unresolved provenance；`session_day_usage` 持久化 canonical request-day Token/Cost/coverage。Alerts operational state 不参与 Request Ledger、ownership、pricing 或 calendar projection。USD 仍是可重建 derived projection，不是 billing truth。
 
 旧 schema 的 `rollout_path` / `source_path` 只作为迁移兼容列存在：能够确定映射到 `.codex` 内 rollout 的路径会提取相对 key，随后绝对 locator 置空；无法安全映射的 cursor 不被猜测，而是在后续需要时安全 replay。quota JSON 中的绝对 `sourcePath` 同样被移除。`project_path` 不做这种转换，因为它描述的是会话发生时的工程 `cwd`，不是源文件身份。
 

@@ -161,6 +161,56 @@
               </div>
               <div id="quota-windows" class="quota-windows"></div>
             </article>
+
+            <article class="diagnostics-card">
+              <button id="diagnostics-toggle" class="diagnostics-toggle" type="button" aria-expanded="false" aria-controls="diagnostics-panel">
+                <span class="diagnostics-card-copy">
+                  <span>Usage Diagnostics</span>
+                  <small>确定性分析 · Canonical Request evidence</small>
+                </span>
+                <strong id="diagnostics-summary">正在分析…</strong>
+                <i data-lucide="chevron-down" aria-hidden="true"></i>
+              </button>
+            </article>
+          </section>
+
+          <section id="diagnostics-panel" class="diagnostics-panel" aria-label="Usage Diagnostics 明细" hidden>
+            <div id="diagnostics-state" class="diagnostics-state">正在读取诊断结果…</div>
+            <section class="diagnostic-alert-center" aria-labelledby="diagnostic-alert-title">
+              <header class="diagnostic-alert-heading">
+                <div>
+                  <strong id="diagnostic-alert-title">Alerts / 等值预算</strong>
+                  <span id="diagnostic-alert-summary">未配置预算 · High alerts</span>
+                </div>
+                <button id="diagnostic-alert-snooze" class="diagnostic-alert-action" type="button">Snooze</button>
+              </header>
+              <form id="diagnostic-alert-policy-form" class="diagnostic-alert-policy">
+                <label>
+                  <span>Session 等值预算 USD</span>
+                  <input id="diagnostic-budget-usd" type="number" min="0.000001" max="1000000" step="0.01" inputmode="decimal" placeholder="关闭">
+                </label>
+                <label>
+                  <span>最低等级</span>
+                  <select id="diagnostic-alert-severity">
+                    <option value="high">High</option>
+                    <option value="warning">Warning</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Cooldown</span>
+                  <select id="diagnostic-alert-cooldown">
+                    <option value="15">15 min</option>
+                    <option value="60" selected>60 min</option>
+                    <option value="240">4 h</option>
+                    <option value="1440">24 h</option>
+                  </select>
+                </label>
+                <button class="diagnostic-alert-save" type="submit">保存</button>
+              </form>
+              <p class="diagnostic-alert-note">预算按 Subscription Standard-Rate Equivalent 判断，不代表 Plus 实际扣费。通知仅显示在本机页面，不外发。</p>
+              <div id="diagnostic-alerts" class="diagnostic-alert-list"></div>
+            </section>
+            <div id="diagnostics-findings" class="diagnostics-findings"></div>
           </section>
 
           <section class="agent-section">

@@ -4,8 +4,21 @@
 
 ## [Unreleased]
 
+### Added
+
+- Phase 23 Usage Diagnostics：在 `canonical_requests` 之上增加独立、确定性、compute-on-read 的 Context Inflation、Cache Regression/Breakpoint、Cost Spike 与 Long Context Trigger；支持 Session/Day 连续 baseline、版本化 finding evidence 和 lazy `GET /api/sessions/:id/diagnostics`。
+- 页面增加低噪声 Diagnostics summary/finding panel，以及复用现有 Canonical Request 分页的精确 Request locator；常规 Session/SSE snapshot 不内嵌 diagnostics payload。新增只读 shadow、performance benchmark 与 Phase 23 accounting/rollout fingerprint CLI。
+- Phase 24A Advanced Usage Diagnostics：新增独立 `src/advanced-diagnostics.js`，以 exact project/model/known-effort cohort、Median/MAD/Robust-Z 与 practical-effect gate 检测 Historical Context/Cache/Cost anomaly，并以一 Session 一 sample 的 Session Cohort Slice 检测 Cross-session Context/Cache/Cost regression；Cost 严格隔离 service tier / pricing rate version。
+- 新增 lazy `GET /api/sessions/:id/advanced-diagnostics[?day=...]`、Advanced shadow/benchmark CLI，以及 Local / Historical / Cross-session 三层 UI；Historical evidence 展示 sample count、median、MAD、Z/effect，Request 与 Cross-session supporting evidence 均复用现有 Canonical Request audit。20 轮 warm benchmark 达到 common P95 `84.298ms`、最大真实工程最新 Session P95 `416.362ms`，未新增 SQLite schema/table。
+- Phase 24B1 Behavioral Diagnostics：新增独立 `src/behavioral-diagnostics.js`，以 canonical metadata + historical robust baseline 检测 Reasoning Anomaly、Request Burst 与 Subagent Amplification；冻结 `behavioral-usage-diagnostics-v1`，新增 lazy `/behavioral-diagnostics`、shadow/benchmark CLI 和 `Behavioral · Request / Behavioral · Session` UI family。
+- Behavioral final shadow 在 `30,198` canonical Requests 上得到 `26` findings（Reasoning `24`、Burst `1`、Subagent Amplification `1`，约 `0.09/100`）；20 轮 warm benchmark common P95 `85.607ms`、最大真实工程最新 Session P95 `381.353ms`。常规 SSE、SQLite schema、accounting 与 `.codex` read-only 边界保持不变。
+- Phase 24B2 Budget / In-app Notification：新增工程级 Session `Subscription Standard-Rate Equivalent` Budget、Warning/High 最低提醒等级、Ack、Snooze/cooldown 与本机 Alerts center；不发送邮件、Webhook 或外部通知。新增 Accepted ADR-0029、lazy `GET /diagnostic-alerts` 与严格 allowlist 的 policy/Ack/Snooze POST API。
+- Alerts 增加 projection-generation scoped deterministic cache，generation/policy/Ack/Snooze 变化时失效并限制最多 32 个 Session；最终 steady-state 20 轮 warm HTTP common P95 `2.208ms`、最大真实工程最新 Session P95 `2.335ms`。
+
 ### Changed
 
+- SQLite schema `v14 -> v15`，仅新增 `diagnostic_alert_policies` / `diagnostic_alert_acknowledgements` operational tables；canonical Request、Request Ledger、ownership、pricing 与 calendar accounting projection 语义保持不变。
+- HTTP 写入边界从“所有 POST 拒绝”收敛为仅允许 Phase 24B2 明确列出的本机 POST 路由；Host / Origin / Strict Cookie 继续强制，其他 POST 仍返回 `405`。
 - 账号额度从“重新扫描本机 rollout `rate_limits`”切换为只读查询 Codex 官方 Usage：监控器每次读取当前全局 `config.toml` / `auth.json`，按官方 backend-client 的 `/backend-api/wham/usage` 或 `/api/codex/usage` routing 获取账号级额度；启动时立即查询，并默认每 60 秒自动刷新。
 - 手动 `/api/quota?refresh=1` 与后台额度轮询共享 in-flight 请求；认证/网络失败不会阻断本地 Request Ledger，显式刷新以脱敏 `503` 报告。凭据/account id 不持久化，rollout 中历史 quota 不再作为 current quota 或由 session persistence 继续写入。
 

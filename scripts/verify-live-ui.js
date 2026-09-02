@@ -183,10 +183,11 @@ try {
 
   const requestDrilldown = await verifyRequestDrilldown(cdp);
   const taskScroll = await verifyTaskScroll(cdp);
+  const diagnostics = await verifyDiagnostics(cdp);
   const scopedNavigation = await verifyScopedNavigation(cdp);
   const narrow = await verifyNarrowViewport(cdp);
 
-  console.log(JSON.stringify({ collapsed, structural, requestDrilldown, taskScroll, scopedNavigation, narrow }, null, 2));
+  console.log(JSON.stringify({ collapsed, structural, requestDrilldown, taskScroll, diagnostics, scopedNavigation, narrow }, null, 2));
 } finally {
   try { socket?.close(); } catch {}
   chrome.kill();
@@ -197,13 +198,18 @@ try {
 async function verifyRequestDrilldown(cdp) {
   const target = await cdp.evaluate(`(() => {
     const buttons = [...document.querySelectorAll('.task-request-toggle')];
-    const button = buttons.find((candidate) => Number.parseInt(candidate.querySelector('span')?.textContent ?? '0', 10) > 0);
+    const requestCount = (candidate) => Number.parseInt(candidate.querySelector('.request-count-pill')?.textContent ?? '0', 10);
+    const button = buttons.find((candidate) => requestCount(candidate) >= 10);
     if (!button) return null;
     const row = button.closest('.task-row');
     button.click();
-    return { threadId: row?.dataset.threadId ?? null, turnId: row?.dataset.taskId ?? null };
+    return {
+      threadId: row?.dataset.threadId ?? null,
+      turnId: row?.dataset.taskId ?? null,
+      requestCount: requestCount(button),
+    };
   })()`);
-  assert(target?.threadId && target?.turnId, "no task with canonical Requests was available for drill-down QA");
+  assert(target?.threadId && target?.turnId, "no task with at least 10 canonical Requests was available for pagination QA");
   await waitFor(async () => cdp.evaluate(`(() => {
     const detail = [...document.querySelectorAll('.task-request-row')]
       .find((row) => row.dataset.taskDetailId === ${JSON.stringify(target.turnId)});
@@ -514,6 +520,276 @@ async function verifyTaskScroll(cdp) {
   return { ...setup, bottomChain, noOverflowSetup, noOverflowChain };
 }
 
+async function verifyDiagnostics(cdp) {
+  await cdp.evaluate(`document.querySelector('[data-session-view="project"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(document.querySelector('[data-session-view="project"].active'))`), "project scope before diagnostics QA");
+  const target = await cdp.evaluate(`(async () => {
+    const currentId = document.querySelector('#session-id')?.textContent?.trim() ?? '';
+    const candidates = [];
+    if (currentId) candidates.push(currentId);
+    const sessionsPayload = await fetch('/api/sessions').then((response) => response.json());
+    for (const session of sessionsPayload.sessions ?? []) {
+      if (!candidates.includes(session.id)) candidates.push(session.id);
+      if (candidates.length >= 50) break;
+    }
+    for (const sessionId of candidates) {
+      const [localResponse, advancedResponse] = await Promise.all([
+        fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/diagnostics'),
+        fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/advanced-diagnostics'),
+      ]);
+      if (!localResponse.ok || !advancedResponse.ok) continue;
+      const report = await localResponse.json();
+      const advanced = await advancedResponse.json();
+      const finding = (report.findings ?? []).find((candidate) =>
+        candidate?.requestId && candidate?.threadId && candidate?.turnId &&
+        Number.isInteger(candidate?.locator?.requestOrdinalInScope)
+      );
+      const advancedFinding = (advanced.findings ?? []).find((candidate) =>
+        candidate?.family === 'historical' && candidate?.locator?.requestId &&
+        candidate?.locator?.threadId && candidate?.locator?.turnId &&
+        Number.isInteger(candidate?.locator?.requestOrdinalInScope)
+      );
+      if (finding && advancedFinding) return {
+        sessionId,
+        findingId: finding.findingId,
+        advancedFindingId: advancedFinding.findingId,
+      };
+    }
+    return null;
+  })()`);
+  assert(target?.sessionId && target?.findingId && target?.advancedFindingId,
+    "no session with locatable Local and Historical Usage Diagnostics findings was found in the first 50 sessions");
+
+  const activeId = await cdp.evaluate(`document.querySelector('#session-id')?.textContent?.trim() ?? ''`);
+  if (activeId !== target.sessionId) {
+    const clicked = await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('[data-session-id]')]
+        .find((candidate) => candidate.dataset.sessionId === ${JSON.stringify(target.sessionId)} && !candidate.dataset.sessionDay);
+      button?.click();
+      return Boolean(button);
+    })()`);
+    assert(clicked, `diagnostics target session ${target.sessionId} is not present in project navigation`);
+    await waitFor(async () => cdp.evaluate(`document.querySelector('#session-id')?.textContent?.trim() === ${JSON.stringify(target.sessionId)}`), "diagnostics target session selection");
+  }
+
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const summary = document.querySelector('#diagnostics-summary')?.textContent?.trim() ?? '';
+    return summary && !summary.includes('正在分析') && !summary.includes('等待会话') && !summary.includes('读取失败');
+  })()`), "lazy diagnostics summary");
+
+  const lazyState = await cdp.evaluate(`(() => {
+    const snapshot = JSON.parse(window.__codexLiveUiQa?.snapshotData ?? 'null');
+    return {
+      summary: document.querySelector('#diagnostics-summary')?.textContent?.trim() ?? '',
+      snapshotHasDiagnostics: Boolean(snapshot && (
+        Object.prototype.hasOwnProperty.call(snapshot, 'diagnostics') ||
+        Object.prototype.hasOwnProperty.call(snapshot, 'diagnosticSummary')
+      )),
+      panelInitiallyHidden: Boolean(document.querySelector('#diagnostics-panel')?.hidden),
+    };
+  })()`);
+  assert(!lazyState.snapshotHasDiagnostics, "regular SSE snapshot eagerly carries Diagnostics payload");
+  assert(lazyState.panelInitiallyHidden, "Diagnostics panel is not collapsed by default");
+
+  await cdp.evaluate(`document.querySelector('#diagnostics-toggle')?.click()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(
+    !document.querySelector('#diagnostics-panel')?.hidden &&
+    document.querySelector('.diagnostic-finding') &&
+    document.querySelector('[data-diagnostic-locate]')
+  )`), "diagnostics finding panel");
+
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const text = document.querySelector('#diagnostic-alert-summary')?.textContent?.trim() ?? '';
+    return Boolean(text && !text.includes('正在读取') && !text.includes('未加载') && !text.includes('读取失败'));
+  })()`), "diagnostic alerts lazy load");
+
+  const alertState = await cdp.evaluate(`(() => ({
+    summary: document.querySelector('#diagnostic-alert-summary')?.textContent?.trim() ?? '',
+    budgetValue: document.querySelector('#diagnostic-budget-usd')?.value ?? null,
+    severity: document.querySelector('#diagnostic-alert-severity')?.value ?? null,
+    cooldown: document.querySelector('#diagnostic-alert-cooldown')?.value ?? null,
+    formPresent: Boolean(document.querySelector('#diagnostic-alert-policy-form')),
+    note: document.querySelector('.diagnostic-alert-note')?.textContent?.trim() ?? '',
+    alertCount: document.querySelectorAll('.diagnostic-alert-item').length,
+  }))()`);
+  assert(alertState.formPresent, "Diagnostic Alerts policy form is missing");
+  assert(alertState.severity === 'high' || alertState.severity === 'warning',
+    `Diagnostic Alerts severity is invalid: ${alertState.severity}`);
+  assert(/Subscription Standard-Rate Equivalent/u.test(alertState.note),
+    `Diagnostic Alerts budget disclaimer is missing: ${alertState.note}`);
+  assert(/不外发/u.test(alertState.note),
+    `Diagnostic Alerts local-only notification boundary is missing: ${alertState.note}`);
+
+  const familyState = await cdp.evaluate(`(() => ({
+    families: [...document.querySelectorAll('[data-diagnostic-family]')].map((section) => ({
+      family: section.dataset.diagnosticFamily,
+      heading: section.querySelector('.diagnostics-family-heading strong')?.textContent?.trim() ?? '',
+      count: Number(section.querySelector('.diagnostics-family-heading code')?.textContent ?? '0'),
+    })),
+    advancedText: [...document.querySelectorAll('[data-diagnostic-family="historical"] .diagnostic-meta')]
+      .map((element) => element.textContent).join(' '),
+  }))()`);
+  assert(familyState.families.map((entry) => entry.family).join(',') === 'local,historical,cross_session,behavioral_request,behavioral_session',
+    `Diagnostics baseline families are wrong: ${JSON.stringify(familyState.families)}`);
+  assert(familyState.families.find((entry) => entry.family === 'historical')?.count > 0,
+    "Historical Diagnostics group has no finding for the selected QA session");
+  assert(/median/u.test(familyState.advancedText) && /MAD/u.test(familyState.advancedText) && /Z\s/u.test(familyState.advancedText),
+    `Historical finding does not expose median/MAD/Robust-Z evidence: ${familyState.advancedText}`);
+
+  const locateTarget = await cdp.evaluate(`(() => {
+    const control = document.querySelector('[data-diagnostic-family="local"] [data-diagnostic-locate]');
+    if (!control) return null;
+    const finding = control.closest('.diagnostic-finding');
+    const requestId = finding?.querySelector('.diagnostic-meta code')?.getAttribute('title') ?? null;
+    window.__codexLiveUiQa.diagnosticPanel = document.querySelector('#diagnostics-panel');
+    control.click();
+    return {
+      findingId: control.dataset.diagnosticLocate,
+      requestId,
+    };
+  })()`);
+  assert(locateTarget?.requestId, "Diagnostics locate action could not resolve its canonical finding");
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const row = [...document.querySelectorAll('tr[data-request-id]')]
+      .find((candidate) => candidate.dataset.requestId === ${JSON.stringify(locateTarget.requestId)});
+    return Boolean(row?.classList.contains('diagnostic-target'));
+  })()`), "diagnostics canonical Request location");
+
+  const located = await cdp.evaluate(`(() => {
+    const row = [...document.querySelectorAll('tr[data-request-id]')]
+      .find((candidate) => candidate.dataset.requestId === ${JSON.stringify(locateTarget.requestId)});
+    const detail = row?.closest('.task-request-row');
+    const panel = document.querySelector('#diagnostics-panel');
+    return {
+      rowFound: Boolean(row),
+      highlighted: Boolean(row?.classList.contains('diagnostic-target')),
+      requestId: row?.dataset.requestId ?? null,
+      drawerOpen: detail?.dataset.open === 'true',
+      marker: row?.querySelector('.request-diagnostic-marker')?.textContent?.trim() ?? null,
+      panelOpen: Boolean(panel && !panel.hidden),
+    };
+  })()`);
+  assert(located.rowFound && located.requestId === locateTarget.requestId, "Diagnostics locator opened the wrong canonical Request");
+  assert(located.highlighted, "Diagnostics locator did not apply the lightweight target highlight");
+  assert(located.drawerOpen, "Diagnostics locator did not open the existing canonical Request drawer");
+  assert(Number(located.marker) >= 1, "located Request does not expose its lightweight Diagnostics marker");
+  assert(located.panelOpen, "Diagnostics locator unexpectedly collapsed the finding panel");
+
+  const afterSse = await cdp.evaluate(`(() => {
+    const panel = window.__codexLiveUiQa.diagnosticPanel;
+    window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', {
+      data: window.__codexLiveUiQa.snapshotData,
+    }));
+    const row = [...document.querySelectorAll('tr[data-request-id]')]
+      .find((candidate) => candidate.dataset.requestId === ${JSON.stringify(locateTarget.requestId)});
+    return {
+      samePanel: Boolean(panel?.isConnected && document.contains(panel)),
+      panelOpen: Boolean(panel && !panel.hidden),
+      drawerOpen: row?.closest('.task-request-row')?.dataset.open === 'true',
+      requestStillPresent: Boolean(row),
+    };
+  })()`);
+  assert(afterSse.samePanel && afterSse.panelOpen, "SSE snapshot replaced or collapsed the Diagnostics panel");
+  assert(afterSse.drawerOpen && afterSse.requestStillPresent, "SSE snapshot lost the Diagnostics-located Request drawer");
+
+  const advancedLocateTarget = await cdp.evaluate(`(() => {
+    const control = document.querySelector('[data-diagnostic-family="historical"] [data-diagnostic-locate]');
+    if (!control) return null;
+    const finding = control.closest('.diagnostic-finding');
+    const requestId = finding?.querySelector('.diagnostic-meta code')?.getAttribute('title') ?? null;
+    control.click();
+    return {
+      requestId,
+      family: 'historical',
+    };
+  })()`);
+  assert(advancedLocateTarget?.requestId && advancedLocateTarget.family === 'historical',
+    "Historical Diagnostics locate action could not resolve its canonical evidence");
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const row = [...document.querySelectorAll('tr[data-request-id]')]
+      .find((candidate) => candidate.dataset.requestId === ${JSON.stringify(advancedLocateTarget.requestId)});
+    return Boolean(row?.classList.contains('diagnostic-target'));
+  })()`), "historical diagnostics canonical Request location");
+
+  const behavioralTarget = await cdp.evaluate(`(async () => {
+    const sessionsPayload = await fetch('/api/sessions').then((response) => response.json());
+    const sessions = sessionsPayload.sessions ?? [];
+    for (let start = 0; start < sessions.length; start += 12) {
+      const batch = sessions.slice(start, start + 12);
+      const results = await Promise.all(batch.map(async (session) => {
+        const response = await fetch('/api/sessions/' + encodeURIComponent(session.id) + '/behavioral-diagnostics');
+        if (!response.ok) return null;
+        const report = await response.json();
+        const finding = (report.findings ?? []).find((candidate) =>
+          candidate?.requestId &&
+          (candidate.family === 'behavioral_request' || candidate.family === 'behavioral_session')
+        );
+        return finding ? {
+          sessionId: session.id,
+          findingId: finding.findingId,
+          family: finding.family,
+          requestId: finding.requestId,
+        } : null;
+      }));
+      const match = results.find(Boolean);
+      if (match) return match;
+    }
+    return null;
+  })()`);
+  assert(behavioralTarget?.sessionId && behavioralTarget?.findingId && behavioralTarget?.requestId,
+    "no locatable Behavioral Diagnostics finding was found in the live database");
+
+  const currentBehavioralSession = await cdp.evaluate(`document.querySelector('#session-id')?.textContent?.trim() ?? ''`);
+  if (currentBehavioralSession !== behavioralTarget.sessionId) {
+    const clicked = await cdp.evaluate(`(() => {
+      const button = [...document.querySelectorAll('[data-session-id]')]
+        .find((candidate) => candidate.dataset.sessionId === ${JSON.stringify(behavioralTarget.sessionId)} && !candidate.dataset.sessionDay);
+      button?.click();
+      return Boolean(button);
+    })()`);
+    assert(clicked, `behavioral diagnostics target session ${behavioralTarget.sessionId} is not present in project navigation`);
+    await waitFor(async () => cdp.evaluate(`document.querySelector('#session-id')?.textContent?.trim() === ${JSON.stringify(behavioralTarget.sessionId)}`), "behavioral diagnostics target selection");
+  }
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const summary = document.querySelector('#diagnostics-summary')?.textContent?.trim() ?? '';
+    return summary && !summary.includes('正在分析') && !summary.includes('读取失败');
+  })()`), "behavioral diagnostics lazy load");
+  const behavioralPanelHidden = await cdp.evaluate(`Boolean(document.querySelector('#diagnostics-panel')?.hidden)`);
+  if (behavioralPanelHidden) await cdp.evaluate(`document.querySelector('#diagnostics-toggle')?.click()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(
+    document.querySelector('[data-diagnostic-family="behavioral_request"]') &&
+    document.querySelector('[data-diagnostic-family="behavioral_session"]')
+  )`), "behavioral diagnostics families");
+  const behavioralState = await cdp.evaluate(`(() => {
+    const requestFamily = document.querySelector('[data-diagnostic-family="behavioral_request"]');
+    const sessionFamily = document.querySelector('[data-diagnostic-family="behavioral_session"]');
+    const target = [...document.querySelectorAll('[data-diagnostic-locate]')]
+      .find((candidate) => candidate.dataset.diagnosticLocate === ${JSON.stringify(behavioralTarget.findingId)});
+    const metaText = target?.closest('.diagnostic-finding')?.querySelector('.diagnostic-meta')?.textContent ?? '';
+    return {
+      requestCount: Number(requestFamily?.querySelector('.diagnostics-family-heading code')?.textContent ?? '0'),
+      sessionCount: Number(sessionFamily?.querySelector('.diagnostics-family-heading code')?.textContent ?? '0'),
+      targetPresent: Boolean(target),
+      metaText,
+    };
+  })()`);
+  assert(behavioralState.targetPresent, "Behavioral finding is missing from the combined Diagnostics panel");
+  assert(/median/u.test(behavioralState.metaText) && /MAD/u.test(behavioralState.metaText) && /Z\s/u.test(behavioralState.metaText),
+    `Behavioral finding does not expose median/MAD/Robust-Z evidence: ${behavioralState.metaText}`);
+  await cdp.evaluate(`(() => {
+    const target = [...document.querySelectorAll('[data-diagnostic-locate]')]
+      .find((candidate) => candidate.dataset.diagnosticLocate === ${JSON.stringify(behavioralTarget.findingId)});
+    target?.click();
+  })()`);
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const row = [...document.querySelectorAll('tr[data-request-id]')]
+      .find((candidate) => candidate.dataset.requestId === ${JSON.stringify(behavioralTarget.requestId)});
+    return Boolean(row?.classList.contains('diagnostic-target'));
+  })()`), "behavioral diagnostics canonical Request location");
+
+  return { target, lazyState, alertState, familyState, locateTarget, located, afterSse, advancedLocateTarget, behavioralTarget, behavioralState };
+}
+
 async function verifyScopedNavigation(cdp) {
   await cdp.evaluate(`document.querySelector('[data-session-view="time"]')?.click()`);
   await waitFor(async () => cdp.evaluate(`Boolean(
@@ -598,32 +874,55 @@ async function verifyNarrowViewport(cdp) {
     mobile: false,
   });
   await sleep(250);
-  const result = await cdp.evaluate(`(() => {
+  await cdp.evaluate(`(() => {
     const wrap = document.querySelector('.task-table-wrap');
     const details = wrap?.closest('.agent-card');
     if (details) details.open = true;
+  })()`);
+  await sleep(260);
+  const result = await cdp.evaluate(`(async () => {
+    const currentSessionId = document.querySelector('#session-id')?.textContent?.trim() ?? '';
+    const response = await fetch('/api/sessions/' + encodeURIComponent(currentSessionId));
+    if (!response.ok) throw new Error('failed to refresh current snapshot for narrow QA');
+    const currentSnapshotData = JSON.stringify(await response.json());
+    const wrap = document.querySelector('.task-table-wrap');
+    const details = wrap?.closest('.agent-card');
     if (wrap) {
       wrap.scrollLeft = Math.min(240, Math.max(1, wrap.scrollWidth - wrap.clientWidth));
       wrap.focus({ preventScroll: true });
     }
     const before = wrap?.scrollLeft ?? 0;
+    const focusedBeforeReplay = document.activeElement === wrap;
     window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', {
-      data: window.__codexLiveUiQa.snapshotData,
+      data: currentSnapshotData,
     }));
+    const diagnosticsPanel = document.querySelector('#diagnostics-panel');
+    const diagnosticsRect = diagnosticsPanel?.getBoundingClientRect();
     return {
       innerWidth: window.innerWidth,
       overflow: Boolean(wrap && wrap.scrollWidth > wrap.clientWidth),
       before,
       after: wrap?.scrollLeft ?? 0,
+      focusedBeforeReplay,
       focused: document.activeElement === wrap,
+      sameWrap: Boolean(wrap?.isConnected && document.contains(wrap)),
+      activeElement: document.activeElement
+        ? document.activeElement.tagName + '.' + document.activeElement.className
+        : null,
       detailsOpen: Boolean(details?.open),
+      diagnosticsFitsViewport: !diagnosticsRect || (
+        diagnosticsRect.left >= -1 && diagnosticsRect.right <= window.innerWidth + 1
+      ),
     };
   })()`);
   assert(result.innerWidth === 720, `narrow viewport is ${result.innerWidth}px instead of 720px`);
   assert(result.overflow, "narrow task table lost horizontal overflow");
   assert(result.before > 0 && result.after === result.before, "narrow snapshot changed task-table scrollLeft");
-  assert(result.focused, "narrow snapshot dropped task-table focus");
+  assert(result.focusedBeforeReplay, `narrow task table could not obtain focus before replay: ${result.activeElement}`);
+  assert(result.sameWrap, "narrow snapshot replaced task-table wrap");
+  assert(result.focused, `narrow snapshot dropped task-table focus to ${result.activeElement}`);
   assert(result.detailsOpen, "narrow snapshot changed Agent expansion state");
+  assert(result.diagnosticsFitsViewport, "Diagnostics panel overflows the 720px viewport");
   return result;
 }
 

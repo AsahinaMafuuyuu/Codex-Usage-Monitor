@@ -1,4 +1,5 @@
 const MILLION = 1_000_000;
+const LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 
 const VERIFIED_REQUEST_CLASSIFICATIONS = new Set(["verified_increment", "generation_start"]);
 
@@ -73,13 +74,30 @@ export function estimateRequestCost(event, {
 } = {}) {
   const model = event?.model ?? null;
   const observedAt = event?.observedAt ?? null;
+  const longContextCandidate = isLongContextCandidate(event?.usage);
   if (!VERIFIED_REQUEST_CLASSIFICATIONS.has(event?.classification)) {
-    return unavailableRequestCost("unverified_request_usage", model, observedAt);
+    return unavailableRequestCost("unverified_request_usage", model, observedAt, null, longContextCandidate);
   }
   const rate = resolveHistoricalRate(model, observedAt);
-  if (!rate) return unavailableRequestCost(model ? "historical_rate_unavailable" : "missing_model", model, observedAt);
+  if (!rate) {
+    return unavailableRequestCost(
+      model ? "historical_rate_unavailable" : "missing_model",
+      model,
+      observedAt,
+      null,
+      longContextCandidate,
+    );
+  }
   const usage = validateRequestUsage(event?.usage);
-  if (!usage) return unavailableRequestCost("inconsistent_usage_breakdown", model, observedAt, rate);
+  if (!usage) {
+    return unavailableRequestCost(
+      "inconsistent_usage_breakdown",
+      model,
+      observedAt,
+      rate,
+      longContextCandidate,
+    );
+  }
 
   const serviceTier = normalizeServiceTier(event?.serviceTier);
   const uncachedInputTokens = usage.inputTokens - usage.cachedInputTokens;
@@ -89,7 +107,6 @@ export function estimateRequestCost(event, {
     output: priceTokens(usage.outputTokens, rate.ratesPerMillion.output),
   };
   const baseAmountUsd = baseComponents.uncachedInput + baseComponents.cachedInput + baseComponents.output;
-  const longCandidate = usage.inputTokens > 272_000;
   let status = "estimated";
   let reason = null;
   let longContextStatus = "normal";
@@ -98,16 +115,16 @@ export function estimateRequestCost(event, {
   let fastMultiplier = 1;
 
   if (!applyFeaturePolicy) {
-    longContextStatus = longCandidate ? "candidate" : "normal";
-  } else if (longCandidate && !supportsLongContext(rate.model)) {
+    longContextStatus = longContextCandidate ? "candidate" : "normal";
+  } else if (longContextCandidate && !supportsLongContext(rate.model)) {
     status = "partial";
     reason = "long_context_model_unsupported";
     longContextStatus = "unknown";
-  } else if (longCandidate && !requestBoundaryVerified) {
+  } else if (longContextCandidate && !requestBoundaryVerified) {
     status = "partial";
     reason = "long_context_request_boundary_unproven";
     longContextStatus = "candidate";
-  } else if (longCandidate) {
+  } else if (longContextCandidate) {
     longContextStatus = "long";
     inputMultiplier = 2;
     outputMultiplier = 1.5;
@@ -146,6 +163,7 @@ export function estimateRequestCost(event, {
     observedAt,
     serviceTier,
     rawServiceTier: event?.serviceTier ?? null,
+    longContextCandidate,
     longContextStatus,
     ratesPerMillion: { ...rate.ratesPerMillion },
     multipliers: {
@@ -669,7 +687,7 @@ function fastMultiplierForModel(model) {
   return null;
 }
 
-function unavailableRequestCost(reason, model, observedAt, rate = null) {
+function unavailableRequestCost(reason, model, observedAt, rate = null, longContextCandidate = false) {
   return {
     status: "unavailable",
     amountUsd: null,
@@ -682,6 +700,7 @@ function unavailableRequestCost(reason, model, observedAt, rate = null) {
     observedAt: observedAt ?? null,
     serviceTier: "unknown",
     rawServiceTier: null,
+    longContextCandidate,
     longContextStatus: "unknown",
     ratesPerMillion: rate?.ratesPerMillion ? { ...rate.ratesPerMillion } : null,
     multipliers: null,
@@ -694,6 +713,11 @@ function unavailableRequestCost(reason, model, observedAt, rate = null) {
     limitations: [...SUBSCRIPTION_PRICING_CATALOG.limitations],
     reason,
   };
+}
+
+function isLongContextCandidate(usage) {
+  const inputTokens = validTokenCount(usage?.inputTokens);
+  return inputTokens != null && inputTokens > LONG_CONTEXT_INPUT_THRESHOLD;
 }
 
 function pricingTaskKey(threadId, turnId) {

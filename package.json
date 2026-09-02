@@ -8,13 +8,21 @@
     "start": "node --disable-warning=ExperimentalWarning src/server.js",
     "start:no-open": "node --disable-warning=ExperimentalWarning src/server.js --no-open",
     "test": "node --disable-warning=ExperimentalWarning --test",
-    "check": "node --check src/source-locator.js && node --check src/codex-usage-client.js && node --check src/database.js && node --check src/repository.js && node --check src/server.js && node --check src/monitor.js && node --check src/rollout-parser.js && node --check src/pricing.js && node --check src/request-ledger.js && node --check src/request-identity.js && node --check src/request-ownership.js && node --check src/snapshot-scope.js && node --check scripts/audit-request-ledger.js && node --check scripts/audit-unknown-records.js && node --check scripts/benchmark-request-ledger.js && node --check scripts/reconcile-subscription-cost.js && node --check scripts/reconcile-phase18.js && node --check scripts/verify-live-ui.js && node --check public/app.js",
+    "check": "node --check src/source-locator.js && node --check src/codex-usage-client.js && node --check src/database.js && node --check src/repository.js && node --check src/server.js && node --check src/monitor.js && node --check src/diagnostics.js && node --check src/advanced-diagnostics.js && node --check src/behavioral-diagnostics.js && node --check src/rollout-parser.js && node --check src/pricing.js && node --check src/request-ledger.js && node --check src/request-identity.js && node --check src/request-ownership.js && node --check src/snapshot-scope.js && node --check scripts/audit-request-ledger.js && node --check scripts/audit-unknown-records.js && node --check scripts/benchmark-request-ledger.js && node --check scripts/benchmark-usage-diagnostics.js && node --check scripts/benchmark-advanced-usage-diagnostics.js && node --check scripts/benchmark-behavioral-usage-diagnostics.js && node --check scripts/benchmark-diagnostic-alerts.js && node --check scripts/shadow-advanced-usage-diagnostics.js && node --check scripts/shadow-behavioral-usage-diagnostics.js && node --check scripts/reconcile-subscription-cost.js && node --check scripts/reconcile-phase18.js && node --check scripts/phase23-delivery-fingerprint.js && node --check scripts/shadow-usage-diagnostics.js && node --check scripts/verify-live-ui.js && node --check public/app.js",
     "verify:live-ui": "node scripts/verify-live-ui.js",
     "audit:request-ledger": "node --disable-warning=ExperimentalWarning scripts/audit-request-ledger.js",
     "audit:unknown-records": "node --disable-warning=ExperimentalWarning scripts/audit-unknown-records.js",
     "benchmark:request-ledger": "node --disable-warning=ExperimentalWarning scripts/benchmark-request-ledger.js",
     "reconcile:subscription-cost": "node --disable-warning=ExperimentalWarning scripts/reconcile-subscription-cost.js",
-    "reconcile:phase18": "node --disable-warning=ExperimentalWarning scripts/reconcile-phase18.js"
+    "reconcile:phase18": "node --disable-warning=ExperimentalWarning scripts/reconcile-phase18.js",
+    "shadow:usage-diagnostics": "node --disable-warning=ExperimentalWarning scripts/shadow-usage-diagnostics.js",
+    "shadow:advanced-usage-diagnostics": "node --disable-warning=ExperimentalWarning scripts/shadow-advanced-usage-diagnostics.js",
+    "shadow:behavioral-usage-diagnostics": "node --disable-warning=ExperimentalWarning scripts/shadow-behavioral-usage-diagnostics.js",
+    "fingerprint:phase23": "node --disable-warning=ExperimentalWarning scripts/phase23-delivery-fingerprint.js",
+    "benchmark:usage-diagnostics": "node --disable-warning=ExperimentalWarning scripts/benchmark-usage-diagnostics.js",
+    "benchmark:advanced-usage-diagnostics": "node --disable-warning=ExperimentalWarning scripts/benchmark-advanced-usage-diagnostics.js",
+    "benchmark:behavioral-usage-diagnostics": "node --disable-warning=ExperimentalWarning scripts/benchmark-behavioral-usage-diagnostics.js",
+    "benchmark:diagnostic-alerts": "node --disable-warning=ExperimentalWarning scripts/benchmark-diagnostic-alerts.js"
   },
   "engines": {
     "node": ">=24.0.0"

@@ -192,8 +192,10 @@ test("T-COST-020 long context uses a strict greater-than 272K boundary", () => {
     outputTokens: 0,
     totalTokens: 272_001,
   }));
+  assert.equal(normal.longContextCandidate, false);
   assert.equal(normal.longContextStatus, "normal");
   assert.equal(normal.multipliers.input, 1);
+  assert.equal(long.longContextCandidate, true);
   assert.equal(long.longContextStatus, "long");
   assert.equal(long.multipliers.input, 2);
   assert.equal(long.multipliers.output, 1.5);
@@ -275,6 +277,8 @@ test("T-COST-025 an unsupported long-context model is never guessed into a price
     totalTokens: 300_000,
   }));
   assert.equal(estimate.status, "unavailable");
+  assert.equal(estimate.longContextCandidate, true);
+  assert.equal(estimate.longContextStatus, "unknown");
   assert.equal(estimate.amountUsd, null);
   assert.equal(estimate.reason, "historical_rate_unavailable");
 });

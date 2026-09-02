@@ -29,6 +29,10 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0023](0023-explicit-fast-service-tier-policy.md) | Accepted | 只有原始 service tier 明确为 `fast` 才应用 Fast；其余值统一按 standard 定价 |
 | [0024](0024-task-scroll-request-pagination-ergonomics.md) | Accepted | Task 使用约 5 行纵向滚动视口；Request 使用自适应 5/10 条分页与居中导航 |
 | [0025](0025-official-codex-usage-polling.md) | Accepted | 账号额度只读查询 Codex 官方 Usage，并以 60 秒周期刷新；Task/Token/Cost 继续保持本地事实源 |
+| [0026](0026-deterministic-usage-diagnostics-projection.md) | Accepted | 在 canonical Request 之上建立独立确定性 Usage Diagnostics projection，首版 compute-on-read 且不改变 accounting |
+| [0027](0027-historical-robust-usage-diagnostics.md) | Accepted | 以严格 project/model/effort cohort、Median/MAD/Robust-Z 与 practical-effect gate 建立 Historical / Cross-session diagnostics |
+| [0028](0028-deterministic-behavioral-usage-diagnostics.md) | Accepted | 以 canonical metadata、历史鲁棒基线和 lazy read path 检测 Reasoning、Request Burst 与 Subagent Amplification |
+| [0029](0029-local-diagnostic-budget-notification-state.md) | Accepted | 用 schema v15 operational tables 与精确 allowlisted local POST 实现工程级等值预算、Ack 与 Snooze，不污染 accounting |
 
 ## 新增 ADR
 

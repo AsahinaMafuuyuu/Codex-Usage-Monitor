@@ -33,6 +33,13 @@ npm run start:no-open
 | `npm run reconcile:subscription-cost` | 只读扫描本机 rollout，输出旧 API→订阅标准价的可审计费用差异与 coverage |
 | `npm run audit:unknown-records -- --session <id>` | 只读聚类一个 session 的未知/已审计非计量 record，不改变 Request/Token 事实 |
 | `npm run reconcile:phase18 -- --session <id>` | 只读对账一个 legacy fork session 的 canonical/inherited/unresolved Request、六字段守恒与 projection 性能 |
+| `npm run shadow:usage-diagnostics` | 只读对正式 SQLite 运行 Usage Diagnostics shadow report，输出 finding density 与 delta 分布 |
+| `npm run shadow:advanced-usage-diagnostics` | 只读运行 Historical/Cross-session shadow，输出 cohort coverage、Robust-Z/effect、threshold-adjacent 与 high-tail 证据 |
+| `npm run shadow:behavioral-usage-diagnostics` | 只读运行 Reasoning/Burst/Subagent Amplification shadow，输出 coverage、Robust-Z/effect 与脱敏 outlier 证据 |
+| `npm run benchmark:usage-diagnostics -- "<authenticated URL>"` | 对已启动页面的常规/最大真实 session 测量 lazy diagnostics HTTP warm P50/P95 |
+| `npm run benchmark:advanced-usage-diagnostics -- --iterations 20` | 对正式 SQLite 的 bounded historical query + pricing enrichment + Advanced analyzer 做 warm P50/P95 与 query-plan benchmark |
+| `npm run benchmark:behavioral-usage-diagnostics -- --iterations 20` | 对正式 SQLite 的 Behavioral historical queries + analyzer 做 warm P50/P95 benchmark |
+| `npm run fingerprint:phase23` | 只读输出 canonical/calendar accounting 与全部 rollout manifest SHA-256，供交付前后对账 |
 | `npm run verify:live-ui -- "<authenticated URL>"` | 对已启动页面执行 Chrome/CDP 实时交互回归 |
 
 前端保持无框架实现。额度刷新按钮使用本地安装的 `lucide@1.34.0` 图标库，并由本地 HTTP 服务从 `/vendor/lucide.min.js` 提供，不依赖 CDN，也不需要放宽现有 `script-src 'self'` CSP。
@@ -68,6 +75,7 @@ codex-usage-monitor\
 - 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话；已有 SQLite projection 时点击只读 cached canonical snapshot，不在请求路径同步解析 rollout。新增/变化 session 由后台 indexer 处理；目录缺失时明确归入“未归类”。
 - 左侧可切换“工程”和“时间”两种导航；工程模式打开完整 session，并以“任务记录”展示完整 Task lifecycle；时间模式以 `(sessionId, local day)` 为选择身份，直接展示当天真正发生的 canonical Request，再按 Task Day Slice 分组。Time 表显示“当日首请求 / 当日末请求 / Requests / 推理强度”，不会把完整 Task 的开始时间或耗时冒充为当天计量时间。
 - Task 可按需展开 canonical Request 审计表，查看每个 Request 的时间、Input/Cached/Cache Write/Output/Reasoning/Total、模型、所属 Task 推理强度、service tier 与 USD。Project 展开完整 Task Request；Time 只展开当天 Request。每个智能体的 Task 不再分页，而是在约 5 行高的独立纵向视口中连续滚动：内部仍有剩余滚动距离时优先滚 Task，到顶/到底或没有纵向 overflow 时把滚轮继续交给整体 workspace。Request 默认 10 条/页并可切 5/10，少于 10 条时不显示分页条；长分页最多保留 5 个语义槽位（边界页 / 当前页 / 省略号），外侧只保留前后翻页。前后导航使用居中的 Lucide chevron，并给页码与翻页内容加入轻量过渡。Request drawer 同时只展开最近一个，其余原位收起但保留已加载缓存。Request 明细继续拥有独立横向滚动区和三横线收起把手，父任务表横向滚动不会带动 Canonical Requests 标题或明细。初始 snapshot/SSE 仍不内嵌全部 Request。
+- Usage Diagnostics 保留 Phase 23 Local Baseline，并新增 Phase 24A Historical Robust Baseline、Phase 24B1 Behavioral Diagnostics 与 Phase 24B2 本机 Alerts。Advanced 层只比较 exact `projectPath + model + known effort` 的历史 canonical Request，使用 Median/MAD/Robust-Z + practical-effect gate，并按 Session Cohort Slice 检测 Cross-session Context/Cache/Cost regression。Behavioral 层进一步检测 Reasoning share anomaly、canonical Request Burst 与 Subagent Amplification；页面在同一 lazy panel 中分为 Local / Historical / Cross-session / Behavioral · Request / Behavioral · Session，并提供工程级 Session `Subscription Standard-Rate Equivalent` Budget、Warning/High 最低提醒等级、Ack 与 Snooze/cooldown。Alerts 只显示在本机页面，不发送邮件、Webhook 或外部通知；常规 Session/SSE snapshot 不携带 diagnostics/alerts payload。LLM Root-Cause Explanation 尚未实现。
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
 - 会话概览展示根智能体与全部后代的输入、输出和总缓存命中率；智能体与任务也显示各自的缓存命中率。
@@ -99,7 +107,7 @@ codex-usage-monitor\
 
 - `history.jsonl` 不用于 token 统计，因为它没有 token 字段。
 - 用量来源是 `.codex/sessions/**/rollout-*.jsonl` 和 `.codex/archived_sessions`。
-- schema v14 中 token 仍只来自经相邻 `total_token_usage` 逐字段验证的 Request Ledger；`last_token_usage` 只作为候选新增量被验证，绝不裸累加。业务聚合进一步只消费 `canonical_requests`，fork copied history 不会形成新的 Token/Cost。
+- 自 schema v14 起，token 仍只来自经相邻 `total_token_usage` 逐字段验证的 Request Ledger；当前 schema v15 只额外加入 Alerts operational state，未改变该语义。`last_token_usage` 只作为候选新增量被验证，绝不裸累加。业务聚合进一步只消费 `canonical_requests`，fork copied history 不会形成新的 Token/Cost。
 - `user_message`、`patch_apply_end`、`web_search_end`、`thread_rolled_back` 等已审计 record 只是消息/工具/会话状态证据，不生成 model Request，也不直接增加 Task usage。2026-08-27 的真实污染 session 中这四类共 1,978 条，已从 `unknownRecords` 收敛为显式 non-accounting allowlist；重新审计后 `unknownRecords=0`，Request/Token reconciliation 完全不变。
 - Request identity 优先使用 `token_count` 可证明的原生 `request_id/model_request_id/response_id`；当前真实 legacy 样本没有这些字段，因此确定性使用 `turnId + generation + cumulative usage + last usage` 重建。`thread/source/timestamp/call_id` 不参与 identity。
 - cross-root legacy history 也只保留 provenance：Task 明确早于 root session 创建时间时不会重新取得 accounting ownership；即使 copied Task 时间戳被改写，只要相同 request identity 已由其他 root 占有，也不会重复生成 canonical Request。该修复使用 projection v2，SQLite schema 仍保持 v14，旧 projection 只从已持久化 raw evidence 重建，不回放 `.codex`。
@@ -120,7 +128,7 @@ codex-usage-monitor\
 - 不修改 `config.toml` / `auth.json`，不启动 App Server，不启用 Hooks/OTel，不调用模型。唯一外网访问是 [ADR-0025](docs/decisions/0025-official-codex-usage-polling.md) 定义的账号额度 GET；Task/Token/Cost 数据不会联网补全。
 - Codex 的 SQLite 和 rollout 文件始终只读。
 - 监控 SQLite 只保存工程目录等历史元数据、`.codex` 相对 source key、任务定位元数据、raw Request evidence、canonical Request/provenance、cursor 和可重算 projection；数据库不保存 prompt、response、消息正文或会话标题。rollout 的绝对机器路径只在当前进程中作为运行 locator 使用。
-- 页面使用一次性随机令牌、严格 Cookie、Host/Origin 校验、CSP 和只读 HTTP 方法。
+- 页面使用一次性随机令牌、严格 Cookie、Host/Origin 校验与 CSP；HTTP 默认只读，仅 ADR-0029 明确列出的本机 Alerts policy/Ack/Snooze POST route 可写，其他 POST 仍拒绝。
 - API 的 ID 受固定格式约束，不能传入任意文件路径。
 
 ## 项目结构
@@ -144,6 +152,13 @@ AGENTS.md             多智能体所有权和协作规则
 - [验证证据](docs/VERIFICATION.md)
 - [前端 Phase 9 接手说明](docs/FRONTEND-HANDOFF.md)
 - [后续路线图](docs/ROADMAP.md)
+- [Usage Diagnostics 设计方案](docs/DESIGN-USAGE-DIAGNOSTICS.md)
+- [Usage Diagnostics 技术实现](docs/TECHNICAL-IMPLEMENTATION-USAGE-DIAGNOSTICS.md)
+- [Usage Diagnostics 交付契约](docs/DELIVERY-USAGE-DIAGNOSTICS.md)
+- [Advanced Usage Diagnostics 设计方案](docs/DESIGN-ADVANCED-USAGE-DIAGNOSTICS.md)
+- [Advanced Usage Diagnostics 技术实现](docs/TECHNICAL-IMPLEMENTATION-ADVANCED-USAGE-DIAGNOSTICS.md)
+- [Advanced Usage Diagnostics 交付契约](docs/DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md)
+- [ADR-0028：Behavioral Usage Diagnostics](docs/decisions/0028-deterministic-behavioral-usage-diagnostics.md)
 - [参与开发](CONTRIBUTING.md)
 - [变更记录](CHANGELOG.md)
 

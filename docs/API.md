@@ -1,4 +1,4 @@
-# 本地只读 API
+# 本地 API
 
 API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开或远程 API；仅供随服务启动的本地页面使用。
 
@@ -8,17 +8,17 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 2. 第一次访问 `/` 时，一次性 token 被置空并换取 `codex_monitor` HttpOnly、SameSite=Strict Cookie。
 3. 后续 API 请求必须携带该 Cookie，并通过 Host 和 Origin 校验。
 
-所有接口只接受 `GET`（`HEAD` 在服务层允许）。响应使用 `Cache-Control: no-store`；SSE 使用 `no-cache, no-transform`。session/thread/turn ID 必须匹配 8–128 位字母、数字、下划线或连字符。
+默认接口只接受 `GET`（`HEAD` 在服务层允许）。Phase 24B2 仅为 Diagnostic Alerts operational state 开放三个明确 allowlist 的 `POST` 路由：policy、Ack、Snooze；不存在通配写路由，其他 POST 仍返回 `405`。所有写路由继续要求同一 Strict Cookie、Host 与 Origin 校验。响应使用 `Cache-Control: no-store`；SSE 使用 `no-cache, no-transform`。session/thread/turn/alert ID 必须匹配 8–128 位字母、数字、下划线或连字符。
 
 常见错误：
 
 | 状态 | 含义 |
 |---|---|
-| `400` | ID 格式无效，`day` 不是合法 `YYYY-MM-DD` 本地日期，或 Request drill-down 的 `limit/page/cursor` 无效 |
+| `400` | ID 格式无效，`day` 不是合法 `YYYY-MM-DD` 本地日期，Request drill-down 参数无效，或 alert policy 参数越界 |
 | `401` | 缺少或错误的会话 Cookie |
 | `403` | Host 或 Origin 不受信任 |
 | `404` | 会话、任务或接口不存在 |
-| `405` | 尝试写方法 |
+| `405` | 使用了该 route 不允许的方法，或 POST 不在明确 operational allowlist 中 |
 | `500` | 本地解析或服务异常；正文不泄露内部错误细节 |
 
 ## 接口
@@ -35,9 +35,9 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 ### `GET /api/timeline`
 
-返回全部已发现根 session 的本地日期用量账页。Phase 18/schema v14 起该 endpoint **只读取已有 SQLite projection**，不会因为一次 HTTP Timeline 请求同步解析 rollout 或现场重算历史费用。启动与文件 watcher 把 stale/dirty session 交给 background indexer；已有 projection 立即返回，首次没有任何 projection 时才允许等待首轮后台构建形成可用基线。Indexer 使用 portable `source_key` + cursor 执行 restore/tail/replay，并在单一 transaction 内生成 ownership、`canonical_requests`、request-day/cost projection 与新的 `projection_generation`。
+返回全部已发现根 session 的本地日期用量账页。Phase 18/schema v14 起该 endpoint **只读取已有 SQLite projection**，不会因为一次 HTTP Timeline 请求同步解析 rollout 或现场重算历史费用；当前 schema 为 v15，但 v15 只新增 Diagnostic Alerts operational tables，不改变该 projection。启动与文件 watcher 把 stale/dirty session 交给 background indexer；已有 projection 立即返回，首次没有任何 projection 时才允许等待首轮后台构建形成可用基线。Indexer 使用 portable `source_key` + cursor 执行 restore/tail/replay，并在单一 transaction 内生成 ownership、`canonical_requests`、request-day/cost projection 与新的 `projection_generation`。
 
-cross-root ownership hardening 使用 projection v2、SQLite schema 仍为 v14。相同 request identity 已由其他 root canonicalize 时，当前 session 的 copied evidence 不会再次进入 Timeline/Session accounting。内部异步 projection/index 错误由请求级 error boundary 转成 HTTP 500，不应形成悬挂请求或未处理 Promise rejection。
+cross-root ownership hardening 继续使用 projection v2；SQLite schema 当前为 v15，其中 accounting/projection 表语义仍沿用 v14。相同 request identity 已由其他 root canonicalize 时，当前 session 的 copied evidence 不会再次进入 Timeline/Session accounting。内部异步 projection/index 错误由请求级 error boundary 转成 HTTP 500，不应形成悬挂请求或未处理 Promise rejection。
 
 该同步只写监控器自己的派生 SQLite（task、cursor、session-day aggregate），从不修改 `.codex`。Timeline 后台补齐不会把历史 rollout 中的全部 quota 快照批量归档；账号额度仍由现有 latest-quota/实时路径维护。cursor 不可信、文件收缩或持久化状态不足时，parser 会回退到原有安全 replay 规则。
 
@@ -231,6 +231,213 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 ```
 
 Request cost 继续严格使用该 Request 自身 event-level pricing evidence。缺 model、历史价、usage breakdown 或其他必要证据时仍返回 `partial/unavailable`，不会从 Task aggregate 反向猜值；但 service tier 采用 ADR-0023 的业务默认：**仅字面 `fast` 为 Fast，其余均为 standard**。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。服务层级 UI 只显示 `standard` 或 `fast · N 倍率`；倍率直接使用该 Request 已计算的 pricing evidence（当前 GPT-5.6/GPT-5.5 Fast 为 2.5×、GPT-5.4 为 2×），不会把 long-context output 的 1.5×误标成 Fast。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
+
+### `GET /api/sessions/:id/diagnostics[?day=YYYY-MM-DD]`
+
+按需读取 canonical Request 的确定性 Usage Diagnostics。无 `day` 时分析完整 Session；带 `day` 时仍读取该日之前的同 Session Request 维持 rolling baseline 连续性，但只返回 `observedAt` 落在目标本地自然日的 finding。同一 `requestId + policyVersion` 在 Session/Day scope 下必须保持相同 metric、baseline 与 severity。
+
+该接口只读 SQLite canonical projection，不调用 `selectSession()`、不同步解析 rollout，也不读取 Prompt/Response。若后台已发现 session dirty，接口可以返回上一完整 projection，并通过 `stale=true` 明确 freshness；`projectionGeneration` 可供前端判断已加载 panel 是否需要重新 GET。常规 Session snapshot / SSE 不携带 finding 或 diagnostics summary。
+
+```json
+{
+  "scope": { "type": "session" },
+  "projectionGeneration": 42,
+  "stale": false,
+  "summary": { "high": 1, "warning": 2, "info": 1 },
+  "policy": { "version": "usage-diagnostics-v1", "baselineWindow": 5 },
+  "findings": [{
+    "findingId": "deterministic-id",
+    "type": "cache_regression",
+    "severity": "warning",
+    "threadId": "thread-id",
+    "turnId": "turn-id",
+    "requestId": "reqr_...",
+    "observedAt": "2026-09-01T08:05:00.000Z",
+    "locator": { "requestOrdinalInScope": 25 },
+    "metric": {
+      "name": "cache_hit_rate",
+      "current": 0.5,
+      "baseline": 0.9,
+      "absoluteDelta": -0.4,
+      "relativeDelta": null
+    },
+    "baseline": {
+      "kind": "task_rolling_median",
+      "sampleCount": 5,
+      "value": 0.9,
+      "requestIds": ["reqr_..."]
+    },
+    "evidence": { "drop": 0.4, "breakpointCandidate": true },
+    "policyVersion": "usage-diagnostics-v1"
+  }]
+}
+```
+
+V1 detector 为 Context Inflation、Cache Regression/Breakpoint、Cost Spike 和 Long Context Trigger。Cost Spike 只比较 `estimateRequestCost()` 返回的 `estimated` 金额；`partial/unavailable` 不进入 baseline。Long Context finding 只消费 pricing module 暴露的 `longContextCandidate/longContextStatus`，Diagnostics 不维护第二份 272K 或 rate-card 逻辑。
+
+### `GET /api/sessions/:id/advanced-diagnostics[?day=YYYY-MM-DD]`
+
+按需读取 Phase 24A Historical Robust Diagnostics。该 endpoint 与 Phase 23 `/diagnostics` 完全独立：不修改 `usage-diagnostics-v1` contract，不调用 `selectSession()`，不触发同步 rollout replay，也不进入常规 Session/SSE snapshot。
+
+Historical Request baseline 只比较 exact `projectPath + model + known effort`，最多回看 30 天 / 每 cohort 200 个样本，最少 20 个样本；Cost 还要求同 `serviceTier + rateVersion` 且 pricing `status=estimated`。Cross-session baseline 按 Session Cohort Slice 比较最多 60 天 / 20 个 prior slices，至少 10 个 prior slices；每个 prior Session 同 cohort 只贡献一个 sample。
+
+`day` scope 只返回目标本地自然日内 current Request 的 Historical finding；historical baseline 仍可读取 dayStart 之前的历史，且不会返回 Session-level Cross-session finding。相同 canonical Request 在 Session/Day 下保持同一 finding identity、baseline、metric 与 severity。
+
+```json
+{
+  "scope": { "type": "session" },
+  "projectionGeneration": 42,
+  "stale": false,
+  "policy": { "version": "advanced-usage-diagnostics-v1", "frozen": true },
+  "coverage": {
+    "strictCohortSamples": 200,
+    "insufficientHistory": 0,
+    "unknownEffort": 0,
+    "degenerateMad": 0,
+    "costIneligible": 0
+  },
+  "summary": { "high": 1, "warning": 0, "info": 0 },
+  "findings": [{
+    "findingId": "advanced-diagnostic-...",
+    "policyVersion": "advanced-usage-diagnostics-v1",
+    "family": "historical",
+    "type": "historical_context_inflation",
+    "severity": "high",
+    "subject": { "kind": "request", "rootSessionId": "...", "requestId": "reqr_..." },
+    "cohort": { "projectPath": "...", "model": "gpt-5.6-sol", "effort": "xhigh" },
+    "baseline": {
+      "kind": "historical_request_robust",
+      "sampleCount": 200,
+      "median": 136900,
+      "mad": 14274.5,
+      "robustZ": 5.2,
+      "status": "ready"
+    },
+    "metric": { "name": "input_tokens", "current": 275000 },
+    "effect": { "absolute": 138100, "ratio": 2.008, "percentagePoints": null },
+    "locator": {
+      "threadId": "...",
+      "turnId": "...",
+      "requestId": "reqr_...",
+      "requestOrdinalInScope": 12
+    }
+  }]
+}
+```
+
+Robust-Z production threshold 为 warning `|Z|>=3.5`、high `|Z|>=5.0`，但任何 finding 还必须同时通过 detector-specific practical-effect gate；`MAD=0` 返回 `degenerate / robustZ=null`，不会用 epsilon 或 mean/stddev 伪造统计显著性。Cross-session finding 的 `supportingLocator` 只负责进入现有 Canonical Request audit，不参与 finding identity。
+
+### `GET /api/sessions/:id/behavioral-diagnostics[?day=YYYY-MM-DD]`
+
+按需读取 Phase 24B1 Behavioral Diagnostics。该 endpoint 只消费 cached canonical Request projection、Task effort、Agent lineage 与 bounded historical metadata；不调用 `selectSession()`、不同步 replay rollout、不读取 Prompt/Response，也不进入常规 Session/SSE snapshot。
+
+生产 policy 为 `behavioral-usage-diagnostics-v1`，包含三类 detector：
+
+- `reasoning_anomaly`：`reasoningOutputTokens / outputTokens` 相对 exact `projectPath + model + effort` 历史异常；输出过小、effort 未知或历史不足时只计 coverage。
+- `request_burst`：同 Session cohort 的 canonical Request 最密集 60 秒窗口，相对 prior Session Slice 的 Robust Baseline；120 秒 idle gap 只作为 episode evidence。
+- `subagent_amplification`：同 Session descendant/root canonical total-token ratio，相对 exact-project prior multi-agent Session 历史异常。
+
+`day` scope 只返回目标本地自然日的 request-level Reasoning finding；Burst 与 Amplification 是 Session-level finding，不在 Day scope 返回。相同 Request 在 Session/Day scope 下保持同一 finding identity、baseline、metric 与 severity。
+
+```json
+{
+  "scope": { "type": "session" },
+  "projectionGeneration": 42,
+  "stale": false,
+  "policy": { "version": "behavioral-usage-diagnostics-v1", "frozen": true },
+  "coverage": {
+    "reasoningIneligible": 0,
+    "unknownEffort": 0,
+    "insufficientReasoningHistory": 0,
+    "insufficientBurstHistory": 0,
+    "insufficientAmplificationHistory": 0,
+    "noLineage": 0,
+    "degenerateMad": 0
+  },
+  "summary": { "high": 0, "warning": 1, "info": 0 },
+  "findings": [{
+    "findingId": "behavioral-diagnostic-...",
+    "policyVersion": "behavioral-usage-diagnostics-v1",
+    "family": "behavioral_session",
+    "type": "request_burst",
+    "severity": "warning",
+    "baseline": {
+      "kind": "historical_session_burst_robust",
+      "sampleCount": 13,
+      "median": 8,
+      "mad": 2,
+      "robustZ": 3.71,
+      "status": "ready"
+    },
+    "metric": { "name": "max_requests_in_60_seconds", "current": 19 },
+    "effect": { "absolute": 11, "ratio": 2.375, "percentagePoints": null },
+    "supportingLocator": {
+      "threadId": "...",
+      "turnId": "...",
+      "requestId": "reqr_...",
+      "requestOrdinalInScope": 4
+    }
+  }]
+}
+```
+
+Behavioral finding 的 `requestOrdinalInScope` 与 Phase 23/24A 一致，按所属 Task 内 canonical Request 顺序编号，而不是整个 Session 全局编号；因此定位按钮可以复用现有 Task-scoped Canonical Request 分页和 drawer。
+
+### `GET /api/sessions/:id/diagnostic-alerts`
+
+按需物化 Phase 24B2 本机 Alerts。该 endpoint 聚合已经冻结的 Local / Advanced / Behavioral findings，并可追加 Session cost budget alert。它不会发送邮件、Webhook 或任何外部通知，也不会修改 deterministic finding 或 canonical accounting。
+
+默认 policy：Budget disabled、`minimumSeverity="high"`、`cooldownMinutes=60`。Budget 只在 Session `totalCostEstimate.status="estimated"` 且 `amountUsd >= sessionCostBudgetUsd` 时产生 high alert；这里的 USD 始终是 **Subscription Standard-Rate Equivalent**，不是 Plus 实际扣费。
+
+```json
+{
+  "sessionId": "...",
+  "projectPath": "D:\\project",
+  "projectionGeneration": 42,
+  "stale": false,
+  "policy": {
+    "sessionCostBudgetUsd": null,
+    "minimumSeverity": "high",
+    "cooldownMinutes": 60,
+    "snoozedUntil": null,
+    "updatedAt": null
+  },
+  "snoozed": false,
+  "alerts": [],
+  "suppressedBySnooze": 0,
+  "acknowledgedCount": 0
+}
+```
+
+Alerts 使用 `projectionGeneration` scoped deterministic cache；generation 改变会自然 miss，policy/Ack/Snooze 写入会主动失效，内存最多保留 32 个 Session。`stale=true` 仍表示当前 session 有待后台 indexer 收口，不会在 GET 路径同步 replay rollout。
+
+### `POST /api/sessions/:id/diagnostic-alert-policy`
+
+这是 Phase 24B2 明确 allowlist 的本地 operational write。请求体：
+
+```json
+{
+  "sessionCostBudgetUsd": 25.0,
+  "minimumSeverity": "warning",
+  "cooldownMinutes": 60
+}
+```
+
+- `sessionCostBudgetUsd`: `null`/空值表示关闭；否则必须位于 `(0, 1000000]` USD。
+- `minimumSeverity`: 仅 `warning` 或 `high`。
+- `cooldownMinutes`: `5..1440` 的整数。
+
+policy 按工程 `projectPath` 持久化。该写入只修改 `diagnostic_alert_policies`，不会重算或改写 Token/Cost accounting。
+
+### `POST /api/sessions/:id/diagnostic-alerts/:alertId/ack`
+
+确认当前 Session 中实际存在的 alert。Ack 按 `(rootSessionId, alertId)` 写入 `diagnostic_alert_acknowledgements`；默认 GET 会过滤已 Ack alert，但 `acknowledgedCount` 仍保留。不存在的 alert 返回 `404`。
+
+### `POST /api/sessions/:id/diagnostic-alerts/snooze`
+
+把当前工程 policy 的 `snoozedUntil` 设置为 `now + cooldownMinutes`。Snooze 期间 GET 返回空 `alerts`，并通过 `suppressedBySnooze` 报告被抑制数量；它不删除 finding 或 acknowledgement。
+
+上述三个 POST route 仍受 loopback、Strict Cookie、Host/Origin 校验和 JSON body 限制保护。除此之外的 POST 不被接受。
 
 ### `GET /api/sessions/:id/events[?day=YYYY-MM-DD]`
 

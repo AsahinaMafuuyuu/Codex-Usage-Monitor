@@ -8,7 +8,7 @@ import { materializeCalendarSlices } from "./snapshot-scope.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
 import { addUsage, normalizeTimestamp, sumTaskUsage, USAGE_FIELDS, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 14;
+const SCHEMA_VERSION = 15;
 const REQUEST_LEDGER_SCHEMA_VERSION = 9;
 const PARSER_VERSION = 15;
 const PROJECTION_VERSION = 2;
@@ -241,6 +241,23 @@ export class MonitorDatabase {
         value TEXT NOT NULL
       );
 
+      CREATE TABLE IF NOT EXISTS diagnostic_alert_policies (
+        project_path TEXT PRIMARY KEY,
+        session_cost_budget_usd REAL,
+        minimum_severity TEXT NOT NULL DEFAULT 'high',
+        cooldown_minutes INTEGER NOT NULL DEFAULT 60,
+        snoozed_until TEXT,
+        updated_at TEXT NOT NULL
+      );
+
+      CREATE TABLE IF NOT EXISTS diagnostic_alert_acknowledgements (
+        root_session_id TEXT NOT NULL,
+        alert_id TEXT NOT NULL,
+        acknowledged_at TEXT NOT NULL,
+        PRIMARY KEY (root_session_id, alert_id),
+        FOREIGN KEY (root_session_id) REFERENCES sessions(id) ON DELETE CASCADE
+      );
+
       CREATE INDEX IF NOT EXISTS idx_sessions_updated ON sessions(updated_at DESC);
       CREATE INDEX IF NOT EXISTS idx_agents_root ON agents(root_session_id, depth, thread_id);
       CREATE INDEX IF NOT EXISTS idx_tasks_root ON tasks(root_session_id, thread_id, sequence);
@@ -263,6 +280,8 @@ export class MonitorDatabase {
       CREATE INDEX IF NOT EXISTS idx_canonical_requests_task_observed
         ON canonical_requests(root_session_id, thread_id, turn_id, observed_at, request_id);
       CREATE INDEX IF NOT EXISTS idx_quota_observed ON quota_snapshots(observed_at DESC);
+      CREATE INDEX IF NOT EXISTS idx_diagnostic_alert_ack_session
+        ON diagnostic_alert_acknowledgements(root_session_id, acknowledged_at DESC);
     `);
     const sessionColumns = this.db.prepare("PRAGMA table_info(sessions)").all();
     if (!sessionColumns.some((column) => column.name === "project_path")) {
@@ -1122,6 +1141,409 @@ export class MonitorDatabase {
     `).all(rootSessionId).map(mapModelUsageEvent);
   }
 
+  getDiagnosticAlertPolicy(projectPath) {
+    if (!projectPath) return null;
+    const row = this.db.prepare(`
+      SELECT project_path, session_cost_budget_usd, minimum_severity,
+             cooldown_minutes, snoozed_until, updated_at
+      FROM diagnostic_alert_policies
+      WHERE project_path=?
+    `).get(projectPath);
+    return row ? mapDiagnosticAlertPolicy(row) : null;
+  }
+
+  upsertDiagnosticAlertPolicy(projectPath, {
+    sessionCostBudgetUsd = null,
+    minimumSeverity = "high",
+    cooldownMinutes = 60,
+    snoozedUntil = null,
+    updatedAt = new Date().toISOString(),
+  } = {}) {
+    if (!projectPath) throw new Error("projectPath is required for diagnostic alert policy");
+    this.db.prepare(`
+      INSERT INTO diagnostic_alert_policies (
+        project_path, session_cost_budget_usd, minimum_severity,
+        cooldown_minutes, snoozed_until, updated_at
+      ) VALUES (?, ?, ?, ?, ?, ?)
+      ON CONFLICT(project_path) DO UPDATE SET
+        session_cost_budget_usd=excluded.session_cost_budget_usd,
+        minimum_severity=excluded.minimum_severity,
+        cooldown_minutes=excluded.cooldown_minutes,
+        snoozed_until=excluded.snoozed_until,
+        updated_at=excluded.updated_at
+    `).run(
+      projectPath,
+      sessionCostBudgetUsd,
+      minimumSeverity,
+      cooldownMinutes,
+      snoozedUntil,
+      updatedAt,
+    );
+    return this.getDiagnosticAlertPolicy(projectPath);
+  }
+
+  acknowledgeDiagnosticAlert(rootSessionId, alertId, acknowledgedAt = new Date().toISOString()) {
+    this.db.prepare(`
+      INSERT INTO diagnostic_alert_acknowledgements (root_session_id, alert_id, acknowledged_at)
+      VALUES (?, ?, ?)
+      ON CONFLICT(root_session_id, alert_id) DO UPDATE SET
+        acknowledged_at=excluded.acknowledged_at
+    `).run(rootSessionId, alertId, acknowledgedAt);
+    return { rootSessionId, alertId, acknowledgedAt };
+  }
+
+  getDiagnosticAlertAcknowledgements(rootSessionId) {
+    return this.db.prepare(`
+      SELECT alert_id, acknowledged_at
+      FROM diagnostic_alert_acknowledgements
+      WHERE root_session_id=?
+      ORDER BY acknowledged_at DESC, alert_id
+    `).all(rootSessionId).map((row) => ({
+      alertId: row.alert_id,
+      acknowledgedAt: row.acknowledged_at,
+    }));
+  }
+
+  getDiagnosticFacts(rootSessionId, { range = null } = {}) {
+    const conditions = ["r.root_session_id=?"];
+    const parameters = [rootSessionId];
+    if (range) {
+      conditions.push("r.observed_at<?");
+      parameters.push(new Date(range.endMs).toISOString());
+    }
+    const rows = this.db.prepare(`
+      SELECT
+        r.request_id,
+        r.root_session_id,
+        r.thread_id,
+        r.turn_id,
+        r.event_ordinal,
+        r.observed_at,
+        r.generation,
+        r.classification,
+        r.quality,
+        r.reason,
+        r.input_tokens,
+        r.cached_input_tokens,
+        r.cache_write_input_tokens,
+        r.output_tokens,
+        r.reasoning_output_tokens,
+        r.total_tokens,
+        r.model,
+        r.service_tier,
+        r.pricing_context_quality,
+        s.project_path,
+        t.effort,
+        t.sequence AS task_sequence,
+        a.depth AS agent_depth,
+        a.is_root AS agent_is_root
+      FROM canonical_requests r
+      JOIN sessions s ON s.id=r.root_session_id
+      LEFT JOIN tasks t
+        ON t.root_session_id=r.root_session_id
+       AND t.thread_id=r.thread_id
+       AND t.turn_id=r.turn_id
+      LEFT JOIN agents a
+        ON a.root_session_id=r.root_session_id
+       AND a.thread_id=r.thread_id
+      WHERE ${conditions.join(" AND ")}
+      ORDER BY r.observed_at, r.request_id
+    `).all(...parameters);
+    const startMs = range?.startMs ?? null;
+    const endMs = range?.endMs ?? null;
+    return rows.map((row) => {
+      const observedMs = Date.parse(row.observed_at);
+      return {
+        requestId: row.request_id,
+        rootSessionId: row.root_session_id,
+        threadId: row.thread_id,
+        turnId: row.turn_id,
+        eventOrdinal: row.event_ordinal == null ? null : Number(row.event_ordinal),
+        observedAt: row.observed_at ?? null,
+        generation: Number(row.generation ?? 0),
+        classification: row.classification,
+        quality: row.quality,
+        reason: row.reason ?? null,
+        usage: usageFromModelUsageRow(row),
+        projectPath: row.project_path ?? null,
+        model: row.model ?? null,
+        effort: row.effort ?? null,
+        serviceTier: row.service_tier ?? null,
+        pricingContextQuality: row.pricing_context_quality ?? null,
+        taskSequence: row.task_sequence == null ? null : Number(row.task_sequence),
+        agentDepth: row.agent_depth == null ? null : Number(row.agent_depth),
+        isRootAgent: row.agent_is_root == null ? null : Boolean(row.agent_is_root),
+        inScope: !range || (
+          Number.isFinite(observedMs) &&
+          observedMs >= startMs &&
+          observedMs < endMs
+        ),
+      };
+    });
+  }
+
+  getHistoricalDiagnosticFacts(rootSessionId, {
+    projectPath,
+    after,
+    before,
+    maxSamplesPerCohort = 200,
+  } = {}) {
+    if (!projectPath || !after || !before) return [];
+    const sampleCap = Math.max(1, Math.min(10_000, Number(maxSamplesPerCohort) || 200));
+    const rows = this.db.prepare(`
+      WITH ranked AS (
+        SELECT
+          r.request_id,
+          r.root_session_id,
+          r.thread_id,
+          r.turn_id,
+          r.event_ordinal,
+          r.observed_at,
+          r.generation,
+          r.classification,
+          r.quality,
+          r.reason,
+          r.input_tokens,
+          r.cached_input_tokens,
+          r.cache_write_input_tokens,
+          r.output_tokens,
+          r.reasoning_output_tokens,
+          r.total_tokens,
+          r.model,
+          r.service_tier,
+          r.pricing_context_quality,
+          s.project_path,
+          t.effort,
+          t.sequence AS task_sequence,
+          a.depth AS agent_depth,
+          a.is_root AS agent_is_root,
+          ROW_NUMBER() OVER (
+            PARTITION BY r.model, t.effort
+            ORDER BY r.observed_at DESC, r.root_session_id DESC, r.request_id DESC
+          ) AS cohort_rank
+        FROM canonical_requests r
+        JOIN sessions s ON s.id=r.root_session_id
+        LEFT JOIN tasks t
+          ON t.root_session_id=r.root_session_id
+         AND t.thread_id=r.thread_id
+         AND t.turn_id=r.turn_id
+        LEFT JOIN agents a
+          ON a.root_session_id=r.root_session_id
+         AND a.thread_id=r.thread_id
+        WHERE s.project_path=?
+          AND r.root_session_id<>?
+          AND r.observed_at>=?
+          AND r.observed_at<?
+      )
+      SELECT *
+      FROM ranked
+      WHERE cohort_rank<=?
+      ORDER BY observed_at, root_session_id, request_id
+    `).all(projectPath, rootSessionId, after, before, sampleCap);
+    return rows.map((row) => ({
+      requestId: row.request_id,
+      rootSessionId: row.root_session_id,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      eventOrdinal: row.event_ordinal == null ? null : Number(row.event_ordinal),
+      observedAt: row.observed_at ?? null,
+      generation: Number(row.generation ?? 0),
+      classification: row.classification,
+      quality: row.quality,
+      reason: row.reason ?? null,
+      usage: usageFromModelUsageRow(row),
+      projectPath: row.project_path ?? null,
+      model: row.model ?? null,
+      effort: row.effort ?? null,
+      serviceTier: row.service_tier ?? null,
+      pricingContextQuality: row.pricing_context_quality ?? null,
+      taskSequence: row.task_sequence == null ? null : Number(row.task_sequence),
+      agentDepth: row.agent_depth == null ? null : Number(row.agent_depth),
+      isRootAgent: row.agent_is_root == null ? null : Boolean(row.agent_is_root),
+      inScope: false,
+    }));
+  }
+
+  getHistoricalDiagnosticSessionFacts(rootSessionId, {
+    projectPath,
+    after,
+    before,
+    maxSlicesPerCohort = 20,
+  } = {}) {
+    if (!projectPath || !after || !before) return [];
+    const sliceCap = Math.max(1, Math.min(100, Number(maxSlicesPerCohort) || 20));
+    const rows = this.db.prepare(`
+      WITH slice_candidates AS (
+        SELECT
+          r.root_session_id,
+          r.model,
+          t.effort,
+          MAX(r.observed_at) AS last_observed_at
+        FROM canonical_requests r
+        JOIN sessions s ON s.id=r.root_session_id
+        LEFT JOIN tasks t
+          ON t.root_session_id=r.root_session_id
+         AND t.thread_id=r.thread_id
+         AND t.turn_id=r.turn_id
+        WHERE s.project_path=?
+          AND r.root_session_id<>?
+          AND r.observed_at>=?
+          AND r.observed_at<?
+          AND r.model IS NOT NULL
+          AND t.effort IS NOT NULL
+        GROUP BY r.root_session_id, r.model, t.effort
+      ), ranked_slices AS (
+        SELECT
+          root_session_id,
+          model,
+          effort,
+          last_observed_at,
+          ROW_NUMBER() OVER (
+            PARTITION BY model, effort
+            ORDER BY last_observed_at DESC, root_session_id DESC
+          ) AS slice_rank
+        FROM slice_candidates
+      ), selected_slices AS (
+        SELECT root_session_id, model, effort
+        FROM ranked_slices
+        WHERE slice_rank<=?
+      )
+      SELECT
+        r.request_id,
+        r.root_session_id,
+        r.thread_id,
+        r.turn_id,
+        r.event_ordinal,
+        r.observed_at,
+        r.generation,
+        r.classification,
+        r.quality,
+        r.reason,
+        r.input_tokens,
+        r.cached_input_tokens,
+        r.cache_write_input_tokens,
+        r.output_tokens,
+        r.reasoning_output_tokens,
+        r.total_tokens,
+        r.model,
+        r.service_tier,
+        r.pricing_context_quality,
+        s.project_path,
+        t.effort,
+        t.sequence AS task_sequence,
+        a.depth AS agent_depth,
+        a.is_root AS agent_is_root
+      FROM canonical_requests r
+      JOIN sessions s ON s.id=r.root_session_id
+      LEFT JOIN tasks t
+        ON t.root_session_id=r.root_session_id
+       AND t.thread_id=r.thread_id
+       AND t.turn_id=r.turn_id
+      LEFT JOIN agents a
+        ON a.root_session_id=r.root_session_id
+       AND a.thread_id=r.thread_id
+      INNER JOIN selected_slices selected
+        ON selected.root_session_id=r.root_session_id
+       AND selected.model=r.model
+       AND selected.effort=t.effort
+      WHERE s.project_path=?
+        AND r.root_session_id<>?
+        AND r.observed_at>=?
+        AND r.observed_at<?
+      ORDER BY r.observed_at, r.root_session_id, r.request_id
+    `).all(
+      projectPath,
+      rootSessionId,
+      after,
+      before,
+      sliceCap,
+      projectPath,
+      rootSessionId,
+      after,
+      before,
+    );
+    return rows.map((row) => ({
+      requestId: row.request_id,
+      rootSessionId: row.root_session_id,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      eventOrdinal: row.event_ordinal == null ? null : Number(row.event_ordinal),
+      observedAt: row.observed_at ?? null,
+      generation: Number(row.generation ?? 0),
+      classification: row.classification,
+      quality: row.quality,
+      reason: row.reason ?? null,
+      usage: usageFromModelUsageRow(row),
+      projectPath: row.project_path ?? null,
+      model: row.model ?? null,
+      effort: row.effort ?? null,
+      serviceTier: row.service_tier ?? null,
+      pricingContextQuality: row.pricing_context_quality ?? null,
+      taskSequence: row.task_sequence == null ? null : Number(row.task_sequence),
+      agentDepth: row.agent_depth == null ? null : Number(row.agent_depth),
+      isRootAgent: row.agent_is_root == null ? null : Boolean(row.agent_is_root),
+      inScope: false,
+    }));
+  }
+
+  getHistoricalSubagentAmplificationSamples(rootSessionId, {
+    projectPath,
+    after,
+    before,
+    maxSessions = 20,
+  } = {}) {
+    if (!projectPath || !after || !before) return [];
+    const sessionCap = Math.max(1, Math.min(100, Number(maxSessions) || 20));
+    return this.db.prepare(`
+      WITH per_session AS (
+        SELECT
+          r.root_session_id,
+          s.project_path,
+          MAX(r.observed_at) AS observed_at,
+          SUM(CASE WHEN a.is_root=1 THEN COALESCE(r.total_tokens, 0) ELSE 0 END) AS root_tokens,
+          SUM(CASE WHEN a.depth>0 THEN COALESCE(r.total_tokens, 0) ELSE 0 END) AS descendant_tokens,
+          SUM(CASE WHEN a.is_root=1 THEN 1 ELSE 0 END) AS root_requests,
+          SUM(CASE WHEN a.depth>0 THEN 1 ELSE 0 END) AS descendant_requests,
+          COUNT(DISTINCT CASE WHEN a.depth>0 THEN a.thread_id END) AS descendant_agents,
+          MAX(CASE WHEN a.depth>0 THEN a.depth ELSE 0 END) AS max_depth
+        FROM canonical_requests r
+        JOIN sessions s ON s.id=r.root_session_id
+        JOIN agents a
+          ON a.root_session_id=r.root_session_id
+         AND a.thread_id=r.thread_id
+        WHERE s.project_path=?
+          AND r.root_session_id<>?
+          AND r.observed_at>=?
+          AND r.observed_at<?
+          AND r.classification IN ('verified_increment', 'generation_start')
+        GROUP BY r.root_session_id, s.project_path
+      )
+      SELECT *
+      FROM per_session
+      WHERE root_tokens>0
+        AND descendant_tokens>0
+        AND root_requests>0
+        AND descendant_requests>0
+      ORDER BY observed_at DESC, root_session_id DESC
+      LIMIT ?
+    `).all(projectPath, rootSessionId, after, before, sessionCap)
+      .reverse()
+      .map((row) => ({
+        rootSessionId: row.root_session_id,
+        projectPath: row.project_path,
+        observedAt: row.observed_at,
+        rootTokens: Number(row.root_tokens ?? 0),
+        descendantTokens: Number(row.descendant_tokens ?? 0),
+        rootRequests: Number(row.root_requests ?? 0),
+        descendantRequests: Number(row.descendant_requests ?? 0),
+        descendantAgents: Number(row.descendant_agents ?? 0),
+        maxDepth: Number(row.max_depth ?? 0),
+        tokenRatio: Number(row.root_tokens ?? 0) > 0
+          ? Number(row.descendant_tokens ?? 0) / Number(row.root_tokens)
+          : null,
+      }));
+  }
+
   getCanonicalTaskRequests(rootSessionId, threadId, turnId, {
     range = null,
     limit = 200,
@@ -1961,6 +2383,19 @@ function mapModelUsageEvent(row) {
     requestIdentityKind: row.request_identity_kind ?? null,
     requestIdentityReason: row.request_identity_reason ?? null,
     requestNativeField: row.request_native_field ?? null,
+  };
+}
+
+function mapDiagnosticAlertPolicy(row) {
+  return {
+    projectPath: row.project_path,
+    sessionCostBudgetUsd: row.session_cost_budget_usd == null
+      ? null
+      : Number(row.session_cost_budget_usd),
+    minimumSeverity: row.minimum_severity ?? "high",
+    cooldownMinutes: Number(row.cooldown_minutes ?? 60),
+    snoozedUntil: row.snoozed_until ?? null,
+    updatedAt: row.updated_at ?? null,
   };
 }
 

@@ -192,7 +192,7 @@ test("parser semantics version reindexes stale cursor diagnostics without changi
   second = await bootMonitor(codexHome, databasePath);
   await second.monitor.runBackgroundIndexer();
   const state = second.database.getSessionIndexState(ROOT);
-  assert.equal(second.database.getHealthStats().schemaVersion, 14);
+  assert.equal(second.database.getHealthStats().schemaVersion, 15);
   assert.equal(state.parserVersion, 15);
   assert.equal(state.parserCurrent, true);
   assert.equal(second.database.getHealthStats().unknownRecords, 0);
@@ -403,7 +403,7 @@ test("SQLite persists usage metadata without a prompt field", async (t) => {
   assert.equal(calendar.months[0].days[0].sessions[0].tokensPerModelRequest, 42);
   assert.equal(calendar.months[0].days[0].sessions[0].taskCount, 1);
   assert.equal(reopened.getHealthStats().calendarRows, 1);
-  assert.equal(reopened.getHealthStats().schemaVersion, 14);
+  assert.equal(reopened.getHealthStats().schemaVersion, 15);
   assert.equal(reopened.getHealthStats().modelUsageEventRows, 1);
   assert.equal(reopened.getHealthStats().cacheSize, -2000);
   assert.equal(reopened.getHealthStats().mmapSize, 0);
@@ -441,7 +441,7 @@ test("T-COST-062 v12 to v13 preserves classification and all six usage fields", 
   database = new MonitorDatabase(path);
   const after = database.db.prepare(evidenceSql).all();
   assert.deepEqual(after, before);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 14);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 15);
   const event = database.getModelUsageEvents(ROOT)[0];
   assert.equal(event.model, null);
   assert.equal(event.serviceTier, null);
@@ -483,7 +483,7 @@ test("T-ID-007 schema v13 to v14 backfills durable request identity from persist
   assert.equal(row.request_identity_kind, "reconstructed");
   assert.equal(row.request_identity_reason, "deterministic_request_reconstruction");
   assert.equal(database.getHealthStats().canonicalRequestRows, 1);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 14);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 15);
 });
 
 test("request ledger exclusively drives snapshot, agent, cost, and calendar usage", async (t) => {
@@ -553,7 +553,7 @@ test("T-DAY-040/042/043 schema v14 preserves v12 observedAt day slices and resta
   const restarted = database.getTimeline();
   assertDayTimeline(restarted, "2026-08-26", 100, 1, 1);
   assertDayTimeline(restarted, "2026-08-27", 200, 2, 2);
-  assert.equal(database.getHealthStats().schemaVersion, 14);
+  assert.equal(database.getHealthStats().schemaVersion, 15);
 });
 
 test("T-DAY-022 event-backed task without lifecycle timestamps is day-attributed only once", async (t) => {
@@ -627,7 +627,7 @@ test("T-DAY-041 v11 through v13 rebuilds calendar from persisted ledger without 
   legacy.close();
 
   booted = await bootMonitor(codexHome, databasePath);
-  assert.equal(booted.database.db.prepare("PRAGMA user_version").get().user_version, 14);
+  assert.equal(booted.database.db.prepare("PRAGMA user_version").get().user_version, 15);
   assert.equal(booted.monitor.health().timeline.dirtySessions, 0);
   const timeline = await booted.monitor.timeline();
   assert.equal(timeline.usage.totalTokens, 100);
@@ -859,7 +859,7 @@ test("schema v1 ingest cursors migrate to portable resumable schema v14", async 
   assert.equal(columns.some((column) => column.name === "discontinuities"), true);
   assert.equal(columns.some((column) => column.name === "source_key"), true);
   assert.equal(columns.some((column) => column.name === "path"), false);
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 14);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 15);
   const cursors = migrated.getCursors(ROOT);
   assert.equal(cursors.length, 1);
   assert.equal(cursors[0].sourceKey, "sessions/2026/08/24/rollout-fixture.jsonl");
@@ -908,7 +908,7 @@ test("schema v5 sessions gain project locator metadata without losing rows", asy
     updatedAt: "2026-08-24T00:01:00.000Z",
   }]);
   assert.equal(migrated.listSessions()[0].projectPath, "C:\\workspace\\retained-project");
-  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 14);
+  assert.equal(migrated.db.prepare("PRAGMA user_version").get().user_version, 15);
 });
 
 test("schema v8 sessions replay once to backfill the request ledger", async (t) => {
@@ -1000,7 +1000,7 @@ test("schema v10 retires boundary storage and reaches v13 without replaying roll
 
   ({ monitor, database } = await bootMonitor(codexHome, databasePath));
   assert.equal(database.getSessionIndexState(ROOT).requestLedgerReady, true);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 14);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 15);
   const taskColumns = database.db.prepare("PRAGMA table_info(tasks)").all().map((row) => row.name);
   assert.equal(taskColumns.includes("quality"), false);
   assert.equal(taskColumns.includes("baseline_usage"), false);
@@ -1511,6 +1511,578 @@ test("Phase 19 request drill-down returns only canonical task requests with stab
   assert.equal(invalidPage.status, 400);
 });
 
+test("Phase 23 diagnostic facts read canonical requests once and preserve pre-day baseline history", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-diagnostic-facts-"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  t.after(async () => {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  database.replaceSession(crossMidnightSnapshot());
+
+  const full = database.getDiagnosticFacts(ROOT);
+  assert.equal(full.length, 3);
+  assert.deepEqual(full.map((fact) => fact.usage.totalTokens), [100, 50, 150]);
+  assert.deepEqual(full.map((fact) => fact.inScope), [true, true, true]);
+  assert.deepEqual(full.map((fact) => fact.effort), ["xhigh", "xhigh", "high"]);
+
+  const range = {
+    startMs: Date.parse("2026-08-27T00:00:00-07:00"),
+    endMs: Date.parse("2026-08-28T00:00:00-07:00"),
+  };
+  const day = database.getDiagnosticFacts(ROOT, { range });
+  assert.equal(day.length, 3);
+  assert.deepEqual(day.map((fact) => fact.inScope), [false, true, true]);
+  assert.ok(Date.parse(day[0].observedAt) < range.startMs);
+  assert.ok(day.slice(1).every((fact) => Date.parse(fact.observedAt) >= range.startMs));
+  assert.ok(day.every((fact) => Date.parse(fact.observedAt) < range.endMs));
+  assert.equal(day.some((fact) => Object.hasOwn(fact, "sourcePath")), false);
+});
+
+test("Phase 24 historical facts exclude the current session and stay project/cohort/time bounded", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-advanced-facts-"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  t.after(async () => {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  database.replaceSession(advancedHistorySnapshot(1, {
+    rootSessionId: "advanced-current",
+    observedAt: "2026-08-25T10:00:00.000Z",
+    inputTokens: 250_000,
+  }));
+  database.replaceSession(advancedHistorySnapshot(2, {
+    rootSessionId: "advanced-old-1",
+    observedAt: "2026-08-20T10:00:00.000Z",
+    inputTokens: 100_000,
+  }));
+  database.replaceSession(advancedHistorySnapshot(3, {
+    rootSessionId: "advanced-old-2",
+    observedAt: "2026-08-21T10:00:00.000Z",
+    inputTokens: 110_000,
+  }));
+  database.replaceSession(advancedHistorySnapshot(4, {
+    rootSessionId: "advanced-old-3",
+    observedAt: "2026-08-22T10:00:00.000Z",
+    inputTokens: 120_000,
+  }));
+  database.replaceSession(advancedHistorySnapshot(5, {
+    rootSessionId: "advanced-other-project",
+    projectPath: "C:\\workspace\\other-project",
+    observedAt: "2026-08-23T10:00:00.000Z",
+    inputTokens: 999_000,
+  }));
+  database.replaceSession(advancedHistorySnapshot(6, {
+    rootSessionId: "advanced-future",
+    observedAt: "2026-08-26T10:00:00.000Z",
+    inputTokens: 888_000,
+  }));
+
+  const facts = database.getHistoricalDiagnosticFacts("advanced-current", {
+    projectPath: "C:\\workspace\\advanced",
+    after: "2026-08-01T00:00:00.000Z",
+    before: "2026-08-25T10:00:00.000Z",
+    maxSamplesPerCohort: 2,
+  });
+
+  assert.deepEqual(facts.map((fact) => fact.rootSessionId), ["advanced-old-2", "advanced-old-3"]);
+  assert.deepEqual(facts.map((fact) => fact.usage.inputTokens), [110_000, 120_000]);
+  assert.ok(facts.every((fact) => fact.projectPath === "C:\\workspace\\advanced"));
+  assert.ok(facts.every((fact) => fact.model === "gpt-5.6-sol" && fact.effort === "high"));
+  assert.equal(facts.some((fact) => Object.hasOwn(fact, "sourcePath")), false);
+
+  const sessionFacts = database.getHistoricalDiagnosticSessionFacts("advanced-current", {
+    projectPath: "C:\\workspace\\advanced",
+    after: "2026-08-01T00:00:00.000Z",
+    before: "2026-08-25T10:00:00.000Z",
+    maxSlicesPerCohort: 2,
+  });
+  assert.deepEqual(
+    [...new Set(sessionFacts.map((fact) => fact.rootSessionId))],
+    ["advanced-old-2", "advanced-old-3"],
+  );
+});
+
+test("Phase 24B lineage facts and amplification history stay canonical, project-bounded, and current-session excluded", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-behavioral-lineage-"));
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  t.after(async () => {
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  for (let index = 0; index < 6; index += 1) {
+    database.replaceSession(behavioralLineageSnapshot(index + 1, {
+      rootSessionId: `behavior-history-${index + 1}`,
+      observedAt: `2026-08-${String(index + 10).padStart(2, "0")}T10:00:00.000Z`,
+      rootTokens: 1_000_000,
+      descendantTokens: 500_000 + index * 100_000,
+    }));
+  }
+  database.replaceSession(behavioralLineageSnapshot(50, {
+    rootSessionId: "behavior-other-project",
+    projectPath: "C:\\workspace\\behavior-other",
+    observedAt: "2026-08-20T10:00:00.000Z",
+    rootTokens: 1_000_000,
+    descendantTokens: 9_000_000,
+  }));
+  database.replaceSession(behavioralLineageSnapshot(100, {
+    rootSessionId: "behavior-current",
+    observedAt: "2026-08-25T10:00:00.000Z",
+    rootTokens: 1_000_000,
+    descendantTokens: 6_000_000,
+  }));
+
+  const currentFacts = database.getDiagnosticFacts("behavior-current");
+  assert.deepEqual(currentFacts.map((fact) => fact.agentDepth), [0, 1]);
+  assert.deepEqual(currentFacts.map((fact) => fact.isRootAgent), [true, false]);
+
+  const samples = database.getHistoricalSubagentAmplificationSamples("behavior-current", {
+    projectPath: "C:\\workspace\\behavior",
+    after: "2026-08-01T00:00:00.000Z",
+    before: "2026-08-25T10:00:00.000Z",
+    maxSessions: 5,
+  });
+  assert.deepEqual(
+    samples.map((sample) => sample.rootSessionId),
+    ["behavior-history-2", "behavior-history-3", "behavior-history-4", "behavior-history-5", "behavior-history-6"],
+  );
+  assert.deepEqual(samples.map((sample) => sample.tokenRatio), [0.6, 0.7, 0.8, 0.9, 1]);
+  assert.ok(samples.every((sample) => sample.projectPath === "C:\\workspace\\behavior"));
+  assert.ok(samples.every((sample) => sample.rootRequests === 1 && sample.descendantRequests === 1));
+  assert.equal(samples.some((sample) => sample.rootSessionId === "behavior-current"), false);
+  assert.equal(samples.some((sample) => sample.rootSessionId === "behavior-other-project"), false);
+});
+
+test("Phase 24B2 diagnostic alert operational state persists without changing canonical accounting", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-alert-state-"));
+  const databasePath = join(directory, "usage.sqlite");
+  let database = new MonitorDatabase(databasePath);
+  t.after(async () => {
+    database?.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  database.replaceSession(diagnosticsSnapshot());
+  const before = database.db.prepare(`
+    SELECT COUNT(*) AS request_count, SUM(total_tokens) AS total_tokens
+    FROM canonical_requests
+  `).get();
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 15);
+  assert.equal(database.getDiagnosticAlertPolicy("C:\\workspace\\project"), null);
+
+  const policy = database.upsertDiagnosticAlertPolicy("C:\\workspace\\project", {
+    sessionCostBudgetUsd: 1.25,
+    minimumSeverity: "warning",
+    cooldownMinutes: 45,
+    snoozedUntil: "2026-09-02T12:00:00.000Z",
+    updatedAt: "2026-09-02T10:00:00.000Z",
+  });
+  assert.deepEqual(policy, {
+    projectPath: "C:\\workspace\\project",
+    sessionCostBudgetUsd: 1.25,
+    minimumSeverity: "warning",
+    cooldownMinutes: 45,
+    snoozedUntil: "2026-09-02T12:00:00.000Z",
+    updatedAt: "2026-09-02T10:00:00.000Z",
+  });
+  database.acknowledgeDiagnosticAlert(ROOT, "budget_fixture_alert", "2026-09-02T10:01:00.000Z");
+  assert.deepEqual(database.getDiagnosticAlertAcknowledgements(ROOT), [{
+    alertId: "budget_fixture_alert",
+    acknowledgedAt: "2026-09-02T10:01:00.000Z",
+  }]);
+  const after = database.db.prepare(`
+    SELECT COUNT(*) AS request_count, SUM(total_tokens) AS total_tokens
+    FROM canonical_requests
+  `).get();
+  assert.deepEqual(after, before);
+
+  database.close();
+  database = new MonitorDatabase(databasePath);
+  assert.equal(database.getDiagnosticAlertPolicy("C:\\workspace\\project")?.sessionCostBudgetUsd, 1.25);
+  assert.equal(database.getDiagnosticAlertAcknowledgements(ROOT)[0]?.alertId, "budget_fixture_alert");
+});
+
+test("Phase 23 monitor diagnostics stays on the cached projection when the session is dirty", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-diagnostics-monitor-"));
+  const codexHome = join(directory, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  database.replaceSession(diagnosticsSnapshot());
+  const repository = new CodexRepository(codexHome, database);
+  const monitor = new UsageMonitor({ repository, database });
+  t.after(async () => {
+    monitor.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  monitor.timelineDirtySessions.add(ROOT);
+  monitor.selectSession = async () => {
+    throw new Error("diagnostics must not call selectSession");
+  };
+  const range = {
+    startMs: Date.parse("2026-08-26T00:00:00-07:00"),
+    endMs: Date.parse("2026-08-27T00:00:00-07:00"),
+    timezone: "America/Los_Angeles",
+  };
+  const report = monitor.diagnostics(ROOT, { type: "day", day: "2026-08-26", range });
+  assert.ok(report);
+  assert.equal(report.stale, true);
+  assert.ok(Number.isInteger(report.projectionGeneration));
+  assert.deepEqual(report.scope, { type: "day", day: "2026-08-26", timezone: "America/Los_Angeles" });
+  const finding = report.findings.find((candidate) => candidate.type === "context_inflation");
+  assert.ok(finding);
+  assert.equal(Date.parse(finding.observedAt), Date.parse("2026-08-26T08:00:00-07:00"));
+  assert.ok(finding.requestId);
+  assert.equal(finding.locator.requestOrdinalInScope, 1);
+});
+
+test("Phase 24 monitor advanced diagnostics stays lazy and reads bounded historical projections", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-advanced-monitor-"));
+  const codexHome = join(directory, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  for (let index = 0; index < 20; index += 1) {
+    database.replaceSession(advancedHistorySnapshot(index + 1, {
+      rootSessionId: `advanced-history-${index + 1}`,
+      observedAt: `2026-08-${String(index + 1).padStart(2, "0")}T10:00:00.000Z`,
+      inputTokens: 80_000 + index * 2_000,
+    }));
+  }
+  database.replaceSession(advancedHistorySnapshot(100, {
+    rootSessionId: "advanced-monitor-current",
+    observedAt: "2026-08-25T10:00:00.000Z",
+    inputTokens: 200_000,
+  }));
+  const repository = new CodexRepository(codexHome, database);
+  const monitor = new UsageMonitor({ repository, database });
+  t.after(async () => {
+    monitor.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  monitor.timelineDirtySessions.add("advanced-monitor-current");
+  monitor.selectSession = async () => {
+    throw new Error("advanced diagnostics must not call selectSession");
+  };
+
+  const report = monitor.advancedDiagnostics("advanced-monitor-current");
+  assert.ok(report);
+  assert.equal(report.policy.version, "advanced-usage-diagnostics-v1");
+  assert.equal(report.stale, true);
+  assert.ok(Number.isInteger(report.projectionGeneration));
+  const finding = report.findings.find((entry) => entry.type === "historical_context_inflation");
+  assert.ok(finding);
+  assert.equal(finding.severity, "high");
+  assert.equal(finding.baseline.sampleCount, 20);
+  assert.equal(finding.cohort.projectPath, "C:\\workspace\\advanced");
+});
+
+test("Phase 24B monitor behavioral diagnostics stays lazy and exposes only frozen deterministic findings", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-behavioral-monitor-"));
+  const codexHome = join(directory, ".codex");
+  await mkdir(codexHome, { recursive: true });
+  const database = new MonitorDatabase(join(directory, "usage.sqlite"));
+  for (let index = 0; index < 20; index += 1) {
+    database.replaceSession(advancedHistorySnapshot(index + 1, {
+      rootSessionId: `behavior-monitor-history-${index + 1}`,
+      observedAt: `2026-08-${String(index + 1).padStart(2, "0")}T09:00:00.000Z`,
+      inputTokens: 100_000,
+      outputTokens: 2_000,
+      reasoningOutputTokens: 400 + index * 20,
+    }));
+  }
+  database.replaceSession(advancedHistorySnapshot(100, {
+    rootSessionId: "behavior-monitor-current",
+    observedAt: "2026-08-25T09:00:00.000Z",
+    inputTokens: 100_000,
+    outputTokens: 2_000,
+    reasoningOutputTokens: 1_500,
+  }));
+  const repository = new CodexRepository(codexHome, database);
+  const monitor = new UsageMonitor({ repository, database });
+  t.after(async () => {
+    monitor.close();
+    database.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  monitor.timelineDirtySessions.add("behavior-monitor-current");
+  monitor.selectSession = async () => {
+    throw new Error("behavioral diagnostics must not call selectSession");
+  };
+
+  const report = monitor.behavioralDiagnostics("behavior-monitor-current");
+  assert.ok(report);
+  assert.equal(report.policy.version, "behavioral-usage-diagnostics-v1");
+  assert.equal(report.policy.frozen, true);
+  assert.equal(report.stale, true);
+  assert.equal(Object.hasOwn(report, "candidates"), false);
+  const finding = report.findings.find((entry) => entry.type === "reasoning_anomaly");
+  assert.ok(finding);
+  assert.equal(finding.severity, "high");
+  assert.equal(finding.baseline.sampleCount, 20);
+  assert.equal(finding.cohort.projectPath, "C:\\workspace\\advanced");
+});
+
+test("Phase 23 diagnostics HTTP endpoint is lazy, day-scoped, validated, and metadata-only", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-diagnostics-api-"));
+  const codexHome = join(directory, ".codex");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(codexHome, { recursive: true });
+  const seed = new MonitorDatabase(databasePath);
+  seed.replaceSession(diagnosticsSnapshot());
+  seed.close();
+  const app = await startApplication({ codexHome, databasePath, port: 49_181, openBrowser: false });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { base, cookie } = await authenticateApplication(app);
+  const response = await fetch(`${base}/api/sessions/${ROOT}/diagnostics?day=2026-08-26`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.scope.type, "day");
+  assert.equal(payload.scope.day, "2026-08-26");
+  assert.equal(payload.policy.version, "usage-diagnostics-v1");
+  assert.ok(payload.findings.some((finding) => finding.type === "context_inflation"));
+  assert.doesNotMatch(JSON.stringify(payload), /sourcePath|prompt|response|credential/iu);
+
+  const invalidDay = await fetch(`${base}/api/sessions/${ROOT}/diagnostics?day=2026-02-31`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(invalidDay.status, 400);
+  const missing = await fetch(`${base}/api/sessions/${OTHER_ROOT}/diagnostics`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(missing.status, 404);
+});
+
+test("Phase 24 advanced diagnostics HTTP endpoint is independent, day-scoped, and metadata-only", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-advanced-api-"));
+  const codexHome = join(directory, ".codex");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(codexHome, { recursive: true });
+  const seed = new MonitorDatabase(databasePath);
+  for (let index = 0; index < 20; index += 1) {
+    seed.replaceSession(advancedHistorySnapshot(index + 1, {
+      rootSessionId: `advanced-api-history-${index + 1}`,
+      observedAt: `2026-08-${String(index + 1).padStart(2, "0")}T10:00:00.000Z`,
+      inputTokens: 80_000 + index * 2_000,
+    }));
+  }
+  seed.replaceSession(advancedHistorySnapshot(200, {
+    rootSessionId: "advanced-api-current",
+    observedAt: "2026-08-25T10:00:00.000Z",
+    inputTokens: 200_000,
+  }));
+  seed.close();
+  const app = await startApplication({ codexHome, databasePath, port: 49_182, openBrowser: false });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { base, cookie } = await authenticateApplication(app);
+  const endpoint = `${base}/api/sessions/advanced-api-current/advanced-diagnostics`;
+
+  const response = await fetch(endpoint, { headers: { Cookie: cookie } });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.scope.type, "session");
+  assert.equal(payload.policy.version, "advanced-usage-diagnostics-v1");
+  assert.equal(payload.policy.frozen, true);
+  const sessionFinding = payload.findings.find((entry) => entry.type === "historical_context_inflation");
+  assert.ok(sessionFinding);
+  assert.doesNotMatch(
+    JSON.stringify(payload),
+    /candidates|shadowSeverity|sourcePath|prompt|response|credential/iu,
+  );
+
+  const dayResponse = await fetch(`${endpoint}?day=2026-08-25`, { headers: { Cookie: cookie } });
+  assert.equal(dayResponse.status, 200);
+  const day = await dayResponse.json();
+  assert.equal(day.scope.type, "day");
+  assert.equal(day.scope.day, "2026-08-25");
+  const dayFinding = day.findings.find((entry) => entry.type === "historical_context_inflation");
+  assert.ok(dayFinding);
+  assert.equal(dayFinding.findingId, sessionFinding.findingId);
+  assert.equal(day.findings.some((entry) => entry.family === "cross_session"), false);
+
+  const invalidDay = await fetch(`${endpoint}?day=2026-02-31`, { headers: { Cookie: cookie } });
+  assert.equal(invalidDay.status, 400);
+  const missing = await fetch(`${base}/api/sessions/missing-advanced/advanced-diagnostics`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(missing.status, 404);
+});
+
+test("Phase 24B behavioral diagnostics HTTP endpoint is lazy, day-invariant for Request findings, and metadata-only", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-behavioral-api-"));
+  const codexHome = join(directory, ".codex");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(codexHome, { recursive: true });
+  const seed = new MonitorDatabase(databasePath);
+  for (let index = 0; index < 20; index += 1) {
+    seed.replaceSession(advancedHistorySnapshot(index + 1, {
+      rootSessionId: `behavior-api-history-${index + 1}`,
+      observedAt: `2026-08-${String(index + 1).padStart(2, "0")}T09:00:00.000Z`,
+      inputTokens: 100_000,
+      outputTokens: 2_000,
+      reasoningOutputTokens: 400 + index * 20,
+    }));
+  }
+  seed.replaceSession(advancedHistorySnapshot(200, {
+    rootSessionId: "behavior-api-current",
+    observedAt: "2026-08-25T09:00:00.000Z",
+    inputTokens: 100_000,
+    outputTokens: 2_000,
+    reasoningOutputTokens: 1_500,
+  }));
+  seed.close();
+  const app = await startApplication({ codexHome, databasePath, port: 49_183, openBrowser: false });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { base, cookie } = await authenticateApplication(app);
+  const endpoint = `${base}/api/sessions/behavior-api-current/behavioral-diagnostics`;
+
+  const response = await fetch(endpoint, { headers: { Cookie: cookie } });
+  assert.equal(response.status, 200);
+  const payload = await response.json();
+  assert.equal(payload.scope.type, "session");
+  assert.equal(payload.policy.version, "behavioral-usage-diagnostics-v1");
+  assert.equal(payload.policy.frozen, true);
+  const sessionFinding = payload.findings.find((entry) => entry.type === "reasoning_anomaly");
+  assert.ok(sessionFinding);
+  assert.doesNotMatch(
+    JSON.stringify(payload),
+    /candidates|shadowSeverity|sourcePath|prompt|response|credential/iu,
+  );
+
+  const dayResponse = await fetch(`${endpoint}?day=2026-08-25`, { headers: { Cookie: cookie } });
+  assert.equal(dayResponse.status, 200);
+  const day = await dayResponse.json();
+  assert.equal(day.scope.type, "day");
+  const dayFinding = day.findings.find((entry) => entry.type === "reasoning_anomaly");
+  assert.ok(dayFinding);
+  assert.equal(dayFinding.findingId, sessionFinding.findingId);
+  assert.equal(day.findings.some((entry) => entry.family === "behavioral_session"), false);
+
+  const invalidDay = await fetch(`${endpoint}?day=2026-02-31`, { headers: { Cookie: cookie } });
+  assert.equal(invalidDay.status, 400);
+  const missing = await fetch(`${base}/api/sessions/missing-behavior/behavioral-diagnostics`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(missing.status, 404);
+});
+
+test("Phase 24B2 local alert POST allowlist persists budget, ack, and snooze while rejecting foreign origin", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-alert-api-"));
+  const codexHome = join(directory, ".codex");
+  const databasePath = join(directory, "usage.sqlite");
+  await mkdir(codexHome, { recursive: true });
+  const seed = new MonitorDatabase(databasePath);
+  seed.replaceSession(diagnosticsSnapshot());
+  seed.close();
+  const app = await startApplication({ codexHome, databasePath, port: 49_183, openBrowser: false });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+  const { base, cookie } = await authenticateApplication(app);
+  const origin = new URL(base).origin;
+
+  const forbidden = await fetch(`${base}/api/sessions/${ROOT}/diagnostic-alert-policy`, {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      Origin: "https://evil.example",
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({ sessionCostBudgetUsd: 0.000001 }),
+  });
+  assert.equal(forbidden.status, 403);
+
+  const unrelatedPost = await fetch(`${base}/api/health`, {
+    method: "POST",
+    headers: { Cookie: cookie, Origin: origin },
+  });
+  assert.equal(unrelatedPost.status, 405);
+
+  const policyResponse = await fetch(`${base}/api/sessions/${ROOT}/diagnostic-alert-policy`, {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      Origin: origin,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      sessionCostBudgetUsd: 0.000001,
+      minimumSeverity: "warning",
+      cooldownMinutes: 5,
+    }),
+  });
+  assert.equal(policyResponse.status, 200);
+  const savedPolicy = (await policyResponse.json()).policy;
+  assert.equal(savedPolicy.sessionCostBudgetUsd, 0.000001);
+  assert.equal(savedPolicy.minimumSeverity, "warning");
+  assert.equal(savedPolicy.cooldownMinutes, 5);
+
+  const alertsResponse = await fetch(`${base}/api/sessions/${ROOT}/diagnostic-alerts`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(alertsResponse.status, 200);
+  const alerts = await alertsResponse.json();
+  const budgetAlert = alerts.alerts.find((alert) => alert.kind === "session_cost_budget");
+  assert.ok(budgetAlert);
+  assert.equal(budgetAlert.severity, "high");
+  assert.doesNotMatch(JSON.stringify(alerts), /prompt|response|credential|sourcePath/iu);
+
+  const ackResponse = await fetch(
+    `${base}/api/sessions/${ROOT}/diagnostic-alerts/${encodeURIComponent(budgetAlert.alertId)}/ack`,
+    { method: "POST", headers: { Cookie: cookie, Origin: origin } },
+  );
+  assert.equal(ackResponse.status, 200);
+  const afterAck = await fetch(`${base}/api/sessions/${ROOT}/diagnostic-alerts`, {
+    headers: { Cookie: cookie },
+  }).then((response) => response.json());
+  assert.equal(afterAck.alerts.some((alert) => alert.alertId === budgetAlert.alertId), false);
+  assert.ok(afterAck.acknowledgedCount >= 1);
+
+  const policy2 = await fetch(`${base}/api/sessions/${ROOT}/diagnostic-alert-policy`, {
+    method: "POST",
+    headers: {
+      Cookie: cookie,
+      Origin: origin,
+      "Content-Type": "application/json",
+    },
+    body: JSON.stringify({
+      sessionCostBudgetUsd: 0.000002,
+      minimumSeverity: "warning",
+      cooldownMinutes: 5,
+    }),
+  });
+  assert.equal(policy2.status, 200);
+  const beforeSnooze = await fetch(`${base}/api/sessions/${ROOT}/diagnostic-alerts`, {
+    headers: { Cookie: cookie },
+  }).then((response) => response.json());
+  assert.ok(beforeSnooze.alerts.length >= 1);
+
+  const snoozeResponse = await fetch(`${base}/api/sessions/${ROOT}/diagnostic-alerts/snooze`, {
+    method: "POST",
+    headers: { Cookie: cookie, Origin: origin },
+  });
+  assert.equal(snoozeResponse.status, 200);
+  const afterSnooze = await fetch(`${base}/api/sessions/${ROOT}/diagnostic-alerts`, {
+    headers: { Cookie: cookie },
+  }).then((response) => response.json());
+  assert.equal(afterSnooze.snoozed, true);
+  assert.equal(afterSnooze.alerts.length, 0);
+  assert.ok(afterSnooze.suppressedBySnooze >= 1);
+});
+
 test("T-DAY-060..062 scoped SSE rematerializes the listener scope after updates", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-day-sse-"));
   const codexHome = join(directory, ".codex");
@@ -1914,6 +2486,282 @@ function assertDayTimeline(timeline, dayKey, totalTokens, taskCount, requestCoun
   assert.equal(session.usage.totalTokens, totalTokens);
   assert.equal(session.taskCount, taskCount);
   assert.equal(session.modelRequestCount, requestCount);
+}
+
+function diagnosticsSnapshot() {
+  const base = crossMidnightSnapshot();
+  const sourceKey = "sessions/2026/08/25/rollout-diagnostics.jsonl";
+  const task = {
+    ...base.tasks[0],
+    sourceKey,
+    model: "gpt-5.6-sol",
+    effort: "high",
+    startedAt: "2026-08-25T19:00:00-07:00",
+    completedAt: "2026-08-26T10:00:00-07:00",
+  };
+  const requests = [
+    [1, 100_000, "2026-08-25T20:00:00-07:00", "generation_start"],
+    [2, 100_000, "2026-08-25T21:00:00-07:00", "verified_increment"],
+    [3, 100_000, "2026-08-25T22:00:00-07:00", "verified_increment"],
+    [4, 200_000, "2026-08-26T08:00:00-07:00", "verified_increment"],
+  ].map(([lineNumber, totalTokens, observedAt, classification]) => ({
+    ...directUsageEvent({
+      lineNumber,
+      threadId: ROOT,
+      turnId: TURN,
+      totalTokens,
+      observedAt,
+      classification,
+    }),
+    sourceKey,
+    model: "gpt-5.6-sol",
+    serviceTier: "standard",
+    requestIdentity: `diag-request-${lineNumber}`,
+    requestIdentityKind: "native",
+    requestIdentityReason: "fixture",
+    requestNativeField: "request_id",
+  }));
+  return {
+    ...base,
+    session: {
+      ...base.session,
+      title: "Diagnostics fixture",
+      createdAt: "2026-08-25T19:00:00-07:00",
+      updatedAt: "2026-08-26T10:00:00-07:00",
+    },
+    agents: [{
+      ...base.agents[0],
+      rolloutKey: sourceKey,
+      taskCount: 1,
+    }],
+    tasks: [task],
+    modelUsageEvents: requests,
+  };
+}
+
+function advancedHistorySnapshot(index, {
+  rootSessionId = `advanced-root-${index}`,
+  projectPath = "C:\\workspace\\advanced",
+  model = "gpt-5.6-sol",
+  effort = "high",
+  observedAt = "2026-08-20T10:00:00.000Z",
+  inputTokens = 100_000,
+  outputTokens = 1_000,
+  reasoningOutputTokens = 100,
+} = {}) {
+  const threadId = `${rootSessionId}-thread`;
+  const turnId = `${rootSessionId}-turn`;
+  const sourceKey = `sessions/2026/08/advanced-${index}.jsonl`;
+  const usage = {
+    inputTokens,
+    cachedInputTokens: Math.round(inputTokens * 0.8),
+    cacheWriteInputTokens: 0,
+    outputTokens,
+    reasoningOutputTokens,
+    totalTokens: inputTokens + outputTokens,
+  };
+  return {
+    session: {
+      id: rootSessionId,
+      title: `Advanced ${index}`,
+      projectPath,
+      createdAt: observedAt,
+      updatedAt: observedAt,
+      cliVersion: "fixture",
+    },
+    agents: [{
+      rootSessionId,
+      threadId,
+      parentThreadId: null,
+      depth: 0,
+      isRoot: true,
+      rolloutKey: sourceKey,
+      ownUsage: usage,
+      subtreeUsage: usage,
+      taskCount: 1,
+    }],
+    tasks: [{
+      rootSessionId,
+      threadId,
+      turnId,
+      sequence: 1,
+      status: "completed",
+      startedAt: observedAt,
+      completedAt: observedAt,
+      durationMs: 0,
+      model,
+      effort,
+      sourceKey,
+    }],
+    modelUsageEvents: [{
+      rootSessionId,
+      sourceKey,
+      threadId,
+      turnId,
+      lineNumber: 1,
+      eventOrdinal: 1,
+      observedAt,
+      generation: 1,
+      classification: "generation_start",
+      quality: "verified",
+      reason: "fixture",
+      usage,
+      model,
+      serviceTier: "standard",
+      pricingContextQuality: "complete",
+      requestIdentity: `advanced-request-${index}`,
+      requestIdentityKind: "native",
+      requestIdentityReason: "fixture",
+      requestNativeField: "request_id",
+    }],
+    cursors: [],
+    health: { status: "healthy" },
+  };
+}
+
+function behavioralLineageSnapshot(index, {
+  rootSessionId = `behavior-root-${index}`,
+  projectPath = "C:\\workspace\\behavior",
+  observedAt = "2026-08-20T10:00:00.000Z",
+  rootTokens = 1_000_000,
+  descendantTokens = 500_000,
+} = {}) {
+  const rootThreadId = `${rootSessionId}-root`;
+  const childThreadId = `${rootSessionId}-child`;
+  const rootTurnId = `${rootSessionId}-root-turn`;
+  const childTurnId = `${rootSessionId}-child-turn`;
+  const rootSourceKey = `sessions/2026/08/behavior-root-${index}.jsonl`;
+  const childSourceKey = `sessions/2026/08/behavior-child-${index}.jsonl`;
+  const rootUsage = {
+    inputTokens: rootTokens - 1_000,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 1_000,
+    reasoningOutputTokens: 500,
+    totalTokens: rootTokens,
+  };
+  const descendantUsage = {
+    inputTokens: descendantTokens - 1_000,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 0,
+    outputTokens: 1_000,
+    reasoningOutputTokens: 500,
+    totalTokens: descendantTokens,
+  };
+  return {
+    session: {
+      id: rootSessionId,
+      title: `Behavior ${index}`,
+      projectPath,
+      createdAt: observedAt,
+      updatedAt: observedAt,
+      cliVersion: "fixture",
+    },
+    agents: [
+      {
+        rootSessionId,
+        threadId: rootThreadId,
+        parentThreadId: null,
+        depth: 0,
+        isRoot: true,
+        rolloutKey: rootSourceKey,
+        ownUsage: rootUsage,
+        subtreeUsage: {
+          ...rootUsage,
+          inputTokens: rootUsage.inputTokens + descendantUsage.inputTokens,
+          outputTokens: rootUsage.outputTokens + descendantUsage.outputTokens,
+          reasoningOutputTokens: rootUsage.reasoningOutputTokens + descendantUsage.reasoningOutputTokens,
+          totalTokens: rootUsage.totalTokens + descendantUsage.totalTokens,
+        },
+        taskCount: 1,
+      },
+      {
+        rootSessionId,
+        threadId: childThreadId,
+        parentThreadId: rootThreadId,
+        depth: 1,
+        isRoot: false,
+        rolloutKey: childSourceKey,
+        ownUsage: descendantUsage,
+        subtreeUsage: descendantUsage,
+        taskCount: 1,
+      },
+    ],
+    tasks: [
+      {
+        rootSessionId,
+        threadId: rootThreadId,
+        turnId: rootTurnId,
+        sequence: 1,
+        status: "completed",
+        startedAt: observedAt,
+        completedAt: observedAt,
+        durationMs: 0,
+        model: "gpt-5.6-sol",
+        effort: "high",
+        sourceKey: rootSourceKey,
+      },
+      {
+        rootSessionId,
+        threadId: childThreadId,
+        turnId: childTurnId,
+        sequence: 1,
+        status: "completed",
+        startedAt: observedAt,
+        completedAt: observedAt,
+        durationMs: 0,
+        model: "gpt-5.6-sol",
+        effort: "high",
+        sourceKey: childSourceKey,
+      },
+    ],
+    modelUsageEvents: [
+      {
+        rootSessionId,
+        sourceKey: rootSourceKey,
+        threadId: rootThreadId,
+        turnId: rootTurnId,
+        lineNumber: 1,
+        eventOrdinal: 1,
+        observedAt,
+        generation: 1,
+        classification: "generation_start",
+        quality: "verified",
+        reason: "fixture",
+        usage: rootUsage,
+        model: "gpt-5.6-sol",
+        serviceTier: "standard",
+        pricingContextQuality: "complete",
+        requestIdentity: `behavior-root-request-${index}`,
+        requestIdentityKind: "native",
+        requestIdentityReason: "fixture",
+        requestNativeField: "request_id",
+      },
+      {
+        rootSessionId,
+        sourceKey: childSourceKey,
+        threadId: childThreadId,
+        turnId: childTurnId,
+        lineNumber: 1,
+        eventOrdinal: 1,
+        observedAt: new Date(Date.parse(observedAt) + 1_000).toISOString(),
+        generation: 1,
+        classification: "generation_start",
+        quality: "verified",
+        reason: "fixture",
+        usage: descendantUsage,
+        model: "gpt-5.6-sol",
+        serviceTier: "standard",
+        pricingContextQuality: "complete",
+        requestIdentity: `behavior-child-request-${index}`,
+        requestIdentityKind: "native",
+        requestIdentityReason: "fixture",
+        requestNativeField: "request_id",
+      },
+    ],
+    cursors: [],
+    health: { status: "healthy" },
+  };
 }
 
 function crossMidnightSnapshot() {

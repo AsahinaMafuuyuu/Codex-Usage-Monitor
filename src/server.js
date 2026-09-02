@@ -47,12 +47,13 @@ export async function startApplication(options = {}) {
       applySecurityHeaders(response);
       if (!isAllowedHost(request.headers.host, boundPort)) return sendText(response, 403, "Host 不受信任");
       if (!isAllowedOrigin(request)) return sendText(response, 403, "Origin 不受信任");
-      if (request.method !== "GET" && request.method !== "HEAD") {
+      const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+      const allowedMutation = request.method === "POST" && isAllowedApiMutationPath(url.pathname);
+      if (request.method !== "GET" && request.method !== "HEAD" && !allowedMutation) {
         response.setHeader("Allow", "GET, HEAD");
         return sendText(response, 405, "只支持只读请求");
       }
 
-      const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
       if (url.pathname === "/favicon.ico") return sendEmpty(response, 204);
       if (url.pathname === "/" && launchToken && url.searchParams.get("token") === launchToken) {
         launchToken = null;
@@ -204,6 +205,60 @@ async function handleApi({ request, response, url, monitor }) {
   }
   if (url.pathname === "/api/health") return sendJson(response, 200, { health: monitor.health() });
 
+  const alertPolicyMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostic-alert-policy$/u);
+  if (alertPolicyMatch) {
+    const sessionId = decodeAndValidateId(alertPolicyMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    if (request.method !== "POST") return sendJson(response, 405, { error: "该接口仅支持 POST" });
+    const body = await readJsonBody(request);
+    if (body.error) return sendJson(response, body.status, { error: body.error });
+    try {
+      const policy = monitor.updateDiagnosticAlertPolicy(sessionId, body.value);
+      return policy
+        ? sendJson(response, 200, { policy })
+        : sendJson(response, 404, { error: "找不到该会话或工程" });
+    } catch (error) {
+      if (error instanceof RangeError) return sendJson(response, 400, { error: error.message });
+      throw error;
+    }
+  }
+
+  const alertSnoozeMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostic-alerts\/snooze$/u);
+  if (alertSnoozeMatch) {
+    const sessionId = decodeAndValidateId(alertSnoozeMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    if (request.method !== "POST") return sendJson(response, 405, { error: "该接口仅支持 POST" });
+    const policy = monitor.snoozeDiagnosticAlerts(sessionId);
+    return policy
+      ? sendJson(response, 200, { policy })
+      : sendJson(response, 404, { error: "找不到该会话或工程" });
+  }
+
+  const alertAckMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/diagnostic-alerts\/([^/]+)\/ack$/u,
+  );
+  if (alertAckMatch) {
+    const sessionId = decodeAndValidateId(alertAckMatch[1]);
+    const alertId = decodeAndValidateId(alertAckMatch[2]);
+    if (!sessionId || !alertId) return sendJson(response, 400, { error: "会话或 Alert ID 无效" });
+    if (request.method !== "POST") return sendJson(response, 405, { error: "该接口仅支持 POST" });
+    const acknowledgement = monitor.acknowledgeDiagnosticAlert(sessionId, alertId);
+    if (acknowledgement == null) return sendJson(response, 404, { error: "找不到该会话" });
+    if (acknowledgement === false) return sendJson(response, 404, { error: "当前会话不存在该 Alert" });
+    return sendJson(response, 200, { acknowledgement });
+  }
+
+  const alertsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostic-alerts$/u);
+  if (alertsMatch) {
+    const sessionId = decodeAndValidateId(alertsMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    if (request.method !== "GET") return sendJson(response, 405, { error: "该接口仅支持 GET" });
+    const payload = monitor.diagnosticAlerts(sessionId);
+    return payload
+      ? sendJson(response, 200, payload)
+      : sendJson(response, 404, { error: "找不到该会话或工程" });
+  }
+
   const taskRequestsMatch = url.pathname.match(
     /^\/api\/sessions\/([^/]+)\/tasks\/([^/]+)\/([^/]+)\/requests$/u,
   );
@@ -223,6 +278,46 @@ async function handleApi({ request, response, url, monitor }) {
       ...body,
       nextCursor: nextAfter ? encodeTaskRequestCursor(nextAfter) : null,
     });
+  }
+
+  const diagnosticsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostics$/u);
+  if (diagnosticsMatch) {
+    const sessionId = decodeAndValidateId(diagnosticsMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    const scope = parseSnapshotScope(url);
+    if (scope.error) return sendJson(response, 400, { error: scope.error });
+    const payload = monitor.diagnostics(sessionId, scope.value);
+    return payload
+      ? sendJson(response, 200, payload)
+      : sendJson(response, 404, { error: "找不到该会话" });
+  }
+
+  const advancedDiagnosticsMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/advanced-diagnostics$/u,
+  );
+  if (advancedDiagnosticsMatch) {
+    const sessionId = decodeAndValidateId(advancedDiagnosticsMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    const scope = parseSnapshotScope(url);
+    if (scope.error) return sendJson(response, 400, { error: scope.error });
+    const payload = monitor.advancedDiagnostics(sessionId, scope.value);
+    return payload
+      ? sendJson(response, 200, payload)
+      : sendJson(response, 404, { error: "找不到该会话" });
+  }
+
+  const behavioralDiagnosticsMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/behavioral-diagnostics$/u,
+  );
+  if (behavioralDiagnosticsMatch) {
+    const sessionId = decodeAndValidateId(behavioralDiagnosticsMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    const scope = parseSnapshotScope(url);
+    if (scope.error) return sendJson(response, 400, { error: scope.error });
+    const payload = monitor.behavioralDiagnostics(sessionId, scope.value);
+    return payload
+      ? sendJson(response, 200, payload)
+      : sendJson(response, 404, { error: "找不到该会话" });
   }
 
   const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/u);
@@ -413,6 +508,38 @@ function isAllowedOrigin(request) {
   const origin = request.headers.origin;
   if (!origin) return true;
   return origin === `http://${request.headers.host}`;
+}
+
+function isAllowedApiMutationPath(pathname) {
+  return Boolean(
+    /^\/api\/sessions\/[^/]+\/diagnostic-alert-policy$/u.test(pathname) ||
+    /^\/api\/sessions\/[^/]+\/diagnostic-alerts\/snooze$/u.test(pathname) ||
+    /^\/api\/sessions\/[^/]+\/diagnostic-alerts\/[^/]+\/ack$/u.test(pathname)
+  );
+}
+
+async function readJsonBody(request, { maxBytes = 8_192 } = {}) {
+  const contentType = String(request.headers["content-type"] ?? "").toLowerCase();
+  if (!contentType.startsWith("application/json")) {
+    return { error: "Content-Type 必须为 application/json", status: 415 };
+  }
+  let size = 0;
+  const chunks = [];
+  try {
+    for await (const chunk of request) {
+      size += chunk.length;
+      if (size > maxBytes) return { error: "JSON 请求体过大", status: 413 };
+      chunks.push(chunk);
+    }
+    const text = Buffer.concat(chunks).toString("utf8");
+    const value = text ? JSON.parse(text) : {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { error: "JSON 请求体必须是对象", status: 400 };
+    }
+    return { value };
+  } catch {
+    return { error: "JSON 请求体无效", status: 400 };
+  }
 }
 
 function decodeAndValidateId(raw) {

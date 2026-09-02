@@ -11,6 +11,7 @@ const state = {
   connected: false,
   quotaRefreshing: false,
   requestDetails: new Map(),
+  diagnostics: null,
 };
 
 const REQUEST_PAGE_SIZE = 10;
@@ -24,6 +25,9 @@ const elements = Object.fromEntries(
     "session-version", "hero-total", "agent-count", "task-count-label", "task-count", "active-task-count",
     "input-total", "cached-total", "cache-hit-rate", "output-total", "session-cost",
     "session-cost-coverage", "quota-plan", "quota-refresh", "quota-windows",
+    "diagnostics-summary", "diagnostics-toggle", "diagnostics-panel", "diagnostics-state", "diagnostics-findings",
+    "diagnostic-alert-summary", "diagnostic-alert-snooze", "diagnostic-alert-policy-form",
+    "diagnostic-budget-usd", "diagnostic-alert-severity", "diagnostic-alert-cooldown", "diagnostic-alerts",
     "agent-tree", "toast",
   ].map((id) => [id, document.getElementById(id)]),
 );
@@ -110,6 +114,33 @@ elements["agent-tree"].addEventListener("keydown", (event) => {
 });
 elements["agent-tree"].addEventListener("wheel", routeTaskWheelToWorkspace, { passive: false });
 elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
+elements["diagnostics-toggle"].addEventListener("click", () => void toggleDiagnosticsPanel());
+elements["diagnostics-panel"].addEventListener("click", (event) => {
+  const alertAck = event.target.closest("[data-diagnostic-alert-ack]");
+  if (alertAck) {
+    void acknowledgeDiagnosticAlert(alertAck.dataset.diagnosticAlertAck);
+    return;
+  }
+  const alertLocate = event.target.closest("[data-diagnostic-alert-locate]");
+  if (alertLocate) {
+    const alert = state.diagnostics?.alertsReport?.alerts?.find(
+      (candidate) => candidate.alertId === alertLocate.dataset.diagnosticAlertLocate,
+    );
+    if (alert?.locator) void locateDiagnosticRequest({ locator: alert.locator });
+    return;
+  }
+  const control = event.target.closest("[data-diagnostic-locate]");
+  if (!control) return;
+  const finding = state.diagnostics?.report?.findings?.find(
+    (candidate) => candidate.findingId === control.dataset.diagnosticLocate,
+  );
+  if (finding) void locateDiagnosticRequest(finding);
+});
+elements["diagnostic-alert-policy-form"].addEventListener("submit", (event) => {
+  event.preventDefault();
+  void saveDiagnosticAlertPolicy();
+});
+elements["diagnostic-alert-snooze"].addEventListener("click", () => void snoozeDiagnosticAlerts());
 
 function routeTaskWheelToWorkspace(event) {
   const wrap = event.target.closest?.(".task-table-wrap");
@@ -175,6 +206,7 @@ async function selectSession(sessionId, requestedDay = null) {
   const nextSelectionKey = `${sessionId}|${day ?? ""}`;
   if (previousSelectionKey !== nextSelectionKey) {
     state.requestDetails.clear();
+    state.diagnostics = createDiagnosticsState(nextSelectionKey);
   }
   state.selectedId = sessionId;
   state.selectedDay = day;
@@ -195,6 +227,7 @@ async function selectSession(sessionId, requestedDay = null) {
       setLoading(false);
       renderDashboard();
     });
+    void loadDiagnostics(selectionVersion);
     connectEvents(sessionId, day, selectionVersion);
   } catch (error) {
     if (selectionVersion !== state.selectionVersion) return;
@@ -222,6 +255,7 @@ function connectEvents(sessionId, day, selectionVersion) {
     state.snapshot = JSON.parse(event.data);
     renderDashboard();
     void refreshStaleOpenRequestDetails();
+    void refreshDiagnosticsIfStale();
     if (state.sessionView === "time") void refreshTimelineNavigation(selectionVersion);
   });
   source.addEventListener("quota", (event) => {
@@ -524,6 +558,7 @@ function renderDashboard() {
     ? `更新 ${formatDate(snapshot.health.lastUpdateAt)}`
     : `导入 ${formatDate(snapshot.session.importedAt)}`;
   renderQuota();
+  renderDiagnostics();
   renderAgents();
   setHealth(snapshot.health);
 }
@@ -601,6 +636,540 @@ function syncQuotaRefreshButton() {
   button.title = quota?.observedAt
     ? `刷新账号额度 · 当前快照 ${formatDate(quota.observedAt)}`
     : "刷新账号额度";
+}
+
+function createDiagnosticsState(selectionKey) {
+  return {
+    selectionKey,
+    open: false,
+    loading: false,
+    loaded: false,
+    error: null,
+    report: null,
+    alertsReport: null,
+    alertsLoading: false,
+    alertsError: null,
+    requestFindings: new Map(),
+    renderVersion: 0,
+  };
+}
+
+async function loadDiagnosticAlerts(selectionVersion, { force = false } = {}) {
+  if (!state.selectedId || selectionVersion !== state.selectionVersion) return;
+  const diagnostics = state.diagnostics;
+  if (!diagnostics || diagnostics.alertsLoading || (diagnostics.alertsReport && !force)) return;
+  diagnostics.alertsLoading = true;
+  diagnostics.alertsError = null;
+  renderDiagnosticAlerts();
+  try {
+    const report = await fetchJson(
+      `/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostic-alerts`,
+    );
+    if (selectionVersion !== state.selectionVersion || state.diagnostics !== diagnostics) return;
+    diagnostics.alertsReport = report;
+  } catch (error) {
+    if (selectionVersion === state.selectionVersion && state.diagnostics === diagnostics) {
+      diagnostics.alertsError = error.message;
+    }
+  } finally {
+    if (state.diagnostics === diagnostics) diagnostics.alertsLoading = false;
+    renderDiagnosticAlerts();
+  }
+}
+
+async function loadDiagnostics(selectionVersion, { force = false } = {}) {
+  if (!state.selectedId || selectionVersion !== state.selectionVersion) return;
+  const selectionKey = `${state.selectedId}|${state.selectedDay ?? ""}`;
+  let diagnostics = state.diagnostics;
+  if (!diagnostics || diagnostics.selectionKey !== selectionKey) {
+    diagnostics = createDiagnosticsState(selectionKey);
+    state.diagnostics = diagnostics;
+  }
+  if (diagnostics.loading || (diagnostics.loaded && !force)) return;
+  diagnostics.loading = true;
+  diagnostics.error = null;
+  renderDiagnostics();
+  try {
+    const query = state.selectedDay ? `?day=${encodeURIComponent(state.selectedDay)}` : "";
+    const [localReport, advancedReport, behavioralReport] = await Promise.all([
+      fetchJson(`/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostics${query}`),
+      fetchJson(`/api/sessions/${encodeURIComponent(state.selectedId)}/advanced-diagnostics${query}`),
+      fetchJson(`/api/sessions/${encodeURIComponent(state.selectedId)}/behavioral-diagnostics${query}`),
+    ]);
+    if (
+      selectionVersion !== state.selectionVersion ||
+      state.diagnostics !== diagnostics ||
+      diagnostics.selectionKey !== `${state.selectedId}|${state.selectedDay ?? ""}`
+    ) return;
+    diagnostics.report = combineDiagnosticsReports(localReport, advancedReport, behavioralReport);
+    diagnostics.loaded = true;
+    diagnostics.requestFindings = groupDiagnosticsByRequest(diagnostics.report.findings ?? []);
+    diagnostics.renderVersion += 1;
+    renderDiagnostics();
+    refreshOpenRequestDiagnosticMarkers();
+  } catch (error) {
+    if (selectionVersion === state.selectionVersion && state.diagnostics === diagnostics) {
+      diagnostics.error = error.message;
+      diagnostics.loaded = false;
+      renderDiagnostics();
+    }
+  } finally {
+    if (state.diagnostics === diagnostics) diagnostics.loading = false;
+    renderDiagnostics();
+  }
+}
+
+function refreshDiagnosticsIfStale() {
+  const diagnostics = state.diagnostics;
+  if (!diagnostics?.loaded || diagnostics.loading || !diagnostics.report) return;
+  const currentGeneration = Number(state.snapshot?.health?.projectionGeneration ?? 0);
+  if (Number(diagnostics.report.projectionGeneration ?? -1) === currentGeneration) return;
+  return loadDiagnostics(state.selectionVersion, { force: true });
+}
+
+function combineDiagnosticsReports(localReport, advancedReport, behavioralReport) {
+  const findings = [
+    ...(localReport?.findings ?? []).map((finding) => ({ ...finding, family: finding.family ?? "local" })),
+    ...(advancedReport?.findings ?? []),
+    ...(behavioralReport?.findings ?? []),
+  ];
+  return {
+    scope: behavioralReport?.scope ?? advancedReport?.scope ?? localReport?.scope ?? { type: "session" },
+    projectionGeneration: Math.max(
+      Number(localReport?.projectionGeneration ?? 0),
+      Number(advancedReport?.projectionGeneration ?? 0),
+      Number(behavioralReport?.projectionGeneration ?? 0),
+    ),
+    stale: Boolean(localReport?.stale || advancedReport?.stale || behavioralReport?.stale),
+    policies: {
+      local: localReport?.policy ?? null,
+      advanced: advancedReport?.policy ?? null,
+      behavioral: behavioralReport?.policy ?? null,
+    },
+    coverage: {
+      advanced: advancedReport?.coverage ?? null,
+      behavioral: behavioralReport?.coverage ?? null,
+    },
+    summary: summarizeDiagnosticFindings(findings),
+    findings,
+  };
+}
+
+function summarizeDiagnosticFindings(findings) {
+  const summary = { high: 0, warning: 0, info: 0 };
+  for (const finding of findings ?? []) {
+    if (Object.hasOwn(summary, finding.severity)) summary[finding.severity] += 1;
+  }
+  return summary;
+}
+
+async function toggleDiagnosticsPanel() {
+  const diagnostics = state.diagnostics;
+  if (!diagnostics) return;
+  diagnostics.open = !diagnostics.open;
+  renderDiagnostics();
+  if (diagnostics.open && !diagnostics.loaded && !diagnostics.loading) {
+    await loadDiagnostics(state.selectionVersion);
+  }
+  if (diagnostics.open && !diagnostics.alertsReport && !diagnostics.alertsLoading) {
+    await loadDiagnosticAlerts(state.selectionVersion);
+  }
+}
+
+function renderDiagnostics() {
+  const diagnostics = state.diagnostics;
+  if (!diagnostics) {
+    elements["diagnostics-summary"].textContent = "等待会话";
+    elements["diagnostics-toggle"].setAttribute("aria-expanded", "false");
+    elements["diagnostics-panel"].hidden = true;
+    return;
+  }
+  elements["diagnostics-toggle"].setAttribute("aria-expanded", String(diagnostics.open));
+  elements["diagnostics-panel"].hidden = !diagnostics.open;
+  const report = diagnostics.report;
+  if (diagnostics.loading && !report) {
+    elements["diagnostics-summary"].textContent = "正在分析…";
+    elements["diagnostics-state"].textContent = "正在从 canonical Request projection 读取诊断事实…";
+    elements["diagnostics-findings"].innerHTML = "";
+    return;
+  }
+  if (diagnostics.error) {
+    elements["diagnostics-summary"].textContent = "读取失败";
+    elements["diagnostics-state"].textContent = `Diagnostics 读取失败：${diagnostics.error}`;
+    elements["diagnostics-findings"].innerHTML = "";
+    return;
+  }
+  if (!report) {
+    elements["diagnostics-summary"].textContent = "正在分析…";
+    elements["diagnostics-state"].textContent = "等待诊断结果…";
+    elements["diagnostics-findings"].innerHTML = "";
+    return;
+  }
+  const summary = report.summary ?? {};
+  const total = Number(summary.high ?? 0) + Number(summary.warning ?? 0) + Number(summary.info ?? 0);
+  elements["diagnostics-summary"].textContent = total
+    ? `${summary.high ?? 0} High · ${summary.warning ?? 0} Warning · ${summary.info ?? 0} Info`
+    : "未发现异常";
+  elements["diagnostics-state"].textContent = `${report.policies?.local?.version ?? "local policy unknown"} + ${
+    report.policies?.advanced?.version ?? "advanced policy unknown"
+  } + ${report.policies?.behavioral?.version ?? "behavioral policy unknown"
+  } · ${
+    report.stale ? "上一完整 projection · 等待索引刷新" : "当前 projection"
+  } · ${total} findings`;
+  const findings = [...(report.findings ?? [])].sort(compareDiagnosticFindings);
+  const groups = [
+    {
+      family: "local",
+      title: "Local",
+      description: "当前 Session 最近几次可比较 Request 的局部变化",
+    },
+    {
+      family: "historical",
+      title: "Historical",
+      description: "同工程、同模型、同 effort 的长期 Robust Baseline",
+    },
+    {
+      family: "cross_session",
+      title: "Cross-session",
+      description: "当前 Session slice 相对历史 Session slice 的整体退化",
+    },
+    {
+      family: "behavioral_request",
+      title: "Behavioral · Request",
+      description: "同 cohort 历史下的 Reasoning token 行为异常",
+    },
+    {
+      family: "behavioral_session",
+      title: "Behavioral · Session",
+      description: "Request Burst 与 Subagent Amplification 的 Session-level 异常",
+    },
+  ];
+  elements["diagnostics-findings"].innerHTML = groups.map((group) => {
+    const groupFindings = findings.filter((finding) => (finding.family ?? "local") === group.family);
+    return `<section class="diagnostics-family" data-diagnostic-family="${group.family}">
+      <header class="diagnostics-family-heading">
+        <div><strong>${group.title}</strong><span>${group.description}</span></div>
+        <code>${groupFindings.length}</code>
+      </header>
+      <div class="diagnostics-family-findings">${groupFindings.length
+        ? groupFindings.map(renderDiagnosticFinding).join("")
+        : '<div class="diagnostics-empty">当前 scope 没有该基线类型的 finding。</div>'}</div>
+    </section>`;
+  }).join("");
+  renderDiagnosticAlerts();
+}
+
+function renderDiagnosticAlerts() {
+  const diagnostics = state.diagnostics;
+  const report = diagnostics?.alertsReport;
+  if (!diagnostics) return;
+  elements["diagnostic-alert-snooze"].disabled = diagnostics.alertsLoading || !state.selectedId;
+  if (diagnostics.alertsLoading && !report) {
+    elements["diagnostic-alert-summary"].textContent = "正在读取 Alerts…";
+    elements["diagnostic-alerts"].innerHTML = '<div class="diagnostics-empty">正在读取本地 operational state…</div>';
+    return;
+  }
+  if (diagnostics.alertsError) {
+    elements["diagnostic-alert-summary"].textContent = "Alerts 读取失败";
+    elements["diagnostic-alerts"].innerHTML = `<div class="diagnostics-empty">${escapeHtml(diagnostics.alertsError)}</div>`;
+    return;
+  }
+  if (!report) {
+    elements["diagnostic-alert-summary"].textContent = "未加载";
+    elements["diagnostic-alerts"].innerHTML = '<div class="diagnostics-empty">展开 Diagnostics 后读取 Alerts。</div>';
+    return;
+  }
+  const policy = report.policy ?? {};
+  elements["diagnostic-budget-usd"].value = Number.isFinite(policy.sessionCostBudgetUsd)
+    ? String(policy.sessionCostBudgetUsd)
+    : "";
+  elements["diagnostic-alert-severity"].value = policy.minimumSeverity === "warning" ? "warning" : "high";
+  const cooldown = String(policy.cooldownMinutes ?? 60);
+  if ([...elements["diagnostic-alert-cooldown"].options].some((option) => option.value === cooldown)) {
+    elements["diagnostic-alert-cooldown"].value = cooldown;
+  }
+  const active = report.alerts ?? [];
+  elements["diagnostic-alert-summary"].textContent = report.snoozed
+    ? `Snoozed 至 ${formatDate(policy.snoozedUntil)} · ${report.suppressedBySnooze ?? 0} suppressed`
+    : `${active.length} active · ${report.acknowledgedCount ?? 0} ack`;
+  elements["diagnostic-alerts"].innerHTML = active.length
+    ? active.map(renderDiagnosticAlert).join("")
+    : `<div class="diagnostics-empty">${report.snoozed ? "当前处于 cooldown。" : "当前没有未确认 Alert。"}</div>`;
+}
+
+function renderDiagnosticAlert(alert) {
+  const isBudget = alert.kind === "session_cost_budget";
+  const title = isBudget ? "Session 等值预算超限" : diagnosticTypeLabel(alert.type);
+  const metric = isBudget
+    ? `${formatUsdAmount(alert.amountUsd)} / budget ${formatUsdAmount(alert.budgetUsd)} · ${formatRatio(alert.ratio)}`
+    : `${alert.family === "behavioral_session" ? "Behavioral Session" : alert.family ?? "diagnostic"} · ${formatDate(alert.observedAt)}`;
+  return `<article class="diagnostic-alert-item ${escapeHtml(alert.severity || "warning")}">
+    <div class="diagnostic-alert-copy">
+      <div><strong>${escapeHtml(title)}</strong><span class="diagnostic-severity ${escapeHtml(alert.severity || "warning")}">${escapeHtml(String(alert.severity || "warning").toUpperCase())}</span></div>
+      <small>${escapeHtml(metric)}</small>
+    </div>
+    <div class="diagnostic-alert-controls">
+      ${alert.locator?.requestId ? `<button type="button" data-diagnostic-alert-locate="${escapeHtml(alert.alertId)}">定位</button>` : ""}
+      <button type="button" data-diagnostic-alert-ack="${escapeHtml(alert.alertId)}">Ack</button>
+    </div>
+  </article>`;
+}
+
+async function saveDiagnosticAlertPolicy() {
+  if (!state.selectedId || !state.diagnostics) return;
+  const rawBudget = elements["diagnostic-budget-usd"].value.trim();
+  const payload = {
+    sessionCostBudgetUsd: rawBudget === "" ? null : Number(rawBudget),
+    minimumSeverity: elements["diagnostic-alert-severity"].value,
+    cooldownMinutes: Number(elements["diagnostic-alert-cooldown"].value),
+  };
+  try {
+    await postJson(
+      `/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostic-alert-policy`,
+      payload,
+    );
+    state.diagnostics.alertsReport = null;
+    toast("Alerts 策略已保存");
+    await loadDiagnosticAlerts(state.selectionVersion, { force: true });
+  } catch (error) {
+    toast(`保存 Alerts 策略失败：${error.message}`);
+  }
+}
+
+async function acknowledgeDiagnosticAlert(alertId) {
+  if (!state.selectedId || !alertId || !state.diagnostics) return;
+  try {
+    await postJson(
+      `/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostic-alerts/${encodeURIComponent(alertId)}/ack`,
+    );
+    state.diagnostics.alertsReport = null;
+    await loadDiagnosticAlerts(state.selectionVersion, { force: true });
+  } catch (error) {
+    toast(`Ack 失败：${error.message}`);
+  }
+}
+
+async function snoozeDiagnosticAlerts() {
+  if (!state.selectedId || !state.diagnostics) return;
+  try {
+    await postJson(`/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostic-alerts/snooze`);
+    state.diagnostics.alertsReport = null;
+    await loadDiagnosticAlerts(state.selectionVersion, { force: true });
+  } catch (error) {
+    toast(`Snooze 失败：${error.message}`);
+  }
+}
+
+function compareDiagnosticFindings(left, right) {
+  const severityOrder = { high: 3, warning: 2, info: 1 };
+  const severityDelta = (severityOrder[right.severity] ?? 0) - (severityOrder[left.severity] ?? 0);
+  if (severityDelta !== 0) return severityDelta;
+  return String(right.observedAt ?? "").localeCompare(String(left.observedAt ?? ""));
+}
+
+function renderDiagnosticFinding(finding) {
+  const factors = diagnosticFactorLabels(finding);
+  const locator = diagnosticLocator(finding);
+  return `<article class="diagnostic-finding ${escapeHtml(finding.severity || "info")}">
+    <div class="diagnostic-finding-main">
+      <div class="diagnostic-finding-heading">
+        <strong>${escapeHtml(diagnosticTypeLabel(finding.type))}</strong>
+        <span class="diagnostic-severity ${escapeHtml(finding.severity || "info")}">${escapeHtml(String(finding.severity || "info").toUpperCase())}</span>
+      </div>
+      <div class="diagnostic-metric">${escapeHtml(diagnosticMetricText(finding))}</div>
+      <div class="diagnostic-meta"><span>${formatDate(finding.observedAt ?? locator?.observedAt)}</span><code title="${escapeHtml(locator?.requestId || finding.requestId || "")}">${escapeHtml(shortId(locator?.requestId || finding.requestId || ""))}</code><span>${escapeHtml(finding.baseline?.kind || "explicit")}${finding.baseline?.sampleCount ? ` · n=${finding.baseline.sampleCount}` : ""}</span>${renderRobustBaselineMeta(finding)}</div>
+      ${factors.length ? `<div class="diagnostic-factors">${factors.map((factor) => `<span>${escapeHtml(factor)}</span>`).join("")}</div>` : ""}
+    </div>
+    ${locator?.requestId ? `<button class="diagnostic-locate" type="button" data-diagnostic-locate="${escapeHtml(finding.findingId)}">${finding.family === "cross_session" || finding.family === "behavioral_session" ? "定位证据 Request" : "定位 Request"}</button>` : ""}
+  </article>`;
+}
+
+function diagnosticLocator(finding) {
+  if (finding?.locator?.requestId) return finding.locator;
+  if (finding?.supportingLocator?.requestId) return finding.supportingLocator;
+  if (!finding?.requestId) return null;
+  return {
+    ...(finding.locator ?? {}),
+    requestId: finding.requestId,
+    rootSessionId: finding.rootSessionId ?? null,
+    threadId: finding.threadId ?? null,
+    turnId: finding.turnId ?? null,
+    observedAt: finding.observedAt ?? null,
+  };
+}
+
+function renderRobustBaselineMeta(finding) {
+  if (!["historical", "cross_session", "behavioral_request", "behavioral_session"].includes(finding.family)) return "";
+  const baseline = finding.baseline ?? {};
+  const parts = [];
+  if (Number.isFinite(baseline.median)) parts.push(`median ${formatDiagnosticValue(finding, baseline.median)}`);
+  if (Number.isFinite(baseline.mad)) parts.push(`MAD ${formatDiagnosticValue(finding, baseline.mad)}`);
+  if (Number.isFinite(baseline.robustZ)) parts.push(`Z ${baseline.robustZ.toFixed(2)}`);
+  return parts.length ? `<span>${escapeHtml(parts.join(" · "))}</span>` : "";
+}
+
+function diagnosticTypeLabel(type) {
+  if (type === "context_inflation") return "Context Inflation";
+  if (type === "cache_regression") return "Cache Regression";
+  if (type === "cost_spike") return "Cost Spike";
+  if (type === "long_context_trigger") return "Long Context Trigger";
+  if (type === "historical_context_inflation") return "Historical Context Inflation";
+  if (type === "historical_cache_regression") return "Historical Cache Regression";
+  if (type === "historical_cost_spike") return "Historical Cost Spike";
+  if (type === "cross_session_context_regression") return "Cross-session Context Regression";
+  if (type === "cross_session_cache_regression") return "Cross-session Cache Regression";
+  if (type === "cross_session_cost_regression") return "Cross-session Cost Regression";
+  if (type === "reasoning_anomaly") return "Reasoning Anomaly";
+  if (type === "request_burst") return "Request Burst";
+  if (type === "subagent_amplification") return "Subagent Amplification";
+  return type || "Usage Diagnostic";
+}
+
+function diagnosticMetricText(finding) {
+  const metric = finding.metric ?? {};
+  if (finding.type === "context_inflation") {
+    return `${formatTokens(metric.current)} → baseline ${formatTokens(metric.baseline)} · +${formatTokens(metric.absoluteDelta)}`;
+  }
+  if (finding.type === "cache_regression") {
+    return `${formatPercent(metric.current)} → baseline ${formatPercent(metric.baseline)} · drop ${formatPercent(finding.evidence?.drop)}`;
+  }
+  if (finding.type === "cost_spike") {
+    return `${formatUsdAmount(metric.current)} → baseline ${formatUsdAmount(metric.baseline)} · +${formatUsdAmount(metric.absoluteDelta)}`;
+  }
+  if (finding.type === "long_context_trigger") {
+    return `Input ${formatTokens(finding.evidence?.inputTokens)} · ${finding.evidence?.longContextStatus ?? "unknown"}`;
+  }
+  if (finding.type === "historical_context_inflation" || finding.type === "cross_session_context_regression") {
+    return `${formatTokens(metric.current)} → historical median ${formatTokens(finding.baseline?.median)} · Δ ${signedCompact(finding.effect?.absolute)}`;
+  }
+  if (finding.type === "historical_cache_regression" || finding.type === "cross_session_cache_regression") {
+    return `${formatPercent(metric.current)} → historical median ${formatPercent(finding.baseline?.median)} · Δ ${signedPercent(finding.effect?.percentagePoints)}`;
+  }
+  if (finding.type === "historical_cost_spike" || finding.type === "cross_session_cost_regression") {
+    return `${formatUsdAmount(metric.current)} → historical median ${formatUsdAmount(finding.baseline?.median)} · Δ ${formatUsdAmount(finding.effect?.absolute)}`;
+  }
+  if (finding.type === "reasoning_anomaly") {
+    return `${formatPercent(metric.current)} reasoning share → historical median ${formatPercent(finding.baseline?.median)} · Δ ${signedPercent(finding.effect?.percentagePoints)}`;
+  }
+  if (finding.type === "request_burst") {
+    return `${Math.round(metric.current ?? 0)} Requests / 60s → historical median ${formatDiagnosticValue(finding, finding.baseline?.median)} · ${formatRatio(finding.effect?.ratio)}`;
+  }
+  if (finding.type === "subagent_amplification") {
+    return `Descendant / Root ${formatRatio(metric.current)} → historical median ${formatRatio(finding.baseline?.median)} · extra ${signedCompact(finding.evidence?.descendantExtraTokens)} tokens`;
+  }
+  return String(metric.current ?? "—");
+}
+
+function formatDiagnosticValue(finding, value) {
+  if (finding.type?.includes("cache")) return formatPercent(value);
+  if (finding.type?.includes("cost")) return formatUsdAmount(value);
+  if (finding.type === "reasoning_anomaly") return formatPercent(value);
+  if (finding.type === "request_burst") return Number.isFinite(value) ? `${Number(value).toFixed(1)} req` : "—";
+  if (finding.type === "subagent_amplification") return formatRatio(value);
+  return formatTokens(value);
+}
+
+function diagnosticFactorLabels(finding) {
+  const evidence = finding.evidence ?? {};
+  const factors = [];
+  if (finding.type === "cache_regression" && evidence.breakpointCandidate) factors.push("cache breakpoint candidate");
+  if (Number.isFinite(evidence.inputDelta)) factors.push(`Input Δ ${signedCompact(evidence.inputDelta)}`);
+  if (Number.isFinite(evidence.cacheHitDelta)) factors.push(`Cache Δ ${signedPercent(evidence.cacheHitDelta)}`);
+  if (evidence.longContextStatus && evidence.longContextStatus !== "normal") factors.push(`Long ${evidence.longContextStatus}`);
+  if (evidence.serviceTier) factors.push(`Tier ${evidence.serviceTier}`);
+  if (evidence.pricingStatus) factors.push(`Pricing ${evidence.pricingStatus}`);
+  if (finding.type === "reasoning_anomaly") {
+    if (Number.isFinite(evidence.reasoningOutputTokens)) factors.push(`Reasoning ${formatTokens(evidence.reasoningOutputTokens)}`);
+    if (Number.isFinite(evidence.outputTokens)) factors.push(`Output ${formatTokens(evidence.outputTokens)}`);
+  }
+  if (finding.type === "request_burst") {
+    if (Number.isFinite(evidence.requestCount)) factors.push(`${evidence.requestCount} Requests / 60s`);
+    if (evidence.episodeStart && evidence.episodeEnd) factors.push("120s idle-gap episode");
+  }
+  if (finding.type === "subagent_amplification") {
+    if (Number.isFinite(evidence.descendantRequests)) factors.push(`${evidence.descendantRequests} descendant Requests`);
+    if (Number.isFinite(evidence.descendantAgents)) factors.push(`${evidence.descendantAgents} descendant agents`);
+    if (Number.isFinite(evidence.maxDepth)) factors.push(`depth ${evidence.maxDepth}`);
+  }
+  return factors;
+}
+
+function groupDiagnosticsByRequest(findings) {
+  const grouped = new Map();
+  for (const finding of findings ?? []) {
+    if (!finding?.requestId) continue;
+    const current = grouped.get(finding.requestId) ?? [];
+    current.push(finding);
+    grouped.set(finding.requestId, current);
+  }
+  return grouped;
+}
+
+function refreshOpenRequestDiagnosticMarkers() {
+  for (const detail of state.requestDetails.values()) {
+    if (detail.open) patchVisibleTaskDetail(detail.threadId, detail.turnId);
+  }
+}
+
+async function locateDiagnosticRequest(finding) {
+  const locator = diagnosticLocator(finding);
+  const threadId = locator?.threadId ?? finding.threadId;
+  const turnId = locator?.turnId ?? finding.turnId;
+  const requestId = locator?.requestId ?? finding.requestId;
+  const task = currentTask(threadId, turnId);
+  if (!task) {
+    toast("当前 scope 中找不到该 finding 对应的 Task");
+    return;
+  }
+  await toggleTaskRequests(threadId, turnId, { forceOpen: true });
+  const detail = requestDetailState(threadId, turnId);
+  if (!detail?.open) {
+    toast("Canonical Requests 无法展开");
+    return;
+  }
+  const ordinal = Number(locator?.requestOrdinalInScope);
+  if (!Number.isInteger(ordinal) || ordinal < 1) {
+    toast("该 finding 缺少可用的 Request ordinal");
+    return;
+  }
+  const pageSize = REQUEST_PAGE_SIZE_OPTIONS.includes(Number(detail.pageSize))
+    ? Number(detail.pageSize)
+    : REQUEST_PAGE_SIZE;
+  const targetPage = Math.ceil(ordinal / pageSize);
+  if (!detail.loaded || detail.page !== targetPage) {
+    await setRequestPage(threadId, turnId, targetPage);
+  }
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const row = [...elements["agent-tree"].querySelectorAll("tr[data-request-id]")]
+    .find((candidate) => candidate.dataset.requestId === requestId);
+  if (!row) {
+    toast("已打开目标 Request 页，但未找到对应 canonical request_id");
+    return;
+  }
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  row.classList.remove("diagnostic-target");
+  void row.offsetWidth;
+  row.classList.add("diagnostic-target");
+  row.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center", inline: "nearest" });
+  setTimeout(() => row.classList.remove("diagnostic-target"), reduceMotion ? 0 : 1600);
+}
+
+function formatPercent(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+}
+
+function formatRatio(value) {
+  return Number.isFinite(value) ? `${Number(value).toFixed(2)}×` : "—";
+}
+
+function signedPercent(value) {
+  if (!Number.isFinite(value)) return "—";
+  return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}pp`;
+}
+
+function signedCompact(value) {
+  if (!Number.isFinite(value)) return "—";
+  return `${value >= 0 ? "+" : ""}${compactFormatter.format(value)}`;
 }
 
 function renderAgents() {
@@ -1003,6 +1572,7 @@ function requestDetailRenderSignature(detail, task) {
     pagination?.totalItems ?? "",
     pagination?.totalPages ?? "",
     detail.projectionGeneration ?? "",
+    state.diagnostics?.renderVersion ?? 0,
     task?.effort ?? "",
     requestIds,
   ].join("|");
@@ -1155,7 +1725,7 @@ function renderRequestDetail(detail, task) {
     content = '<div class="request-detail-state">这个 Task 没有可展示的 canonical Request。</div>';
   } else {
     content = `<div class="request-audit-scroll" role="region" tabindex="0" aria-label="Canonical Requests 表格，可独立横向滚动"><table class="request-table">
-      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="只有 service_tier 明确为 fast 才使用 Fast 定价；default、standard、priority、缺失或其他值一律按 standard 计费。">服务层级</th><th>USD</th></tr></thead>
+      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="只有 service_tier 明确为 fast 才使用 Fast 定价；default、standard、priority、缺失或其他值一律按 standard 计费。">服务层级</th><th>USD</th><th>诊断</th></tr></thead>
       <tbody>${detail.requests.map((request) => renderRequestRow(request, task?.effort)).join("")}</tbody>
     </table></div>
     ${renderRequestPagination(detail)}`;
@@ -1230,7 +1800,7 @@ async function setRequestPage(threadId, turnId, requestedPage) {
 }
 
 function renderRequestRow(request, effort) {
-  return `<tr>
+  return `<tr data-request-id="${escapeHtml(request.requestId || "")}">
     <td title="${escapeHtml(request.observedAt || "")}">${formatDate(request.observedAt)}</td>
     <td>${formatTokens(request.usage?.inputTokens)}</td>
     <td>${formatTokens(request.usage?.cachedInputTokens)}</td>
@@ -1242,7 +1812,20 @@ function renderRequestRow(request, effort) {
     <td><span class="effort-chip">${escapeHtml(effortLabel(effort))}</span></td>
     <td><span class="tier-chip ${serviceTierClass(request.serviceTier)}">${escapeHtml(serviceTierLabel(request.serviceTier, request.costEstimate))}</span></td>
     <td class="request-cost ${escapeHtml(request.costEstimate?.status || "unavailable")}" title="${escapeHtml(requestCostEstimateTitle(request.costEstimate))}">${formatUsdEstimate(request.costEstimate)}</td>
+    <td class="request-diagnostic-cell">${renderRequestDiagnosticMarker(request.requestId)}</td>
   </tr>`;
+}
+
+function renderRequestDiagnosticMarker(requestId) {
+  const findings = state.diagnostics?.requestFindings?.get(requestId) ?? [];
+  if (!findings.length) return '<span class="request-diagnostic-none">—</span>';
+  const severityOrder = { high: 3, warning: 2, info: 1 };
+  const highest = findings.reduce((selected, finding) =>
+    (severityOrder[finding.severity] ?? 0) > (severityOrder[selected?.severity] ?? 0) ? finding : selected
+  , null);
+  const severity = highest?.severity ?? "info";
+  const title = findings.map((finding) => diagnosticTypeLabel(finding.type)).join(" · ");
+  return `<span class="request-diagnostic-marker ${escapeHtml(severity)}" title="${escapeHtml(title)}">${findings.length}</span>`;
 }
 
 
@@ -1322,6 +1905,19 @@ async function withViewTransition(update) {
 
 async function fetchJson(url) {
   const response = await fetch(url, { headers: { Accept: "application/json" } });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  return payload;
+}
+
+async function postJson(url, body) {
+  const headers = { Accept: "application/json" };
+  const options = { method: "POST", headers };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(url, options);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
   return payload;

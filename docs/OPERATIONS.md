@@ -57,7 +57,7 @@ npm run start:no-open
 
 网络路径优先使用 `HTTPS_PROXY` / `ALL_PROXY`。Windows 未设置这些环境变量时，监控器会只读当前用户 WinINET 的 `ProxyEnable/ProxyServer` 并为 HTTPS Usage 建立 CONNECT tunnel；这用于兼容浏览器/Codex 可联网但 Node 直连被代理环境阻断的机器。`NO_PROXY` 仍优先于代理发现。
 
-schema version 与 parser semantics version 是两个不同概念。Phase 18 当前 SQLite 仍是 schema v14，但事件分类/allowlist 发生兼容性变化时，旧 session 会被标记为 parser-stale 并进入后台 reindex；不要手工更新 `ingest_cursors.unknown_records` 来“修复” health。真实重扫完成后 cursor diagnostics 才是新的事实。
+schema version 与 parser semantics version 是两个不同概念。当前 SQLite 为 schema v15；相对 Phase 18 的 v14，v15 只增加本机 Diagnostic Alerts 的 policy/ack operational tables，不改变 canonical accounting projection。事件分类/allowlist 发生兼容性变化时，旧 session 仍会被标记为 parser-stale 并进入后台 reindex；不要手工更新 `ingest_cursors.unknown_records` 来“修复” health。真实重扫完成后 cursor diagnostics 才是新的事实。
 
 ## USD 价目维护
 
