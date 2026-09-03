@@ -14,6 +14,8 @@ import {
 } from "./behavioral-diagnostics.js";
 import { analyzeUsageDiagnostics } from "./diagnostics.js";
 import { estimateRequestCost, pricingCatalogSummary } from "./pricing.js";
+import { readRequestContent } from "./request-content.js";
+import { readReconstructedInputContext } from "./request-input-context.js";
 import {
   readTaskPreview,
   SessionRolloutParser,
@@ -424,6 +426,107 @@ export class UsageMonitor extends EventEmitter {
       nextAfter: requestPage.nextAfter,
       pagination: requestPage.pagination,
       projectionGeneration: Number(projection?.generation ?? 0),
+    };
+  }
+
+  async requestContent(sessionId, requestId) {
+    const locator = this.database.getCanonicalRequestContentLocator(sessionId, requestId);
+    if (!locator) return null;
+    const projection = this.database.getProjectionState();
+    const request = {
+      requestId: locator.requestId,
+      observedAt: locator.observedAt,
+      model: locator.model,
+      effort: locator.task?.effort ?? null,
+      serviceTier: locator.serviceTier,
+      pricingContextQuality: locator.pricingContextQuality,
+      quality: locator.quality,
+      usage: locator.usage,
+      costEstimate: estimateRequestCost(locator),
+    };
+    if (locator.boundaryStatus !== "ok") {
+      return {
+        available: false,
+        reason: locator.boundaryStatus,
+        version: 2,
+        projectionGeneration: Number(projection?.generation ?? 0),
+        request,
+        evidence: {
+          kind: "rollout_observed_interaction",
+          providerPayloadReconstructed: false,
+          sourceKey: locator.sourceKey,
+          startLine: null,
+          endLine: locator.lineNumber,
+          complete: false,
+          truncated: false,
+          coverage: locator.boundaryStatus,
+        },
+        preModelCut: { status: "unavailable", kind: null, lineNumber: null, recordKind: null },
+        items: [],
+        summary: emptyRequestContentSummary(),
+      };
+    }
+    const sourcePath = this.repository.resolveSourceKey(locator.sourceKey);
+    if (!sourcePath) {
+      return {
+        available: false,
+        reason: "source_missing",
+        version: 2,
+        projectionGeneration: Number(projection?.generation ?? 0),
+        request,
+        evidence: {
+          kind: "rollout_observed_interaction",
+          providerPayloadReconstructed: false,
+          sourceKey: locator.sourceKey,
+          startLine: locator.previousBoundary
+            ? locator.previousBoundary.lineNumber + 1
+            : locator.task?.startLine ?? null,
+          endLine: locator.lineNumber,
+          complete: false,
+          truncated: false,
+          coverage: "source_missing",
+        },
+        preModelCut: { status: "unavailable", kind: null, lineNumber: null, recordKind: null },
+        items: [],
+        summary: emptyRequestContentSummary(),
+      };
+    }
+    const content = await readRequestContent({ sourcePath, locator });
+    return {
+      version: 2,
+      projectionGeneration: Number(projection?.generation ?? 0),
+      request,
+      ...content,
+    };
+  }
+
+  async requestInputContext(sessionId, requestId) {
+    const locator = this.database.getCanonicalRequestInputContextLocator(sessionId, requestId);
+    if (!locator) return null;
+    const projection = this.database.getProjectionState();
+    const request = {
+      requestId: locator.requestId,
+      observedAt: locator.observedAt,
+      model: locator.model,
+      effort: locator.task?.effort ?? null,
+      serviceTier: locator.serviceTier,
+      pricingContextQuality: locator.pricingContextQuality,
+      quality: locator.quality,
+      usage: locator.usage,
+      costEstimate: estimateRequestCost(locator),
+    };
+    const context = await readReconstructedInputContext({
+      locator,
+      resolveSource: (sourceKey) => {
+        const sourcePath = this.repository.resolveSourceKey(sourceKey);
+        return sourcePath && existsSync(sourcePath) ? sourcePath : null;
+      },
+    });
+    return {
+      ...context,
+      version: 1,
+      projectionGeneration: Number(projection?.generation ?? 0),
+      request,
     };
   }
 
@@ -994,6 +1097,29 @@ export class UsageMonitor extends EventEmitter {
 
 function hasImportedRequestProjection(indexState) {
   return Boolean(indexState?.requestLedgerReady && indexState.parseStatus !== "not_imported");
+}
+
+function emptyRequestContentSummary() {
+  return {
+    observedItemCount: 0,
+    observedRecordCount: 0,
+    messageCount: 0,
+    toolCallCount: 0,
+    toolResultCount: 0,
+    reasoningSummaryCount: 0,
+    reasoningRecordCount: 0,
+    reasoningCardCount: 0,
+    observedInputItemCount: 0,
+    runtimeContextItemCount: 0,
+    observedInteractionItemCount: 0,
+    contextSignalCount: 0,
+    malformedRecordCount: 0,
+    unknownRecordCount: 0,
+    omittedRecordCount: 0,
+    omittedItemCount: 0,
+    truncatedItemCount: 0,
+    payloadCharacters: 0,
+  };
 }
 
 function diagnosticSeverityRank(value) {

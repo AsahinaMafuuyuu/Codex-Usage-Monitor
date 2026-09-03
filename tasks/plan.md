@@ -1426,3 +1426,93 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] 24B2 仅增加本机 operational write，不发送外部通知，不改变 deterministic finding/accounting。
 
 **Delivered evidence (2026-09-02):** Phase 24A `advanced-usage-diagnostics-v1` final shadow 为 `4,490 findings / 30,198 Requests`；20 轮最大真实工程 P95 `416.362ms`。Phase 24B1 `behavioral-usage-diagnostics-v1` final shadow 为 `26 findings / 30,198 Requests`（Reasoning `24`、Burst `1`、Subagent Amplification `1`，约 `0.09/100`）；20 轮 warm common P95 `85.607ms`、最大真实工程最新 Session P95 `381.353ms`。Chrome/CDP 已验证 Behavioral Session Burst 的 `n=13 / median=8 / MAD=2 / Z=3.71` 与 Canonical Request evidence locator。Phase 24B2 已完成 schema v15 operational state、Budget/Ack/Snooze 与本机 Alerts；最终 steady-state warm P95 为 `2.208ms / 2.335ms`（common / 最大真实工程最新 Session）。最终 schema v15 reconciliation 为 canonical/calendar `30,201 Requests / 3,712,877,422 total tokens`，known calendar cost `$2569.48648723`，projection v2 generation `8191`；`.codex` 仍为 450 rollout、manifest `8d535514aef5b8dff3fa532afeb01922fc2e9e46941bf52d5899fc3cf0a02fee`。`npm test`=`176 / 175 pass / 0 fail / 1 optional skip`，`npm run check` 与 `git diff --check` Green。LLM Explanation 仍 Pending。
+
+## Phase 25: Request Content Inspector
+
+### Overview
+
+在现有 Canonical Request audit 上增加只读、按需的内容下钻。正式语义是从上一 canonical `token_count` boundary 到当前 Request origin boundary 的 **Observed Interaction Slice**，而不是 Provider wire payload。设计事实源为 `docs/DESIGN-REQUEST-CONTENT-INSPECTOR.md`，实施方案为 `docs/TECHNICAL-IMPLEMENTATION-REQUEST-CONTENT-INSPECTOR.md`，交付契约为 `docs/DELIVERY-REQUEST-CONTENT-INSPECTOR.md`，长期约束见 ADR-0030。
+
+当前状态：**Implemented / Verified**。
+
+### Phase 25A：Content Projection Core
+
+- [x] 新增 `src/request-content.js` 深模块与 boundary/projector fixtures。
+- [x] DB 提供 `requestId -> canonical origin locator + previous same-source boundary + task locator` 的窄只读 query。
+- [x] 通过 portable source key 重新绑定当前 rollout path；客户端不能提交 path/source/line。
+- [x] 使用 canonical Request boundary 构造 bounded Observed Interaction Slice；ambiguous/source changed 时明确 unavailable/partial。
+- [x] 将 message / assistant message / tool call / tool result / reasoning summary / context signal 投影为稳定语义 shape，不返回 Raw JSON envelope。
+- [x] scanner 实现 byte/record/item/payload hard limits 与显式 truncation。
+- [x] 新增 lazy `GET /api/sessions/:sessionId/requests/:requestId/content`；不进入 Session/SSE/Timeline/Diagnostics 热路径。
+- [x] source missing 时 Request metadata 仍可返回、content 标记 unavailable；request 不属于 session 时 404。
+- [x] 完成 unit / DB / API / XSS / no-persistence / read-only source gates。
+
+### Phase 25B：Request Inspector UI
+
+- [x] Canonical Requests 表增加 `详情 / 查看` 列。
+- [x] 增加单一全局、可访问 Request Inspector Dialog。
+- [x] Header 展示 time/model/effort/tier/usage/cache/cost 与 `Rollout observed interaction` evidence。
+- [x] Message 使用角色块；Tool Call/Result 使用通用 Card；Reasoning summary 默认折叠；无公开 summary 时不推断 CoT。
+- [x] loading/unavailable/partial/truncated/error 均有可读状态。
+- [x] 浏览器只持有当前打开 Request 的 ephemeral payload；close/session/day switch 后清除，不使用 localStorage/sessionStorage/IndexedDB。
+- [x] SSE replay 保持 Dialog root、Request row identity、focus/scroll；关闭后恢复触发按钮焦点。
+- [x] 完成 1440×900 / 720×900 Chrome/CDP 与 reduced-motion 回归。
+
+### Phase 25C：Delivery Freeze
+
+- [x] 真实 representative rollout 审计确认 boundary 语义与 projector 输出。
+- [x] common / near-limit Request benchmark 达到冻结门槛。
+- [x] canonical Request count、六字段 Token、calendar cost、Diagnostics identity 前后完全一致。
+- [x] `.codex` manifest before/after 完全一致，SQLite schema v15 / projection v2 不因 Inspector 改变。
+- [x] 更新 API/Architecture/README/CHANGELOG/VERIFICATION，只记录实际实现和执行过的证据。
+- [x] `npm test`、`npm run check`、`git diff --check` Green 后，Delivery 才允许改为 `Implemented / Verified`。
+
+### Checkpoint
+
+- [x] 用户能从任一 canonical Request 打开可读 interaction，不需要阅读 JSONL。
+- [x] UI 不把 Observed Interaction 冒充 Provider Request Body。
+- [x] 正文不写 SQLite、磁盘缓存或浏览器持久化存储。
+- [x] 大 Tool Result/长 slice 有明确 bounded/truncated 行为。
+- [x] Phase 18–24 accounting、Request pagination、Diagnostics locator 与 SSE interaction 均不回归。
+
+**Delivered evidence (2026-09-02):** `src/request-content.js`、DB locator、lazy content endpoint 与单一 Inspector Dialog 已交付；locator/projector 最终拆分为 `12 MiB/侧、24 MiB 总 locator budget + 4 MiB slice budget + 500 records / 64 KiB item / 512 KiB public body`。`audit:request-content`：30,201 Requests 中 source-present 29,807、boundary ambiguous 0、当前 bounded policy 可读 29,801（99.97987%），6 条 oversized slice 显式 truncate、394 条历史 source missing。production-equivalent warm P95：最终 default common `1.683ms`、最重双-anchor fallback `63.370ms`、3.865 MiB 可投影 slice `49.776ms`；5.70 MiB/15.13 MiB oversized slice 分别在 `12.683ms / 32.146ms` 内 bounded truncate。Chrome/CDP 验证 1440×900 与 720×900、SSE DOM identity、stale refresh、close payload clear/focus restore 均通过。最终 accounting/read-only fingerprint 以 `docs/VERIFICATION.md` 交付记录为准。
+
+## Phase 25.1: Request Inspector Semantic Refinement
+
+当前状态：**Implemented / Verified**。
+
+- [x] `Input/Cached/Output/Total` 改为明确 Token accounting label。
+- [x] 当前 slice 建立 conservative pre-model evidence cut。
+- [x] 新增 `Observed Input Evidence` section。
+- [x] 新增 allowlisted `Runtime Context` section。
+- [x] identical public reasoning summary semantic coalesce + occurrence evidence。
+- [x] opaque-only reasoning 聚合 activity count，不推断内容相同。
+- [x] strict-slice Tool Result callId fallback 不回归。
+- [x] Request Content public projection 版本化升级。
+- [x] unit/API/UI security/Chrome/performance/accounting/read-only Gate 全部 Green 后才标记完成。
+
+设计事实源：`docs/DESIGN-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md`；实施方案：`docs/TECHNICAL-IMPLEMENTATION-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md`；交付契约：`docs/DELIVERY-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md`。
+
+**Delivered evidence (2026-09-02):** Request Content contract 已升级 v2；focused projector tests 覆盖 cut/runtime/dedupe/opaque activity；`audit:request-content` 仍为 30,201 Requests、source-present 29,807、bounded-readable 29,801、boundary ambiguous 0。20 轮 warm common/near-limit P95=`0.967/0.892ms`。Chrome/CDP 实测真实 `occurrenceCount=2` duplicate reasoning Request 只渲染 1 张 summary Card，并完成 1440×900 / 720×900、SSE/stale/focus 回归。schema v15 / projection v2 与 accounting/read-only fingerprint 不变。
+
+## Phase 26: Reconstructed Input Context
+
+当前状态：**Implemented / Verified**。
+
+- [x] 新增 request/thread/source-chain read locator，不让客户端提交 source/path/line/byte。
+- [x] 新增 `src/request-input-context.js` 深模块。
+- [x] 复用 Phase 25.1 单一 pre-model cut 事实源。
+- [x] 支持同线程 multi-source history continuity。
+- [x] 支持 explicit compaction snapshot rebase。
+- [x] source missing / compaction gap / unsupported shape / bounded truncation 明确 coverage。
+- [x] 每个 context item 有 provenance evidence level。
+- [x] Input/Cached token accounting 不分配到 reconstructed item。
+- [x] 新增 lazy `/input-context` read path 与 Inspector `Input Context` tab。
+- [x] 新增真实 history/compaction audit，再冻结 limits。
+- [x] 新增 production-equivalent benchmark。
+- [x] no persistence / no schema / no accounting regression。
+- [x] unit/API/UI security/Chrome/performance/accounting/read-only Gate 全部 Green 后才标记完成。
+
+设计事实源：`docs/DESIGN-RECONSTRUCTED-INPUT-CONTEXT.md`；实施方案：`docs/TECHNICAL-IMPLEMENTATION-RECONSTRUCTED-INPUT-CONTEXT.md`；交付契约：`docs/DELIVERY-RECONSTRUCTED-INPUT-CONTEXT.md`；长期约束：`docs/decisions/0031-reconstructed-input-context-evidence.md`。
+
+**Delivered evidence (2026-09-02):** 300 Request audit：source/thread P99=2/max=4，history scan P99=25,614,241 bytes，context items P99=699，visible chars P99=778,549；293 complete / 3 bounded partial / 4 unavailable。冻结 limits=`16 sources / 32 MiB / 800 items / 64 KiB item / 1 MiB projected`。118/118 sampled compaction 有 explicit snapshot；全库 262 条 `context_compacted` 均是前方 2–4 行 explicit compaction 的 lifecycle echo。20 轮 warm common/large P95=`9.427/39.421ms`。Chrome/CDP 验证首次 Input Context 点击只产生 1 次 lazy fetch、24 个 provenance badge、desktop/narrow/SSE/focus 全 Green；Provider payload/serialization 仍明确未重建/未知。

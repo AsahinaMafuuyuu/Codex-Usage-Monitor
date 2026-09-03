@@ -232,6 +232,20 @@
       </main>
     </div>
 
+    <dialog id="request-inspector" class="request-inspector" aria-labelledby="request-inspector-title" aria-describedby="request-inspector-evidence">
+      <div class="request-inspector-frame">
+        <header class="request-inspector-header">
+          <div>
+            <p class="eyebrow">REQUEST CONTENT / 交互证据</p>
+            <h2 id="request-inspector-title">Request Inspector</h2>
+            <p id="request-inspector-evidence" class="request-inspector-evidence">Rollout observed interaction · Provider payload 未重建</p>
+          </div>
+          <button id="request-inspector-close" class="request-inspector-close" type="button" aria-label="关闭 Request Inspector">关闭</button>
+        </header>
+        <div id="request-inspector-body" class="request-inspector-body" aria-live="polite"></div>
+      </div>
+    </dialog>
+
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/vendor/lucide.min.js" defer></script>
     <script type="module" src="/app.js"></script>

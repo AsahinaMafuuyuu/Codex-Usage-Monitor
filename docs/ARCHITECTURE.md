@@ -29,11 +29,12 @@ Codex config/auth --只读--> CodexUsageClient --60 秒--> 官方 Usage
 | `src/request-ledger.js` | 将 verified model-usage events 按 task 聚合为唯一运行时 `deltaUsage`、质量、coverage 和 request-count 指标 |
 | `src/request-identity.js` | 优先提取原生 Request identity；缺失时仅用稳定 usage evidence 做 deterministic reconstruction，拒绝 source/timestamp/call-id 参与身份 |
 | `src/request-ownership.js` | 结合 Task lineage、temporal evidence 与 Request identity，将 raw evidence 分为 canonical / inherited_copy / unresolved，并生成 reconciliation |
+| `src/request-content.js` | 通过 canonical Request locator + Task byte/line locator bounded seek 原始 rollout，构造 Observed Interaction Slice，并把 message/tool/reasoning/context evidence 投影为不含 Raw JSON 的临时语义模型 |
 | `src/snapshot-scope.js` | 统一解析本地自然日边界，并从 Request Ledger 物化 full/day Task Slice、Agent lineage、Session summary 与 Calendar Slice |
 | `src/pricing.js` | 用历史订阅标准价逐 verified Request Ledger usage unit 计算 request cost，并合并 Task/Agent/Session/Day coverage |
 | `src/source-locator.js` | 在当前 Codex home 的绝对 runtime path 与可持久化 `.codex` 相对 source key 之间做安全转换和旧路径恢复 |
 | `src/codex-usage-client.js` | 每次只读重载 Codex `config.toml` / `auth.json`，按官方 backend-client path style 查询账号 Usage 并规范化额度窗口；不持久化凭据 |
-| `src/database.js` | 管理 schema v14、raw Request evidence、canonical request/ownership provenance、versioned request-day/cost projection、Task Request 定向查询索引、WAL 与可恢复 cursor |
+| `src/database.js` | 管理 schema v15、raw Request evidence、canonical request/ownership provenance、versioned request-day/cost projection、Task/Request 定向 locator query、Alerts operational state、WAL 与可恢复 cursor |
 | `src/monitor.js` | 管理 cached selection、低并发 background indexer、dirty-session queue、增量 tail、SSE 和 graceful shutdown |
 | `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
 | `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、按 session/agent/task 稳定 key 增量 reconcile 的任务明细、额度与健康状态 |
@@ -60,7 +61,50 @@ schema v12 按 [ADR-0018](decisions/0018-day-scoped-request-ledger-snapshot.md) 
 
 Phase 19 将 **Task** 与 **Task Day Slice** 的展示语义正式分开，但不增加新的 accounting identity。Session/Project 从全部 canonical Request 物化完整 Task；Time 先按 canonical Request `observedAt` 切日，再按 owner Task 聚合，并补充 `scopeKind/scopeDay/firstRequestAt/lastRequestAt/requestCount`。原 Task lifecycle 仍可作为身份元数据存在，但 Time UI 不把 `startedAt/duration` 当作日内计量时间。
 
-Request audit detail 不进入初始 snapshot。Task 展开后通过 `(root_session_id, thread_id, turn_id[, observed_at])` 定向读取 `canonical_requests`，稳定按 `(observed_at, request_id)` cursor 分页。`idx_canonical_requests_task_observed(root_session_id, thread_id, turn_id, observed_at, request_id)` 同时服务 full-task 与 day-scoped drill-down；raw `model_usage_events/event_ownership` 仍只用于 rebuild/reconciliation，不进入默认用户审计列表。该 read path 不提升 schema version，v14/projection v2 保持不变。
+Request audit detail 不进入初始 snapshot。Task 展开后通过 `(root_session_id, thread_id, turn_id[, observed_at])` 定向读取 `canonical_requests`，稳定按 `(observed_at, request_id)` cursor 分页。`idx_canonical_requests_task_observed(root_session_id, thread_id, turn_id, observed_at, request_id)` 同时服务 full-task 与 day-scoped drill-down；raw `model_usage_events/event_ownership` 仍只用于 rebuild/reconciliation，不进入默认用户审计列表。该 read path 本身不提升 schema version；当前主线保持 schema v15 / projection v2。
+
+Phase 25 在这一 canonical Request audit 之上增加独立 **Request Content Inspector** read-through seam，但不改变 accounting。`requestId` 先经 `MonitorDatabase.getCanonicalRequestContentLocator()` 解析为 durable canonical origin locator、同 Task/同 source 的前一 canonical boundary 与既有 Task `start_line/start_byte`；随后 `CodexRepository.resolveSourceKey()` 只在服务端重新绑定当前绝对 rollout path，客户端不能提供文件路径、source key、line 或 byte offset。
+
+```text
+canonical request_id
+  -> origin_source_key + origin_line_number
+  -> task.start/end line + byte anchors
+  -> previous same-task/same-source canonical boundary
+  -> bounded newline-only byte-range locator
+  -> Observed Interaction Slice
+  -> bounded JSON parse + semantic projection
+  -> authenticated GET
+  -> one ephemeral Dialog payload
+```
+
+Locator 不从 rollout 文件头 replay。它以 Task start/end 为双 anchor，用 `256 KiB` 小块只统计 JSONL `\n`：单侧最多 `12 MiB`、双侧总 locator 预算 `24 MiB`，找到 previous/current canonical line 的精确 byte range 后才读取正文。真正进入 JSON parse/projector 的 Observed Interaction Slice 独立限制为 `4 MiB`，再叠加 `500 records / 64 KiB item / 512 KiB public payload`。当前 canonical `origin_line_number` 是唯一终点，即使后面紧邻额外 `token_count` 也不能扩大 slice。
+
+该拆分避免“大 Task 中目标 Request 离 Task 起点很远”导致整段 JSON 解析：正式 coverage audit 中 source-present canonical Request=`29,807`、boundary ambiguous=`0`，当前 policy 可读=`29,801`（`99.97987%`）；6 条真实 oversized slice 显式 `content_truncated`，394 条历史 source missing 显式 `source_missing`。source/Task locator 无法证明、line 顺序矛盾或超限时只返回 `unavailable/partial/truncated` coverage，不跨 source 猜测。Raw record envelope、compaction replacement history 与 encrypted reasoning 不进入公开 projection；reasoning 只保留明确 summary 或“opaque content present”事实。Tool Result 的 Tool Call 若位于上一 canonical boundary 外，V1 不回读旧 slice 补工具名，只保留 call id。
+
+该 read path 不进入 Session/Day snapshot、Timeline、SSE、Diagnostics 或 background indexer，也不维护正文 LRU。SQLite schema 仍为 v15、projection 仍为 v2；正文生命周期只允许 `rollout -> bounded server memory -> authenticated no-store response -> 当前打开 Dialog memory`。关闭 Dialog 或切换 session/day 后前端清空 payload；generation 变化只把当前 Inspector 标记 stale，由用户显式重新读取。
+
+Phase 25.1 在同一个 `src/request-content.js` 深模块内部深化 semantic projection，不扩大 slice I/O。第一条明确 reasoning / assistant / tool-call model-output record 定义 conservative **pre-model evidence cut**；cut 前可证明的 input-like evidence、allowlisted `turn_context` runtime metadata 与 cut 后 interaction 分别由 server 固定投影为 `observed_input / runtime_context / observed_interaction`，浏览器不再解释 raw rollout shape。Request Content contract 升为 v2。相邻且 public summary 完全一致的 reasoning semantic item 才允许 coalesce，并通过 `occurrenceCount` 保留 record evidence；无 public summary 的 opaque reasoning 只聚合为 activity count，不推断内容等价。Tool Result 仍严格受 canonical slice 约束，不能向上一 Request 回读 Tool Call。
+
+Phase 26 在 Request Inspector 上增加第二条独立、lazy 的 **Reconstructed Input Context** seam，但仍与 accounting 解耦：
+
+```text
+canonical request_id
+  -> getCanonicalRequestInputContextLocator(rootSessionId, requestId)
+  -> same rootSessionId + threadId portable source chain
+  -> rollout filename timestamp chronology
+  -> bounded historical reader
+  -> latest explicit compaction rebase when available
+  -> current Phase 25.1 pre-model evidence
+  -> provenance grouping
+  -> authenticated no-store /input-context
+  -> current Dialog Input Context tab only
+```
+
+source chain 不能由客户端提供，也不使用 filesystem mtime 作为历史顺序事实；`rollout-YYYY-MM-DDTHH-MM-SS-...jsonl` 的时间前缀必须可唯一解析，否则 locator 降级为 `boundary_ambiguous`。同线程真实数据存在 2–4 source continuity，DB locator 只截取到当前 source 为止，不拼接 sibling/parent/child thread。历史 state machine 遇到 explicit `compacted + replacement_history` 时语义化 snapshot 并 rebase；紧随其后的 `context_compacted` lifecycle echo 不重复算第二次 compaction。若只有 signal 没有 snapshot，则清除无法证明仍保留的旧 history 并形成 coverage gap。
+
+Phase 26 冻结 hard limits 为 `16 source segments / 32 MiB history scan / 800 context items / 64 KiB item / 1 MiB projected characters`。同 Task forward reader 对跨 chunk 大 record 只合并一次；prefix/older-source tail 直接在 Buffer 上逆向逐行解析，并在遇到最近 explicit compaction 后停止继续语义解析，因此不会为已 supersede 的旧 history 创建大量字符串/对象。300 Request audit 中 source/thread P99=`2`、history scan P99=`25,614,241` bytes、context items P99=`699`、visible chars P99=`778,549`；293 complete、3 bounded partial、4 unavailable。最终 20 轮 production-equivalent warm P95 为 common=`9.427ms`、large=`39.421ms`。
+
+每个 Phase 26 context item 必须携带 `direct_current / historical_rollout / compaction_snapshot / runtime_context / coverage_gap` provenance。`providerPayloadReconstructed=false` 与 `providerSerializationKnown=false` 是长期 truthfulness invariant；即使 rollout history coverage complete，也不能转换成“完整 Provider Input”。Input/Cached Input Tokens 继续只属于 canonical Request accounting，不允许按 context item 分配。正文仍不写 SQLite、server cache、SSE 或浏览器持久化存储。
 
 ## 任务归因
 

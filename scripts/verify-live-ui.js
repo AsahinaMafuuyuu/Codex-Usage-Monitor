@@ -8,6 +8,7 @@ const appUrl = process.argv[2];
 if (!appUrl) {
   throw new Error("Usage: node scripts/verify-live-ui.js <authenticated monitor URL>");
 }
+const duplicateReasoningRequestId = process.env.CODEX_MONITOR_DUPLICATE_REASONING_REQUEST_ID ?? null;
 
 const chromePath = resolveChromePath();
 const profile = await mkdtemp(join(tmpdir(), "codex-monitor-live-ui-"));
@@ -182,12 +183,13 @@ try {
   assert(Math.abs(structural.topDelta) < 1, `visual anchor moved by ${structural.topDelta}px`);
 
   const requestDrilldown = await verifyRequestDrilldown(cdp);
+  const requestInspector = await verifyRequestInspector(cdp);
   const taskScroll = await verifyTaskScroll(cdp);
   const diagnostics = await verifyDiagnostics(cdp);
   const scopedNavigation = await verifyScopedNavigation(cdp);
   const narrow = await verifyNarrowViewport(cdp);
 
-  console.log(JSON.stringify({ collapsed, structural, requestDrilldown, taskScroll, diagnostics, scopedNavigation, narrow }, null, 2));
+  console.log(JSON.stringify({ collapsed, structural, requestDrilldown, requestInspector, taskScroll, diagnostics, scopedNavigation, narrow }, null, 2));
 } finally {
   try { socket?.close(); } catch {}
   chrome.kill();
@@ -237,6 +239,7 @@ async function verifyRequestDrilldown(cdp) {
       expanded: toggle?.getAttribute('aria-expanded') === 'true',
       hasError: Boolean(detail?.querySelector('.request-detail-state.error')),
       headings: [...(detail?.querySelectorAll('.request-table thead th') ?? [])].map((cell) => cell.textContent.trim()),
+      cacheHitRates: [...(detail?.querySelectorAll('.request-cache-hit') ?? [])].map((cell) => cell.textContent.trim()),
       modelStyled: Boolean(detail?.querySelector('.request-model')),
       collapseHandle: Boolean(detail?.querySelector('[data-request-collapse]')),
       paginator: Boolean(detail?.querySelector('.request-pagination')),
@@ -256,6 +259,10 @@ async function verifyRequestDrilldown(cdp) {
   assert(before.expanded, "task Request toggle did not enter expanded state");
   assert(!before.hasError, "task Request drill-down rendered an error");
   assert(before.requestRows > 0, "task with Request count > 0 returned no canonical Request rows");
+  assert(before.headings.includes("Cache Hit Rate"), "Request drill-down is missing Cache Hit Rate");
+  assert(before.cacheHitRates.length === before.requestRows, "Request drill-down Cache Hit Rate cells do not match Request rows");
+  assert(before.cacheHitRates.every((value) => value === "—" || /^\d+(?:\.\d+)?%$/u.test(value)),
+    `Request drill-down contains an invalid Cache Hit Rate: ${before.cacheHitRates.join(', ')}`);
   assert(before.headings.includes("推理强度"), "Request drill-down is missing Task reasoning effort");
   assert(before.headings.includes("服务层级"), "Request drill-down does not explain service tier");
   assert(!before.headings.includes("Coverage"), "Request drill-down still exposes the removed Coverage column");
@@ -393,6 +400,223 @@ async function verifyRequestDrilldown(cdp) {
     assert(!exclusiveOpen.targetExpanded && exclusiveOpen.alternateExpanded, "latest Request drawer did not exclusively own the expanded state");
   }
   return { target, before, fivePerPage, scrollIsolation, after, collapsedDetail, reopened, exclusiveOpen };
+}
+
+async function verifyRequestInspector(cdp) {
+  const target = await cdp.evaluate(`(async () => {
+    const buttons = [...document.querySelectorAll('[data-request-inspect]')];
+    const sessionId = document.querySelector('#session-id')?.textContent?.trim();
+    if (!sessionId) return null;
+    for (const button of buttons) {
+      const requestId = button.dataset.requestInspect;
+      const response = await fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/requests/' + encodeURIComponent(requestId) + '/content');
+      if (!response.ok) continue;
+      const payload = await response.json();
+      if (!payload.available || !(payload.items?.length > 0)) continue;
+      window.__codexLiveUiQa.requestInspectorTrigger = button;
+      window.__codexLiveUiQa.requestInspectorRequestId = requestId;
+      button.focus({ preventScroll: true });
+      button.click();
+      return { requestId, itemCount: payload.items.length };
+    }
+    return null;
+  })()`);
+  assert(target?.requestId, "no readable canonical Request was available for Request Inspector QA");
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    return Boolean(dialog?.open && !dialog.querySelector('.request-inspector-state[role="status"]'));
+  })()`), "Request Inspector content");
+
+  const opened = await cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    const body = dialog?.querySelector('#request-inspector-body');
+    window.__codexLiveUiQa.requestInspectorDialog = dialog;
+    window.__codexLiveUiQa.requestInspectorText = body?.textContent ?? '';
+    return {
+      open: Boolean(dialog?.open),
+      modal: dialog?.matches(':modal') ?? false,
+      title: dialog?.querySelector('#request-inspector-title')?.textContent?.trim() ?? '',
+      evidence: dialog?.querySelector('#request-inspector-evidence')?.textContent?.trim() ?? '',
+      itemCards: body?.querySelectorAll('.request-content-card').length ?? 0,
+      toolCards: body?.querySelectorAll('.tool-call, .tool-result').length ?? 0,
+      reasoningCards: body?.querySelectorAll('.reasoning').length ?? 0,
+      rawJsonLabel: ['raw json', 'json viewer'].some((label) => (body?.textContent ?? '').toLowerCase().includes(label)),
+      providerClaim: (body?.textContent ?? '').includes('Provider HTTP/Responses request body') &&
+        !(body?.textContent ?? '').includes('不是 Provider HTTP/Responses request body'),
+      bodyScroll: body ? getComputedStyle(body).overflowY : null,
+      activeInsideDialog: Boolean(dialog?.contains(document.activeElement)),
+      observedInputSection: Boolean(body?.querySelector('.request-observed-input')),
+      inputTokensLabel: (body?.textContent ?? '').includes('Input Tokens'),
+      inputContextResourceCount: performance.getEntriesByType('resource')
+        .filter((entry) => entry.name.includes('/input-context')).length,
+    };
+  })()`);
+  assert(opened.open && opened.modal, "Request Inspector did not open as a modal dialog");
+  assert(opened.title.includes('Request'), `Request Inspector title is wrong: ${opened.title}`);
+  assert(/Rollout observed interaction/u.test(opened.evidence), "Request Inspector does not identify rollout evidence");
+  assert(/Provider Payload unavailable \/ not reconstructed/u.test(opened.evidence), "Request Inspector overstates Provider payload provenance");
+  assert(opened.itemCards > 0, "Request Inspector rendered no semantic content cards");
+  assert(opened.observedInputSection, "Request Inspector did not render the server-assigned Observed Input Evidence section");
+  assert(opened.inputTokensLabel, "Request Inspector did not rename accounting Input to Input Tokens");
+  assert(!opened.rawJsonLabel, "Request Inspector exposes a Raw JSON viewer");
+  assert(!opened.providerClaim, "Request Inspector claims to show the Provider request body");
+  assert(opened.bodyScroll === 'auto', `Request Inspector body does not own vertical scrolling: ${opened.bodyScroll}`);
+  assert(opened.activeInsideDialog, "Request Inspector did not retain modal focus");
+
+  const reasoningProjection = await cdp.evaluate(`(() => {
+    const summaryHost = document.createElement('div');
+    summaryHost.innerHTML = window.__codexLiveUiQa.renderRequestContentItem({
+      kind: 'reasoning_summary',
+      text: 'Synthetic public summary',
+      occurrenceCount: 2,
+      opaqueContentPresent: true,
+    });
+    const opaqueHost = document.createElement('div');
+    opaqueHost.innerHTML = window.__codexLiveUiQa.renderRequestContentItem({
+      kind: 'reasoning_activity',
+      occurrenceCount: 3,
+      opaqueContentPresent: true,
+    });
+    return {
+      summaryText: summaryHost.textContent ?? '',
+      opaqueText: opaqueHost.textContent ?? '',
+    };
+  })()`);
+  assert(/2 equivalent summary records/u.test(reasoningProjection.summaryText), "duplicate reasoning summary UI lost occurrenceCount evidence");
+  assert(/3 opaque records/u.test(reasoningProjection.opaqueText), "opaque reasoning UI did not render activity count");
+  assert(/未推断这些记录的内容相同/u.test(reasoningProjection.opaqueText), "opaque reasoning UI overstates semantic equality");
+
+  let realDuplicateReasoning = null;
+  if (duplicateReasoningRequestId) {
+    realDuplicateReasoning = await cdp.evaluate(`(async () => {
+      const sessionId = document.querySelector('#session-id')?.textContent?.trim();
+      const requestId = ${JSON.stringify(duplicateReasoningRequestId)};
+      const response = await fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/requests/' + encodeURIComponent(requestId) + '/content');
+      if (!response.ok) return { ok: false, status: response.status };
+      const payload = await response.json();
+      const item = payload.items?.find((candidate) =>
+        candidate.kind === 'reasoning_summary' && Number(candidate.occurrenceCount ?? 1) > 1);
+      if (!item) return { ok: false, status: response.status, itemCount: payload.items?.length ?? 0 };
+      const host = document.createElement('div');
+      host.innerHTML = window.__codexLiveUiQa.renderRequestContentItem(item);
+      return {
+        ok: true,
+        status: response.status,
+        requestId,
+        occurrenceCount: item.occurrenceCount,
+        cardCount: host.querySelectorAll('.request-content-card.reasoning').length,
+        text: host.textContent ?? '',
+      };
+    })()`);
+    assert(realDuplicateReasoning.ok, `real duplicate reasoning Request could not be verified: ${JSON.stringify(realDuplicateReasoning)}`);
+    assert(realDuplicateReasoning.cardCount === 1, "real duplicate reasoning Request rendered more than one reasoning card");
+    assert(/equivalent summary records/u.test(realDuplicateReasoning.text), "real duplicate reasoning Request lost occurrence evidence in Chrome renderer");
+  }
+
+  await cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-tab="input_context"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    if (!dialog?.open) return false;
+    const loading = dialog.querySelector('.request-inspector-state[role="status"]');
+    if (loading) return false;
+    return Boolean(dialog.querySelector('.request-input-context'));
+  })()`), "Request Input Context lazy content");
+  const inputContext = await cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    const body = dialog?.querySelector('#request-inspector-body');
+    const selected = dialog?.querySelector('[data-request-inspector-tab="input_context"]');
+    const resourceCount = performance.getEntriesByType('resource')
+      .filter((entry) => entry.name.includes('/input-context')).length;
+    const text = body?.textContent ?? '';
+    return {
+      selected: selected?.getAttribute('aria-selected') === 'true',
+      evidence: dialog?.querySelector('#request-inspector-evidence')?.textContent?.trim() ?? '',
+      resourceCount,
+      disclaimer: text.includes('Provider payload/serialization unavailable') &&
+        text.includes('Token accounting is not allocated to individual items'),
+      currentSection: text.includes('Current Input Evidence'),
+      historySection: text.includes('Retained / Reconstructed History'),
+      compactionSection: text.includes('Compaction Evidence'),
+      gapsSection: text.includes('Coverage Gaps'),
+      provenanceBadges: body?.querySelectorAll('.request-provenance').length ?? 0,
+      rawJsonLabel: ['raw json', 'json viewer'].some((label) => text.toLowerCase().includes(label)),
+      providerClaim: /Provider (?:request body|payload) reconstructed/iu.test(text),
+    };
+  })()`);
+  assert(inputContext.selected, "Input Context tab did not become the selected tab");
+  assert(inputContext.resourceCount === opened.inputContextResourceCount + 1, "Input Context was not fetched exactly once on first tab activation");
+  assert(/Reconstructed Input Context/u.test(inputContext.evidence), "Input Context tab does not identify reconstructed evidence");
+  assert(inputContext.disclaimer, "Input Context tab lost the provider/token evidence disclaimer");
+  assert(inputContext.currentSection && inputContext.historySection && inputContext.compactionSection && inputContext.gapsSection,
+    "Input Context tab is missing one or more evidence sections");
+  assert(inputContext.provenanceBadges > 0, "Input Context tab rendered no textual provenance badge");
+  assert(!inputContext.rawJsonLabel, "Input Context tab exposes a Raw JSON viewer");
+  assert(!inputContext.providerClaim, "Input Context tab claims provider reconstruction");
+  await cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-tab="interaction"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-tab="interaction"]')?.getAttribute('aria-selected') === 'true'`), "Request Inspector Interaction tab restore");
+
+  const replayed = await cdp.evaluate(`(() => {
+    const dialog = window.__codexLiveUiQa.requestInspectorDialog;
+    const beforeText = window.__codexLiveUiQa.requestInspectorText;
+    window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', {
+      data: window.__codexLiveUiQa.snapshotData,
+    }));
+    const body = document.querySelector('#request-inspector-body');
+    return {
+      sameDialog: Boolean(dialog?.isConnected && document.contains(dialog)),
+      open: Boolean(dialog?.open),
+      sameText: (body?.textContent ?? '') === beforeText,
+    };
+  })()`);
+  assert(replayed.sameDialog && replayed.open, "SSE snapshot replaced or closed the Request Inspector dialog");
+  assert(replayed.sameText, "unchanged SSE snapshot rewrote the open Request Inspector content");
+
+  await cdp.evaluate(`(() => {
+    const snapshot = JSON.parse(window.__codexLiveUiQa.snapshotData);
+    snapshot.health = snapshot.health ?? {};
+    snapshot.health.projectionGeneration = Number(snapshot.health.projectionGeneration ?? 0) + 1;
+    window.__codexLiveUiQa.snapshotListener(new MessageEvent('snapshot', { data: JSON.stringify(snapshot) }));
+  })()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(document.querySelector('#request-inspector .request-inspector-stale'))`), "Request Inspector stale marker");
+  const stale = await cdp.evaluate(`(() => ({
+    sameDialog: window.__codexLiveUiQa.requestInspectorDialog === document.querySelector('#request-inspector'),
+    open: document.querySelector('#request-inspector')?.open === true,
+    refresh: Boolean(document.querySelector('#request-inspector [data-request-inspector-refresh]')),
+  }))()`);
+  assert(stale.sameDialog && stale.open, "projection change replaced or closed the Request Inspector");
+  assert(stale.refresh, "projection change did not expose explicit Request Inspector refresh");
+  await cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-refresh]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    return Boolean(dialog?.open && !dialog.querySelector('.request-inspector-stale') && !dialog.querySelector('.request-inspector-state[role="status"]'));
+  })()`), "Request Inspector refresh");
+
+  await cdp.send("Emulation.setEmulatedMedia", {
+    features: [{ name: "prefers-reduced-motion", value: "reduce" }],
+  });
+  const reducedMotion = await cdp.evaluate(`(() => ({
+    matched: matchMedia('(prefers-reduced-motion: reduce)').matches,
+    transitionDuration: getComputedStyle(document.querySelector('#request-inspector')).transitionDuration,
+  }))()`);
+  assert(reducedMotion.matched, "reduced-motion emulation did not apply");
+  await cdp.send("Emulation.setEmulatedMedia", { features: [] });
+
+  await cdp.evaluate(`document.querySelector('#request-inspector-close')?.click()`);
+  await waitFor(async () => cdp.evaluate(`!document.querySelector('#request-inspector')?.open`), "Request Inspector close");
+  await sleep(30);
+  const closed = await cdp.evaluate(`(() => {
+    const requestId = window.__codexLiveUiQa.requestInspectorRequestId;
+    const trigger = [...document.querySelectorAll('[data-request-inspect]')]
+      .find((candidate) => candidate.dataset.requestInspect === requestId);
+    return {
+      payloadCleared: !document.querySelector('#request-inspector-body')?.textContent?.trim(),
+      focusRestored: document.activeElement === trigger,
+      focusedRequestId: document.activeElement?.dataset?.requestInspect ?? null,
+    };
+  })()`);
+  assert(closed.payloadCleared, "closing Request Inspector retained rendered Request content");
+  assert(closed.focusRestored && closed.focusedRequestId === target.requestId, "closing Request Inspector did not restore focus to the Request trigger");
+  return { target, opened, reasoningProjection, realDuplicateReasoning, inputContext, replayed, stale, reducedMotion, closed };
 }
 
 async function verifyTaskScroll(cdp) {
@@ -642,6 +866,7 @@ async function verifyDiagnostics(cdp) {
     const finding = control.closest('.diagnostic-finding');
     const requestId = finding?.querySelector('.diagnostic-meta code')?.getAttribute('title') ?? null;
     window.__codexLiveUiQa.diagnosticPanel = document.querySelector('#diagnostics-panel');
+    for (const card of document.querySelectorAll('.agent-card')) card.open = false;
     control.click();
     return {
       findingId: control.dataset.diagnosticLocate,
@@ -665,12 +890,21 @@ async function verifyDiagnostics(cdp) {
       highlighted: Boolean(row?.classList.contains('diagnostic-target')),
       requestId: row?.dataset.requestId ?? null,
       drawerOpen: detail?.dataset.open === 'true',
+      agentOpen: row?.closest('.agent-card')?.open === true,
       marker: row?.querySelector('.request-diagnostic-marker')?.textContent?.trim() ?? null,
       panelOpen: Boolean(panel && !panel.hidden),
     };
   })()`);
   assert(located.rowFound && located.requestId === locateTarget.requestId, "Diagnostics locator opened the wrong canonical Request");
   assert(located.highlighted, "Diagnostics locator did not apply the lightweight target highlight");
+  await new Promise((resolve) => setTimeout(resolve, 1_800));
+  const persistedHighlight = await cdp.evaluate(`(() => {
+    const row = [...document.querySelectorAll('tr[data-request-id]')]
+      .find((candidate) => candidate.dataset.requestId === ${JSON.stringify(locateTarget.requestId)});
+    return Boolean(row?.classList.contains('diagnostic-target'));
+  })()`);
+  assert(persistedHighlight, "Diagnostics locator highlight disappeared without being replaced or refreshed");
+  assert(located.agentOpen, "Diagnostics locator did not expand the collapsed agent container");
   assert(located.drawerOpen, "Diagnostics locator did not open the existing canonical Request drawer");
   assert(Number(located.marker) >= 1, "located Request does not expose its lightweight Diagnostics marker");
   assert(located.panelOpen, "Diagnostics locator unexpectedly collapsed the finding panel");
@@ -923,7 +1157,65 @@ async function verifyNarrowViewport(cdp) {
   assert(result.focused, `narrow snapshot dropped task-table focus to ${result.activeElement}`);
   assert(result.detailsOpen, "narrow snapshot changed Agent expansion state");
   assert(result.diagnosticsFitsViewport, "Diagnostics panel overflows the 720px viewport");
-  return result;
+
+  await cdp.evaluate(`(() => {
+    if (document.querySelector('[data-request-inspect]')) return;
+    const toggle = [...document.querySelectorAll('.task-request-toggle')]
+      .find((candidate) => Number.parseInt(candidate.querySelector('.request-count-pill')?.textContent ?? '0', 10) > 0);
+    toggle?.click();
+  })()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(document.querySelector('[data-request-inspect]'))`), "narrow Request detail");
+  await cdp.evaluate(`document.querySelector('[data-request-inspect]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    return Boolean(dialog?.open && !dialog.querySelector('.request-inspector-state[role="status"]'));
+  })()`), "narrow Request Inspector");
+  const inspector = await cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    const rect = dialog?.getBoundingClientRect();
+    const body = dialog?.querySelector('#request-inspector-body');
+    return {
+      open: Boolean(dialog?.open),
+      left: rect?.left ?? null,
+      right: rect?.right ?? null,
+      top: rect?.top ?? null,
+      bottom: rect?.bottom ?? null,
+      width: rect?.width ?? null,
+      height: rect?.height ?? null,
+      bodyOverflowY: body ? getComputedStyle(body).overflowY : null,
+    };
+  })()`);
+  assert(inspector.open, "Request Inspector did not open in the 720px viewport");
+  assert(inspector.left >= 7 && inspector.right <= 713, `Request Inspector overflows horizontally at 720px: ${JSON.stringify(inspector)}`);
+  assert(inspector.top >= 7 && inspector.bottom <= 893, `Request Inspector overflows vertically at 720px: ${JSON.stringify(inspector)}`);
+  assert(inspector.bodyOverflowY === 'auto', "narrow Request Inspector lost its internal vertical scroll");
+  await cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-tab="input_context"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(document.querySelector('#request-inspector .request-input-context'))`), "narrow Request Input Context");
+  const narrowInputContext = await cdp.evaluate(`(() => {
+    const body = document.querySelector('#request-inspector-body');
+    const tabs = document.querySelector('#request-inspector .request-inspector-tabs');
+    const bodyRect = body?.getBoundingClientRect();
+    const tabsRect = tabs?.getBoundingClientRect();
+    return {
+      bodyScrollWidth: body?.scrollWidth ?? null,
+      bodyClientWidth: body?.clientWidth ?? null,
+      bodyLeft: bodyRect?.left ?? null,
+      bodyRight: bodyRect?.right ?? null,
+      tabsLeft: tabsRect?.left ?? null,
+      tabsRight: tabsRect?.right ?? null,
+    };
+  })()`);
+  assert(
+    narrowInputContext.bodyScrollWidth <= narrowInputContext.bodyClientWidth + 1,
+    `narrow Input Context introduced horizontal body overflow: ${JSON.stringify(narrowInputContext)}`,
+  );
+  assert(
+    narrowInputContext.tabsLeft >= inspector.left && narrowInputContext.tabsRight <= inspector.right,
+    `narrow Input Context tabs overflow the dialog: ${JSON.stringify(narrowInputContext)}`,
+  );
+  await cdp.evaluate(`document.querySelector('#request-inspector-close')?.click()`);
+  await waitFor(async () => cdp.evaluate(`!document.querySelector('#request-inspector')?.open`), "narrow Request Inspector close");
+  return { ...result, requestInspector: inspector, requestInputContext: narrowInputContext };
 }
 
 function resolveChromePath() {

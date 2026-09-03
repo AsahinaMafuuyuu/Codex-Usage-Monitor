@@ -280,6 +280,42 @@ async function handleApi({ request, response, url, monitor }) {
     });
   }
 
+  const requestContentMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/requests\/([^/]+)\/content$/u,
+  );
+  if (requestContentMatch) {
+    const sessionId = decodeAndValidateId(requestContentMatch[1]);
+    const requestId = decodeAndValidateId(requestContentMatch[2]);
+    if (!sessionId || !requestId) {
+      return sendJson(response, 400, { error: "会话或 Request ID 无效" });
+    }
+    if ([...url.searchParams.keys()].length > 0) {
+      return sendJson(response, 400, { error: "Request Content 接口不接受查询参数" });
+    }
+    const payload = await monitor.requestContent(sessionId, requestId);
+    if (!payload) return sendJson(response, 404, { error: "找不到该 Request" });
+    if (request.method === "HEAD") return sendJsonHead(response, 200);
+    return sendJson(response, 200, payload);
+  }
+
+  const requestInputContextMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/requests\/([^/]+)\/input-context$/u,
+  );
+  if (requestInputContextMatch) {
+    const sessionId = decodeAndValidateId(requestInputContextMatch[1]);
+    const requestId = decodeAndValidateId(requestInputContextMatch[2]);
+    if (!sessionId || !requestId) {
+      return sendJson(response, 400, { error: "会话或 Request ID 无效" });
+    }
+    if ([...url.searchParams.keys()].length > 0) {
+      return sendJson(response, 400, { error: "Input Context 接口不接受查询参数" });
+    }
+    const payload = await monitor.requestInputContext(sessionId, requestId);
+    if (!payload) return sendJson(response, 404, { error: "找不到该 Request" });
+    if (request.method === "HEAD") return sendJsonHead(response, 200);
+    return sendJson(response, 200, payload);
+  }
+
   const diagnosticsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostics$/u);
   if (diagnosticsMatch) {
     const sessionId = decodeAndValidateId(diagnosticsMatch[1]);
@@ -566,6 +602,12 @@ function sendJson(response, status, payload) {
   response.statusCode = status;
   response.setHeader("Content-Type", "application/json; charset=utf-8");
   response.end(JSON.stringify(payload));
+}
+
+function sendJsonHead(response, status) {
+  response.statusCode = status;
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.end();
 }
 
 function sendText(response, status, text) {

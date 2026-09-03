@@ -232,6 +232,128 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 
 Request cost 继续严格使用该 Request 自身 event-level pricing evidence。缺 model、历史价、usage breakdown 或其他必要证据时仍返回 `partial/unavailable`，不会从 Task aggregate 反向猜值；但 service tier 采用 ADR-0023 的业务默认：**仅字面 `fast` 为 Fast，其余均为 standard**。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。服务层级 UI 只显示 `standard` 或 `fast · N 倍率`；倍率直接使用该 Request 已计算的 pricing evidence（当前 GPT-5.6/GPT-5.5 Fast 为 2.5×、GPT-5.4 为 2×），不会把 long-context output 的 1.5×误标成 Fast。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
 
+### `GET /api/sessions/:sessionId/requests/:requestId/content`
+
+按 canonical Request 懒加载其本地 rollout **Observed Interaction Slice**。该接口不是 Provider request-body recorder：`evidence.providerPayloadReconstructed` 固定为 `false`，UI/API 只能把结果描述为本地 rollout 中可观察到的交互记录，不能称为完整 Prompt、Responses payload 或 HTTP wire body。
+
+服务端先用 `(sessionId, requestId)` 查询 `canonical_requests.origin_source_key + origin_line_number`，并解析所属 Task 与同 Task、同 source 的前一 canonical Request。客户端不能提交 `source/path/line/byte`；该 endpoint 也不接受任何 query 参数。Request 不属于指定 session 时返回 `404`。Request 存在但 source 已不存在、portable source key 无法绑定、Task boundary 不可证明或 source locator 已变化时，仍返回 `200` 与 Request metadata，同时使用 `available=false` 和结构化 `reason/coverage` 说明正文证据不可用。
+
+```json
+{
+  "version": 2,
+  "projectionGeneration": 8329,
+  "available": true,
+  "request": {
+    "requestId": "reqr_...",
+    "observedAt": "2026-09-02T18:00:00.000Z",
+    "model": "gpt-5.6-sol",
+    "effort": "xhigh",
+    "serviceTier": "default",
+    "quality": "complete",
+    "usage": {},
+    "costEstimate": {}
+  },
+  "evidence": {
+    "kind": "rollout_observed_interaction",
+    "providerPayloadReconstructed": false,
+    "sourceKey": "sessions/.../rollout-....jsonl",
+    "startLine": 101,
+    "endLine": 108,
+    "complete": true,
+    "truncated": false,
+    "coverage": "complete",
+    "locateBytes": 262144,
+    "sliceBytes": 14821,
+    "anchor": "reverse"
+  },
+  "preModelCut": {
+    "status": "observed",
+    "kind": "before_first_observed_model_output",
+    "lineNumber": 104,
+    "recordKind": "reasoning"
+  },
+  "items": [
+    { "kind": "message", "section": "observed_input", "role": "user", "text": "..." },
+    { "kind": "runtime_context", "section": "runtime_context", "fields": [] },
+    { "kind": "tool_call", "section": "observed_interaction", "tool": "exec_command", "fields": [] },
+    { "kind": "reasoning_summary", "section": "observed_interaction", "text": "...", "occurrenceCount": 2, "opaqueContentPresent": true }
+  ],
+  "summary": {
+    "observedItemCount": 4,
+    "observedInputItemCount": 1,
+    "runtimeContextItemCount": 1,
+    "observedInteractionItemCount": 2,
+    "messageCount": 1,
+    "toolCallCount": 1,
+    "reasoningRecordCount": 2,
+    "reasoningCardCount": 1
+  }
+}
+```
+
+Slice 起点为前一条同 Task/同 source canonical Request `token_count` boundary 的下一行；第一条 Request 只在 Task `sourceKey/startLine/startByte` 与当前 canonical locator 可证明对齐时回退到 Task 起点。终点严格是当前 `origin_line_number`，不会因为后面紧邻另一条 `token_count` 而扩大范围。
+
+读取分为两个 bounded 阶段：locator 以 Task `start_byte/start_line/end_byte/end_line` 为双端 anchor，只统计 JSONL 换行来定位目标 line 的精确 byte range，单侧最多 `12 MiB`、双侧总预算 `24 MiB`；随后只解析真实 Observed Interaction Slice，slice 上限 `4 MiB`。投影层另有 `500 records / 64 KiB per item / 512 KiB public body` 上限。任何阶段超限都显式返回 `content_truncated`，不会从文件头 replay、无界读取或为了定位大 Task 把沿途 JSON 全部解析。`evidence.locateBytes/sliceBytes/anchor` 只描述本次只读证据定位，不是 Provider request metadata。
+
+`version=2` 增加 `preModelCut` 与 server-assigned `section`。cut 只表示当前 slice 中第一条明确 reasoning / assistant / tool-call model-output evidence 之前的本地记录顺序，不能称为 Provider request start。cut 可证明时，明确的 message/tool-result input evidence 进入 `observed_input`；`turn_context` 只按 model/effort/date/timezone/cwd/workspace/sandbox/approval/personality/collaboration 等固定 allowlist 投影到 `runtime_context`；其余可读模型/工具交互进入 `observed_interaction`。cut 不可证明时不会把整个 slice 强行命名为 Input。
+
+`items` 是稳定语义 projection，不返回原始 JSON envelope。Message/Tool/Tool Result 都按不可信文本处理；Reasoning 只显示 rollout 中明确存在的 public summary，opaque/encrypted reasoning 不返回密文、不解码也不推断 chain-of-thought。相邻且公开 summary 完全一致的 reasoning 由 server projector 合并为一张 semantic item，并用 `occurrenceCount` 保留 evidence；连续无公开 summary 的 reasoning 只能聚合为 `reasoning_activity` record count，不能称为 equivalent。Compaction 只投影为事实性 context signal，不返回 replacement history。若 Tool Result 的 Tool Call 落在前一 Request boundary 之外，仍不跨 boundary 回读旧正文来补工具名，而保留 `callId` 供 UI 识别。响应使用 `Cache-Control: no-store`，正文不写 SQLite、server cache、Session/Day snapshot、SSE 或浏览器持久化存储。
+
+### `GET /api/sessions/:sessionId/requests/:requestId/input-context`
+
+按需返回 **Reconstructed Input Context**。它重建的是本地 rollout 可以证明的同线程历史、explicit compaction snapshot、allowlisted runtime metadata 与当前 Request pre-model evidence，不是 Provider request serialization。`evidence.providerPayloadReconstructed=false` 与 `evidence.providerSerializationKnown=false` 固定保留，即使 `rolloutCoverage="complete_observed_history"` 也不能解释为 Provider Input complete。
+
+客户端只提交 session/request ID，不能提交 path/source/line/byte；任何 query 参数返回 `400`，foreign session 返回 `404`。支持 `GET/HEAD`，响应 `Cache-Control: no-store`。该 path 不进入 Session/Day snapshot、SSE、Timeline 或 Diagnostics，也不触发同步 parser replay。
+
+```json
+{
+  "version": 1,
+  "projectionGeneration": 8330,
+  "available": true,
+  "request": {
+    "requestId": "reqr_...",
+    "usage": {},
+    "costEstimate": {}
+  },
+  "evidence": {
+    "kind": "reconstructed_input_context",
+    "providerPayloadReconstructed": false,
+    "providerSerializationKnown": false,
+    "rolloutCoverage": "complete_observed_history",
+    "sourceSegmentCount": 1,
+    "sourceOrdering": "rollout_filename_timestamp",
+    "compactionCount": 1,
+    "truncated": false
+  },
+  "reconstructionCut": {
+    "status": "observed",
+    "kind": "before_first_observed_model_output",
+    "sourceKey": "sessions/.../rollout-....jsonl",
+    "lineNumber": 481
+  },
+  "sections": {
+    "currentInput": [],
+    "runtimeContext": [],
+    "historyGroups": [],
+    "compaction": [],
+    "gaps": []
+  },
+  "summary": {
+    "itemCount": 0,
+    "visibleCharacters": 0,
+    "sourceSegmentCount": 1,
+    "missingSourceCount": 0,
+    "compactionCount": 1,
+    "truncatedItemCount": 0,
+    "historyScanBytes": 0
+  }
+}
+```
+
+source chain 仅来自相同 `rootSessionId + threadId` 的已持久化 portable source evidence，并按 rollout filename timestamp chronology 排序；无法证明唯一顺序时返回 `boundary_ambiguous`，不会使用文件 mtime 猜历史。每个公开 context item 都带 `direct_current / historical_rollout / compaction_snapshot / runtime_context / coverage_gap` provenance。explicit `replacement_history` 会语义化后执行 context rebase；signal-only compaction、source missing、unsupported shape 或 hard-limit truncation 都形成显式 gap，旧历史不会静默补回。
+
+正式 V1 hard limits 为 `16 source segments / 32 MiB history scan / 800 context items / 64 KiB per item / 1 MiB projected characters`。Input/Cached Input Tokens 只作为 Request accounting 对照，不拆分或反推到具体 history/message/tool item。历史正文只在用户第一次点击 Inspector 的 `Input Context` tab 时 lazy fetch，并在 close/session/day switch 时清除。
+
 ### `GET /api/sessions/:id/diagnostics[?day=YYYY-MM-DD]`
 
 按需读取 canonical Request 的确定性 Usage Diagnostics。无 `day` 时分析完整 Session；带 `day` 时仍读取该日之前的同 Session Request 维持 rolling baseline 连续性，但只返回 `observedAt` 落在目标本地自然日的 finding。同一 `requestId + policyVersion` 在 Session/Day scope 下必须保持相同 metric、baseline 与 severity。

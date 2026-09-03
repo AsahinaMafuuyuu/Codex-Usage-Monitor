@@ -33,6 +33,8 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0027](0027-historical-robust-usage-diagnostics.md) | Accepted | 以严格 project/model/effort cohort、Median/MAD/Robust-Z 与 practical-effect gate 建立 Historical / Cross-session diagnostics |
 | [0028](0028-deterministic-behavioral-usage-diagnostics.md) | Accepted | 以 canonical metadata、历史鲁棒基线和 lazy read path 检测 Reasoning、Request Burst 与 Subagent Amplification |
 | [0029](0029-local-diagnostic-budget-notification-state.md) | Accepted | 用 schema v15 operational tables 与精确 allowlisted local POST 实现工程级等值预算、Ack 与 Snooze，不污染 accounting |
+| [0030](0030-read-through-request-content-inspector.md) | Accepted | 通过 canonical Request source locator 按需只读 rollout，构造 ephemeral Observed Interaction Slice；不持久化正文，也不冒充 Provider wire payload |
+| [0031](0031-reconstructed-input-context-evidence.md) | Accepted | 以 pre-model cut、同线程历史、compaction snapshot 与 provenance 分层重建 Input Context；始终与 Provider serialization 区分 |
 
 ## 新增 ADR
 

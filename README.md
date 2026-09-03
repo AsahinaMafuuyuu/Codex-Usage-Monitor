@@ -36,9 +36,13 @@ npm run start:no-open
 | `npm run shadow:usage-diagnostics` | 只读对正式 SQLite 运行 Usage Diagnostics shadow report，输出 finding density 与 delta 分布 |
 | `npm run shadow:advanced-usage-diagnostics` | 只读运行 Historical/Cross-session shadow，输出 cohort coverage、Robust-Z/effect、threshold-adjacent 与 high-tail 证据 |
 | `npm run shadow:behavioral-usage-diagnostics` | 只读运行 Reasoning/Burst/Subagent Amplification shadow，输出 coverage、Robust-Z/effect 与脱敏 outlier 证据 |
+| `npm run audit:request-content` | 只读审计 Request Content 的 source/locator/oversized-slice coverage，不解析或持久化正文 |
+| `npm run audit:request-input-context -- --sample 300` | 只读抽样审计 Reconstructed Input Context 的 source/thread、history bytes、items/chars、compaction 与 coverage 分布 |
 | `npm run benchmark:usage-diagnostics -- "<authenticated URL>"` | 对已启动页面的常规/最大真实 session 测量 lazy diagnostics HTTP warm P50/P95 |
 | `npm run benchmark:advanced-usage-diagnostics -- --iterations 20` | 对正式 SQLite 的 bounded historical query + pricing enrichment + Advanced analyzer 做 warm P50/P95 与 query-plan benchmark |
 | `npm run benchmark:behavioral-usage-diagnostics -- --iterations 20` | 对正式 SQLite 的 Behavioral historical queries + analyzer 做 warm P50/P95 benchmark |
+| `npm run benchmark:request-content -- --iterations 20` | 对正式 SQLite + 真实 rollout 的 Request Content read-through seam 测量 warm P50/P95，并校验源文件哈希不变；可用 `--request <requestId>` 定向复测极端样本 |
+| `npm run benchmark:request-input-context -- --iterations 20 --warmup 3` | 对 DB locator + source chain + history reconstruction + projector/grouping 做 production-equivalent warm P50/P95，并校验源文件哈希不变 |
 | `npm run fingerprint:phase23` | 只读输出 canonical/calendar accounting 与全部 rollout manifest SHA-256，供交付前后对账 |
 | `npm run verify:live-ui -- "<authenticated URL>"` | 对已启动页面执行 Chrome/CDP 实时交互回归 |
 
@@ -75,6 +79,8 @@ codex-usage-monitor\
 - 按根 `session_meta.cwd` 的完整工程目录分组、搜索并选择会话；已有 SQLite projection 时点击只读 cached canonical snapshot，不在请求路径同步解析 rollout。新增/变化 session 由后台 indexer 处理；目录缺失时明确归入“未归类”。
 - 左侧可切换“工程”和“时间”两种导航；工程模式打开完整 session，并以“任务记录”展示完整 Task lifecycle；时间模式以 `(sessionId, local day)` 为选择身份，直接展示当天真正发生的 canonical Request，再按 Task Day Slice 分组。Time 表显示“当日首请求 / 当日末请求 / Requests / 推理强度”，不会把完整 Task 的开始时间或耗时冒充为当天计量时间。
 - Task 可按需展开 canonical Request 审计表，查看每个 Request 的时间、Input/Cached/Cache Write/Output/Reasoning/Total、模型、所属 Task 推理强度、service tier 与 USD。Project 展开完整 Task Request；Time 只展开当天 Request。每个智能体的 Task 不再分页，而是在约 5 行高的独立纵向视口中连续滚动：内部仍有剩余滚动距离时优先滚 Task，到顶/到底或没有纵向 overflow 时把滚轮继续交给整体 workspace。Request 默认 10 条/页并可切 5/10，少于 10 条时不显示分页条；长分页最多保留 5 个语义槽位（边界页 / 当前页 / 省略号），外侧只保留前后翻页。前后导航使用居中的 Lucide chevron，并给页码与翻页内容加入轻量过渡。Request drawer 同时只展开最近一个，其余原位收起但保留已加载缓存。Request 明细继续拥有独立横向滚动区和三横线收起把手，父任务表横向滚动不会带动 Canonical Requests 标题或明细。初始 snapshot/SSE 仍不内嵌全部 Request。
+- Canonical Request 最右侧提供“详情 / 查看”进入 Request Content Inspector。它按 canonical `origin_source_key + origin_line_number` 与所属 Task byte locator **按需只读**原始 rollout，将上一 canonical `token_count` boundary 到当前 Request boundary 之间的记录投影成 `Observed Input Evidence / Runtime Context / Observed Interaction`。顶部明确写 `Input Tokens / Cached Input Tokens / Output Tokens / Total Tokens`，避免把一张 User Card 冒充完整 Input。第一条明确 reasoning/assistant/tool-call 之前只定义为本地 pre-model evidence cut，不称 Provider request start；相邻且公开 summary 完全相同的 reasoning 会合并为一张 Card 并保留 occurrence count，opaque-only reasoning 只显示 activity count。定位仍使用 `12 MiB/侧、24 MiB 总 locator budget + 4 MiB slice + 500 records / 64 KiB item / 512 KiB body`，正文不写 SQLite、Session/SSE 或浏览器持久化存储。
+- Request Inspector 另有 **Input Context** tab，第一次点击才 lazy GET **Reconstructed Input Context**。它只重建当前 thread 中本地 rollout 能证明的历史 message/tool context、allowlisted runtime metadata、explicit compaction snapshot 与当前 pre-model evidence；每项带 `Observed current / Historical rollout / Compaction snapshot / Runtime metadata / Coverage gap` provenance。source chain 使用 portable rollout filename timestamp chronology，不按 mtime 猜测；V1 hard limits=`16 sources / 32 MiB scan / 800 items / 64 KiB item / 1 MiB projected body`，超限显式 partial。即使 rollout history 完整，仍固定声明 Provider payload/serialization unavailable/not reconstructed，且不会把 Input/Cached Tokens 分配到具体历史 item。
 - Usage Diagnostics 保留 Phase 23 Local Baseline，并新增 Phase 24A Historical Robust Baseline、Phase 24B1 Behavioral Diagnostics 与 Phase 24B2 本机 Alerts。Advanced 层只比较 exact `projectPath + model + known effort` 的历史 canonical Request，使用 Median/MAD/Robust-Z + practical-effect gate，并按 Session Cohort Slice 检测 Cross-session Context/Cache/Cost regression。Behavioral 层进一步检测 Reasoning share anomaly、canonical Request Burst 与 Subagent Amplification；页面在同一 lazy panel 中分为 Local / Historical / Cross-session / Behavioral · Request / Behavioral · Session，并提供工程级 Session `Subscription Standard-Rate Equivalent` Budget、Warning/High 最低提醒等级、Ack 与 Snooze/cooldown。Alerts 只显示在本机页面，不发送邮件、Webhook 或外部通知；常规 Session/SSE snapshot 不携带 diagnostics/alerts payload。LLM Root-Cause Explanation 尚未实现。
 - 使用可折叠工程索引、编辑式会话账页和连续父子谱系轨；`reviewer`、`test-worker` 等角色以独立语义标签优先呈现。
 - 展示智能体树、每个智能体自身/含后代的 token 与 USD 等值合计，以及逐任务 token 字段。
@@ -130,6 +136,7 @@ codex-usage-monitor\
 - 监控 SQLite 只保存工程目录等历史元数据、`.codex` 相对 source key、任务定位元数据、raw Request evidence、canonical Request/provenance、cursor 和可重算 projection；数据库不保存 prompt、response、消息正文或会话标题。rollout 的绝对机器路径只在当前进程中作为运行 locator 使用。
 - 页面使用一次性随机令牌、严格 Cookie、Host/Origin 校验与 CSP；HTTP 默认只读，仅 ADR-0029 明确列出的本机 Alerts policy/Ack/Snooze POST route 可写，其他 POST 仍拒绝。
 - API 的 ID 受固定格式约束，不能传入任意文件路径。
+- Request Content / Input Context API 都只接受 session/request ID；source/path/line/byte 由服务端 evidence 解析，query 注入被拒绝。Request Content v2 固定 `providerPayloadReconstructed=false`；Input Context 进一步固定 `providerSerializationKnown=false`。opaque/encrypted reasoning 不解码、不推断，历史 context 不写数据库或浏览器持久化存储。
 
 ## 项目结构
 
@@ -159,6 +166,17 @@ AGENTS.md             多智能体所有权和协作规则
 - [Advanced Usage Diagnostics 技术实现](docs/TECHNICAL-IMPLEMENTATION-ADVANCED-USAGE-DIAGNOSTICS.md)
 - [Advanced Usage Diagnostics 交付契约](docs/DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md)
 - [ADR-0028：Behavioral Usage Diagnostics](docs/decisions/0028-deterministic-behavioral-usage-diagnostics.md)
+- [Request Content Inspector 设计方案](docs/DESIGN-REQUEST-CONTENT-INSPECTOR.md)
+- [Request Content Inspector 技术实现](docs/TECHNICAL-IMPLEMENTATION-REQUEST-CONTENT-INSPECTOR.md)
+- [Request Content Inspector 交付记录](docs/DELIVERY-REQUEST-CONTENT-INSPECTOR.md)
+- [ADR-0030：Request Content read-through ephemeral projection](docs/decisions/0030-read-through-request-content-inspector.md)
+- [Request Inspector Semantic Refinement 设计方案](docs/DESIGN-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md)
+- [Request Inspector Semantic Refinement 技术实现](docs/TECHNICAL-IMPLEMENTATION-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md)
+- [Request Inspector Semantic Refinement 交付记录](docs/DELIVERY-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md)
+- [Reconstructed Input Context 设计方案](docs/DESIGN-RECONSTRUCTED-INPUT-CONTEXT.md)
+- [Reconstructed Input Context 技术实现](docs/TECHNICAL-IMPLEMENTATION-RECONSTRUCTED-INPUT-CONTEXT.md)
+- [Reconstructed Input Context 交付记录](docs/DELIVERY-RECONSTRUCTED-INPUT-CONTEXT.md)
+- [ADR-0031：Reconstructed Input Context evidence boundary](docs/decisions/0031-reconstructed-input-context-evidence.md)
 - [参与开发](CONTRIBUTING.md)
 - [变更记录](CHANGELOG.md)
 

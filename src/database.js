@@ -15,10 +15,16 @@ const PROJECTION_VERSION = 2;
 const QUALITY_KEYS = ["complete", "provisional", "partial", "unknown"];
 
 export class MonitorDatabase {
-  constructor(databasePath) {
-    mkdirSync(dirname(databasePath), { recursive: true });
+  constructor(databasePath, { readOnly = false } = {}) {
+    if (!readOnly) mkdirSync(dirname(databasePath), { recursive: true });
     this.path = databasePath;
-    this.db = new DatabaseSync(databasePath);
+    this.db = readOnly
+      ? new DatabaseSync(databasePath, { readOnly: true })
+      : new DatabaseSync(databasePath);
+    if (readOnly) {
+      this.db.exec("PRAGMA query_only=ON;");
+      return;
+    }
     this.db.exec(`
       PRAGMA journal_mode=WAL;
       PRAGMA foreign_keys=ON;
@@ -1084,6 +1090,180 @@ export class MonitorDatabase {
   getTask(threadId, turnId) {
     const row = this.db.prepare("SELECT * FROM tasks WHERE thread_id=? AND turn_id=?").get(threadId, turnId);
     return row ? mapTask(row) : null;
+  }
+
+  getCanonicalRequestContentLocator(rootSessionId, requestId) {
+    const row = this.db.prepare(`
+      SELECT
+        r.request_id,
+        r.root_session_id,
+        r.thread_id,
+        r.turn_id,
+        r.event_ordinal,
+        r.observed_at,
+        r.generation,
+        r.classification,
+        r.quality,
+        r.reason,
+        r.input_tokens,
+        r.cached_input_tokens,
+        r.cache_write_input_tokens,
+        r.output_tokens,
+        r.reasoning_output_tokens,
+        r.total_tokens,
+        r.model,
+        r.service_tier,
+        r.pricing_context_quality,
+        r.identity_kind,
+        r.native_field,
+        r.origin_source_key,
+        r.origin_line_number,
+        t.sequence AS task_sequence,
+        t.status AS task_status,
+        t.effort AS task_effort,
+        t.source_key AS task_source_key,
+        t.start_line AS task_start_line,
+        t.end_line AS task_end_line,
+        t.start_byte AS task_start_byte,
+        t.end_byte AS task_end_byte
+      FROM canonical_requests r
+      LEFT JOIN tasks t
+        ON t.root_session_id=r.root_session_id
+       AND t.thread_id=r.thread_id
+       AND t.turn_id=r.turn_id
+      WHERE r.root_session_id=? AND r.request_id=?
+    `).get(rootSessionId, requestId);
+    if (!row) return null;
+
+    const ordered = this.db.prepare(`
+      SELECT request_id, observed_at, event_ordinal, origin_source_key, origin_line_number
+      FROM canonical_requests
+      WHERE root_session_id=? AND thread_id=? AND turn_id=? AND origin_source_key=?
+      ORDER BY observed_at, request_id
+    `).all(
+      row.root_session_id,
+      row.thread_id,
+      row.turn_id,
+      row.origin_source_key,
+    );
+    const currentIndex = ordered.findIndex((candidate) => candidate.request_id === row.request_id);
+    const previousRow = currentIndex > 0 ? ordered[currentIndex - 1] : null;
+    let boundaryStatus = "ok";
+    if (
+      row.task_source_key == null ||
+      row.task_start_line == null ||
+      row.task_start_byte == null
+    ) {
+      boundaryStatus = "task_boundary_unavailable";
+    } else if (row.task_source_key !== row.origin_source_key || currentIndex < 0) {
+      boundaryStatus = "boundary_ambiguous";
+    } else {
+      for (let index = 1; index <= currentIndex; index += 1) {
+        if (Number(ordered[index - 1].origin_line_number) >= Number(ordered[index].origin_line_number)) {
+          boundaryStatus = "boundary_ambiguous";
+          break;
+        }
+      }
+    }
+
+    return {
+      requestId: row.request_id,
+      rootSessionId: row.root_session_id,
+      threadId: row.thread_id,
+      turnId: row.turn_id,
+      eventOrdinal: row.event_ordinal == null ? null : Number(row.event_ordinal),
+      observedAt: row.observed_at ?? null,
+      generation: Number(row.generation ?? 0),
+      classification: row.classification,
+      quality: row.quality,
+      reason: row.reason ?? null,
+      usage: usageFromModelUsageRow(row),
+      model: row.model ?? null,
+      serviceTier: row.service_tier ?? null,
+      pricingContextQuality: row.pricing_context_quality ?? null,
+      identityKind: row.identity_kind ?? null,
+      nativeField: row.native_field ?? null,
+      sourceKey: row.origin_source_key,
+      lineNumber: Number(row.origin_line_number),
+      boundaryStatus,
+      previousBoundary: previousRow
+        ? {
+            requestId: previousRow.request_id,
+            sourceKey: previousRow.origin_source_key,
+            lineNumber: Number(previousRow.origin_line_number),
+            eventOrdinal: previousRow.event_ordinal == null ? null : Number(previousRow.event_ordinal),
+            observedAt: previousRow.observed_at ?? null,
+          }
+        : null,
+      task: row.task_sequence == null
+        ? null
+        : {
+            sequence: Number(row.task_sequence),
+            status: row.task_status ?? null,
+            effort: row.task_effort ?? null,
+            sourceKey: row.task_source_key ?? null,
+            startLine: row.task_start_line == null ? null : Number(row.task_start_line),
+            endLine: row.task_end_line == null ? null : Number(row.task_end_line),
+            startByte: row.task_start_byte == null ? null : Number(row.task_start_byte),
+            endByte: row.task_end_byte == null ? null : Number(row.task_end_byte),
+          },
+    };
+  }
+
+  getCanonicalRequestInputContextLocator(rootSessionId, requestId) {
+    const request = this.getCanonicalRequestContentLocator(rootSessionId, requestId);
+    if (!request) return null;
+    const rows = this.db.prepare(`
+      SELECT source_key, root_session_id, thread_id, line_number, file_size, byte_offset
+      FROM ingest_cursors
+      WHERE root_session_id=? AND thread_id=?
+    `).all(request.rootSessionId, request.threadId);
+    const bySourceKey = new Map(rows.map((row) => [row.source_key, row]));
+    if (!bySourceKey.has(request.sourceKey)) {
+      bySourceKey.set(request.sourceKey, {
+        source_key: request.sourceKey,
+        root_session_id: request.rootSessionId,
+        thread_id: request.threadId,
+        line_number: request.task?.endLine ?? request.lineNumber,
+        file_size: request.task?.endByte ?? null,
+        byte_offset: request.task?.endByte ?? null,
+      });
+    }
+
+    const segments = [...bySourceKey.values()].map((row) => ({
+      sourceKey: row.source_key,
+      rootSessionId: row.root_session_id ?? request.rootSessionId,
+      threadId: row.thread_id ?? request.threadId,
+      firstKnownLine: 1,
+      lastKnownLine: row.line_number == null ? null : Number(row.line_number),
+      fileSize: row.file_size == null ? null : Number(row.file_size),
+      parsedByteOffset: row.byte_offset == null ? null : Number(row.byte_offset),
+      chronologyKey: rolloutSourceChronologyKey(row.source_key),
+      current: row.source_key === request.sourceKey,
+    }));
+
+    let sourceChainStatus = request.boundaryStatus;
+    if (segments.some((segment) => !segment.chronologyKey)) sourceChainStatus = "boundary_ambiguous";
+    const chronologyCounts = new Map();
+    for (const segment of segments) {
+      if (!segment.chronologyKey) continue;
+      chronologyCounts.set(segment.chronologyKey, (chronologyCounts.get(segment.chronologyKey) ?? 0) + 1);
+    }
+    if ([...chronologyCounts.values()].some((count) => count > 1)) sourceChainStatus = "boundary_ambiguous";
+
+    segments.sort((left, right) =>
+      String(left.chronologyKey ?? "").localeCompare(String(right.chronologyKey ?? "")) ||
+      left.sourceKey.localeCompare(right.sourceKey),
+    );
+    const currentIndex = segments.findIndex((segment) => segment.current);
+    if (currentIndex < 0) sourceChainStatus = "boundary_ambiguous";
+
+    return {
+      ...request,
+      sourceChainStatus,
+      sourceOrdering: "rollout_filename_timestamp",
+      sourceChain: currentIndex >= 0 ? segments.slice(0, currentIndex + 1) : [],
+    };
   }
 
   getCursors(rootSessionId) {
@@ -2565,6 +2745,13 @@ function localDayKey(value) {
 
 function localTimezone() {
   return Intl.DateTimeFormat().resolvedOptions().timeZone || "当地时区";
+}
+
+function rolloutSourceChronologyKey(sourceKey) {
+  if (typeof sourceKey !== "string") return null;
+  const filename = sourceKey.split("/").at(-1) ?? "";
+  const match = filename.match(/^rollout-(\d{4}-\d{2}-\d{2}T\d{2}-\d{2}-\d{2})-/u);
+  return match?.[1] ?? null;
 }
 
 function numberOrNull(value) {

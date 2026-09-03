@@ -12,6 +12,27 @@ const state = {
   quotaRefreshing: false,
   requestDetails: new Map(),
   diagnostics: null,
+  highlightedRequestId: null,
+  requestInspector: {
+    open: false,
+    requestId: null,
+    loading: false,
+    error: null,
+    payload: null,
+    activeTab: "interaction",
+    inputContext: {
+      loading: false,
+      error: null,
+      payload: null,
+      abortController: null,
+    },
+    stale: false,
+    selectionVersion: 0,
+    projectionGeneration: null,
+    abortController: null,
+    trigger: null,
+    restoreFocusOnClose: true,
+  },
 };
 
 const REQUEST_PAGE_SIZE = 10;
@@ -28,7 +49,8 @@ const elements = Object.fromEntries(
     "diagnostics-summary", "diagnostics-toggle", "diagnostics-panel", "diagnostics-state", "diagnostics-findings",
     "diagnostic-alert-summary", "diagnostic-alert-snooze", "diagnostic-alert-policy-form",
     "diagnostic-budget-usd", "diagnostic-alert-severity", "diagnostic-alert-cooldown", "diagnostic-alerts",
-    "agent-tree", "toast",
+    "agent-tree", "request-inspector", "request-inspector-title", "request-inspector-evidence",
+    "request-inspector-body", "request-inspector-close", "toast",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -39,6 +61,7 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 refreshLucideIcons();
+installLiveQaHooks();
 
 function refreshLucideIcons() {
   window.lucide?.createIcons({
@@ -47,6 +70,11 @@ function refreshLucideIcons() {
       "stroke-width": 1.8,
     },
   });
+}
+
+function installLiveQaHooks() {
+  if (!window.__codexLiveUiQa || typeof window.__codexLiveUiQa !== "object") return;
+  window.__codexLiveUiQa.renderRequestContentItem = renderRequestContentItem;
 }
 
 elements["session-search"].addEventListener("input", (event) => {
@@ -79,6 +107,11 @@ elements["session-list"].addEventListener("click", (event) => {
   if (button) void selectSession(button.dataset.sessionId, button.dataset.sessionDay ?? null);
 });
 elements["agent-tree"].addEventListener("click", (event) => {
+  const requestInspect = event.target.closest("[data-request-inspect]");
+  if (requestInspect) {
+    void openRequestInspector(requestInspect);
+    return;
+  }
   const requestCollapse = event.target.closest("[data-request-collapse]");
   if (requestCollapse) {
     void toggleTaskRequests(requestCollapse.dataset.threadId, requestCollapse.dataset.turnId, { forceOpen: false });
@@ -141,6 +174,28 @@ elements["diagnostic-alert-policy-form"].addEventListener("submit", (event) => {
   void saveDiagnosticAlertPolicy();
 });
 elements["diagnostic-alert-snooze"].addEventListener("click", () => void snoozeDiagnosticAlerts());
+elements["request-inspector-close"].addEventListener("click", () => closeRequestInspector());
+elements["request-inspector"].addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-request-inspector-tab]");
+  if (tab) {
+    const nextTab = tab.dataset.requestInspectorTab === "input_context" ? "input_context" : "interaction";
+    state.requestInspector.activeTab = nextTab;
+    renderRequestInspector();
+    if (nextTab === "input_context" && !state.requestInspector.inputContext.payload) {
+      void loadRequestInputContext();
+    }
+    return;
+  }
+  const refresh = event.target.closest("[data-request-inspector-refresh]");
+  if (refresh) {
+    if (state.requestInspector.activeTab === "input_context") void loadRequestInputContext({ force: true });
+    else void refreshRequestInspector();
+  }
+});
+elements["request-inspector"].addEventListener("close", () => releaseRequestInspectorContent());
+elements["request-inspector"].addEventListener("cancel", () => {
+  state.requestInspector.restoreFocusOnClose = true;
+});
 
 function routeTaskWheelToWorkspace(event) {
   const wrap = event.target.closest?.(".task-table-wrap");
@@ -205,8 +260,10 @@ async function selectSession(sessionId, requestedDay = null) {
   const previousSelectionKey = `${state.selectedId ?? ""}|${state.selectedDay ?? ""}`;
   const nextSelectionKey = `${sessionId}|${day ?? ""}`;
   if (previousSelectionKey !== nextSelectionKey) {
+    closeRequestInspector({ restoreFocus: false });
     state.requestDetails.clear();
     state.diagnostics = createDiagnosticsState(nextSelectionKey);
+    state.highlightedRequestId = null;
   }
   state.selectedId = sessionId;
   state.selectedDay = day;
@@ -253,6 +310,7 @@ function connectEvents(sessionId, day, selectionVersion) {
       day !== state.selectedDay
     ) return;
     state.snapshot = JSON.parse(event.data);
+    markRequestInspectorStaleIfNeeded();
     renderDashboard();
     void refreshStaleOpenRequestDetails();
     void refreshDiagnosticsIfStale();
@@ -1121,6 +1179,7 @@ async function locateDiagnosticRequest(finding) {
     toast("当前 scope 中找不到该 finding 对应的 Task");
     return;
   }
+  expandDiagnosticTaskContainer(threadId, turnId);
   await toggleTaskRequests(threadId, turnId, { forceOpen: true });
   const detail = requestDetailState(threadId, turnId);
   if (!detail?.open) {
@@ -1146,12 +1205,20 @@ async function locateDiagnosticRequest(finding) {
     toast("已打开目标 Request 页，但未找到对应 canonical request_id");
     return;
   }
+  state.highlightedRequestId = requestId;
+  for (const candidate of elements["agent-tree"].querySelectorAll("tr.diagnostic-target")) {
+    candidate.classList.remove("diagnostic-target");
+  }
   const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
-  row.classList.remove("diagnostic-target");
-  void row.offsetWidth;
   row.classList.add("diagnostic-target");
   row.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center", inline: "nearest" });
-  setTimeout(() => row.classList.remove("diagnostic-target"), reduceMotion ? 0 : 1600);
+}
+
+function expandDiagnosticTaskContainer(threadId, turnId) {
+  const row = [...elements["agent-tree"].querySelectorAll("tr[data-task-id][data-thread-id]")]
+    .find((candidate) => candidate.dataset.taskId === turnId && candidate.dataset.threadId === threadId);
+  const agentCard = row?.closest(".agent-card");
+  if (agentCard && !agentCard.open) agentCard.open = true;
 }
 
 function formatPercent(value) {
@@ -1725,7 +1792,7 @@ function renderRequestDetail(detail, task) {
     content = '<div class="request-detail-state">这个 Task 没有可展示的 canonical Request。</div>';
   } else {
     content = `<div class="request-audit-scroll" role="region" tabindex="0" aria-label="Canonical Requests 表格，可独立横向滚动"><table class="request-table">
-      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="只有 service_tier 明确为 fast 才使用 Fast 定价；default、standard、priority、缺失或其他值一律按 standard 计费。">服务层级</th><th>USD</th><th>诊断</th></tr></thead>
+      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th title="Cached / Input">Cache Hit Rate</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="只有 service_tier 明确为 fast 才使用 Fast 定价；default、standard、priority、缺失或其他值一律按 standard 计费。">服务层级</th><th>USD</th><th>诊断</th><th>详情</th></tr></thead>
       <tbody>${detail.requests.map((request) => renderRequestRow(request, task?.effort)).join("")}</tbody>
     </table></div>
     ${renderRequestPagination(detail)}`;
@@ -1800,10 +1867,12 @@ async function setRequestPage(threadId, turnId, requestedPage) {
 }
 
 function renderRequestRow(request, effort) {
-  return `<tr data-request-id="${escapeHtml(request.requestId || "")}">
+  const highlighted = request.requestId && request.requestId === state.highlightedRequestId;
+  return `<tr data-request-id="${escapeHtml(request.requestId || "")}"${highlighted ? ' class="diagnostic-target"' : ""}>
     <td title="${escapeHtml(request.observedAt || "")}">${formatDate(request.observedAt)}</td>
     <td>${formatTokens(request.usage?.inputTokens)}</td>
     <td>${formatTokens(request.usage?.cachedInputTokens)}</td>
+    <td class="request-cache-hit">${formatRequestCacheHitRate(request.usage)}</td>
     <td>${formatTokens(request.usage?.cacheWriteInputTokens)}</td>
     <td>${formatTokens(request.usage?.outputTokens)}</td>
     <td>${formatTokens(request.usage?.reasoningOutputTokens)}</td>
@@ -1813,7 +1882,17 @@ function renderRequestRow(request, effort) {
     <td><span class="tier-chip ${serviceTierClass(request.serviceTier)}">${escapeHtml(serviceTierLabel(request.serviceTier, request.costEstimate))}</span></td>
     <td class="request-cost ${escapeHtml(request.costEstimate?.status || "unavailable")}" title="${escapeHtml(requestCostEstimateTitle(request.costEstimate))}">${formatUsdEstimate(request.costEstimate)}</td>
     <td class="request-diagnostic-cell">${renderRequestDiagnosticMarker(request.requestId)}</td>
+    <td class="request-inspect-cell"><button class="request-inspect-button" type="button" data-request-inspect="${escapeHtml(request.requestId || "")}" aria-label="查看 Request ${escapeHtml(shortId(request.requestId))} 的交互内容">查看</button></td>
   </tr>`;
+}
+
+function formatRequestCacheHitRate(usage) {
+  const inputTokens = Number(usage?.inputTokens);
+  const cachedInputTokens = Number(usage?.cachedInputTokens);
+  if (!Number.isFinite(inputTokens) || inputTokens <= 0 || !Number.isFinite(cachedInputTokens) || cachedInputTokens < 0) {
+    return "—";
+  }
+  return formatPercent(Math.min(cachedInputTokens, inputTokens) / inputTokens);
 }
 
 function renderRequestDiagnosticMarker(requestId) {
@@ -1826,6 +1905,548 @@ function renderRequestDiagnosticMarker(requestId) {
   const severity = highest?.severity ?? "info";
   const title = findings.map((finding) => diagnosticTypeLabel(finding.type)).join(" · ");
   return `<span class="request-diagnostic-marker ${escapeHtml(severity)}" title="${escapeHtml(title)}">${findings.length}</span>`;
+}
+
+async function openRequestInspector(trigger) {
+  const requestId = trigger?.dataset?.requestInspect;
+  const sessionId = state.selectedId;
+  if (!requestId || !sessionId) return;
+  const inspector = state.requestInspector;
+  inspector.abortController?.abort();
+  const selectionVersion = ++inspector.selectionVersion;
+  inspector.open = true;
+  inspector.requestId = requestId;
+  inspector.loading = true;
+  inspector.error = null;
+  inspector.payload = null;
+  inspector.activeTab = "interaction";
+  inspector.inputContext.abortController?.abort();
+  inspector.inputContext = { loading: false, error: null, payload: null, abortController: null };
+  inspector.stale = false;
+  inspector.projectionGeneration = null;
+  inspector.trigger = trigger;
+  inspector.restoreFocusOnClose = true;
+  inspector.abortController = new AbortController();
+  renderRequestInspector();
+  if (!elements["request-inspector"].open) elements["request-inspector"].showModal();
+  try {
+    const payload = await fetchJson(
+      `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}/content`,
+      { signal: inspector.abortController.signal },
+    );
+    if (
+      selectionVersion !== inspector.selectionVersion ||
+      requestId !== inspector.requestId ||
+      sessionId !== state.selectedId
+    ) return;
+    inspector.payload = payload;
+    inspector.projectionGeneration = payload.projectionGeneration ?? null;
+    inspector.loading = false;
+    inspector.error = null;
+    renderRequestInspector();
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (selectionVersion !== inspector.selectionVersion || requestId !== inspector.requestId) return;
+    inspector.loading = false;
+    inspector.error = error.message;
+    renderRequestInspector();
+  } finally {
+    if (selectionVersion === inspector.selectionVersion) inspector.abortController = null;
+  }
+}
+
+async function loadRequestInputContext({ force = false } = {}) {
+  const inspector = state.requestInspector;
+  const requestId = inspector.requestId;
+  const sessionId = state.selectedId;
+  if (!inspector.open || !requestId || !sessionId) return;
+  if (inspector.inputContext.payload && !force) return;
+  inspector.inputContext.abortController?.abort();
+  const selectionVersion = inspector.selectionVersion;
+  const controller = new AbortController();
+  inspector.inputContext = {
+    loading: true,
+    error: null,
+    payload: force ? null : inspector.inputContext.payload,
+    abortController: controller,
+  };
+  renderRequestInspector();
+  try {
+    const payload = await fetchJson(
+      `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}/input-context`,
+      { signal: controller.signal },
+    );
+    if (
+      selectionVersion !== inspector.selectionVersion ||
+      requestId !== inspector.requestId ||
+      sessionId !== state.selectedId
+    ) return;
+    inspector.inputContext = { loading: false, error: null, payload, abortController: null };
+    inspector.projectionGeneration = payload.projectionGeneration ?? inspector.projectionGeneration;
+    inspector.stale = false;
+    renderRequestInspector();
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (selectionVersion !== inspector.selectionVersion || requestId !== inspector.requestId) return;
+    inspector.inputContext = { loading: false, error: error.message, payload: null, abortController: null };
+    renderRequestInspector();
+  }
+}
+
+async function refreshRequestInspector() {
+  const inspector = state.requestInspector;
+  if (!inspector.open || !inspector.requestId || !state.selectedId) return;
+  const trigger = inspector.trigger ?? findRequestInspectorTrigger(inspector.requestId);
+  if (!trigger) return;
+  await openRequestInspector(trigger);
+}
+
+function closeRequestInspector({ restoreFocus = true } = {}) {
+  const dialog = elements["request-inspector"];
+  state.requestInspector.restoreFocusOnClose = restoreFocus;
+  state.requestInspector.abortController?.abort();
+  state.requestInspector.abortController = null;
+  if (dialog.open) dialog.close();
+  else releaseRequestInspectorContent();
+}
+
+function releaseRequestInspectorContent() {
+  const inspector = state.requestInspector;
+  const requestId = inspector.requestId;
+  const trigger = inspector.trigger;
+  const restoreFocus = inspector.restoreFocusOnClose;
+  inspector.selectionVersion += 1;
+  inspector.abortController?.abort();
+  inspector.inputContext.abortController?.abort();
+  inspector.open = false;
+  inspector.requestId = null;
+  inspector.loading = false;
+  inspector.error = null;
+  inspector.payload = null;
+  inspector.activeTab = "interaction";
+  inspector.inputContext = { loading: false, error: null, payload: null, abortController: null };
+  inspector.stale = false;
+  inspector.projectionGeneration = null;
+  inspector.abortController = null;
+  inspector.trigger = null;
+  inspector.restoreFocusOnClose = true;
+  elements["request-inspector-body"].replaceChildren();
+  if (!restoreFocus) return;
+  const focusTarget = trigger?.isConnected ? trigger : findRequestInspectorTrigger(requestId);
+  if (focusTarget) queueMicrotask(() => focusTarget.focus({ preventScroll: true }));
+}
+
+function findRequestInspectorTrigger(requestId) {
+  if (!requestId) return null;
+  return [...elements["agent-tree"].querySelectorAll("[data-request-inspect]")]
+    .find((candidate) => candidate.dataset.requestInspect === requestId) ?? null;
+}
+
+function markRequestInspectorStaleIfNeeded() {
+  const inspector = state.requestInspector;
+  if (!inspector.open || !inspector.payload || inspector.projectionGeneration == null) return;
+  const currentGeneration = Number(state.snapshot?.health?.projectionGeneration ?? 0);
+  if (!Number.isFinite(currentGeneration) || currentGeneration === Number(inspector.projectionGeneration)) return;
+  inspector.stale = true;
+  renderRequestInspector();
+}
+
+function renderRequestInspector() {
+  const inspector = state.requestInspector;
+  const request = inspector.payload?.request ?? null;
+  elements["request-inspector-title"].textContent = request?.requestId
+    ? `Request ${shortId(request.requestId)}`
+    : inspector.requestId
+      ? `Request ${shortId(inspector.requestId)}`
+      : "Request Inspector";
+  elements["request-inspector-evidence"].textContent = inspector.activeTab === "input_context"
+    ? "Reconstructed Input Context · Provider payload / serialization unavailable"
+    : "Rollout observed interaction · Provider Payload unavailable / not reconstructed";
+  if (inspector.loading) {
+    elements["request-inspector-body"].innerHTML = `
+      <div class="request-inspector-state" role="status">
+        <strong>正在读取本地 rollout…</strong>
+        <span>只读取当前 Request 的 bounded interaction slice，不重放 Session。</span>
+      </div>`;
+    return;
+  }
+  if (inspector.error) {
+    elements["request-inspector-body"].innerHTML = `
+      <div class="request-inspector-state error">
+        <strong>Request 内容读取失败</strong>
+        <span>${escapeHtml(inspector.error)}</span>
+        <button type="button" data-request-inspector-refresh>重新读取</button>
+      </div>`;
+    return;
+  }
+  const payload = inspector.payload;
+  if (!payload) {
+    elements["request-inspector-body"].replaceChildren();
+    return;
+  }
+  const stale = inspector.stale
+    ? `<div class="request-inspector-stale"><span>Canonical projection 已更新；当前内容仍保持打开时的只读快照。</span><button type="button" data-request-inspector-refresh>重新读取</button></div>`
+    : "";
+  const tabs = renderRequestInspectorTabs(inspector.activeTab);
+  const availability = inspector.activeTab === "input_context"
+    ? renderRequestInputContextTab(inspector.inputContext)
+    : payload.available
+      ? renderRequestInspectorSemanticSections(payload)
+      : renderRequestInspectorUnavailable(payload);
+  elements["request-inspector-body"].innerHTML = `
+    ${stale}
+    ${renderRequestInspectorSummary(payload.request, payload.evidence)}
+    ${tabs}
+    ${availability}
+    ${inspector.activeTab === "interaction" ? renderRequestInspectorEvidence(payload.evidence, payload.summary) : ""}`;
+}
+
+function renderRequestInspectorTabs(activeTab) {
+  return `<div class="request-inspector-tabs" role="tablist" aria-label="Request Inspector 视图">
+    <button type="button" role="tab" aria-selected="${activeTab === "interaction"}" class="${activeTab === "interaction" ? "active" : ""}" data-request-inspector-tab="interaction">Interaction</button>
+    <button type="button" role="tab" aria-selected="${activeTab === "input_context"}" class="${activeTab === "input_context" ? "active" : ""}" data-request-inspector-tab="input_context">Input Context</button>
+  </div>`;
+}
+
+function renderRequestInspectorSummary(request, evidence) {
+  const usage = request?.usage ?? {};
+  return `<section class="request-inspector-summary" aria-label="Request 摘要">
+    <div class="request-inspector-meta">
+      <span><small>时间</small><strong>${escapeHtml(formatDate(request?.observedAt))}</strong></span>
+      <span><small>Model</small><strong>${escapeHtml(request?.model || "未知")}</strong></span>
+      <span><small>Effort</small><strong>${escapeHtml(effortLabel(request?.effort))}</strong></span>
+      <span><small>Tier</small><strong>${escapeHtml(serviceTierLabel(request?.serviceTier, request?.costEstimate))}</strong></span>
+    </div>
+    <div class="request-inspector-usage">
+      <span><small>Input Tokens</small><strong>${formatTokens(usage.inputTokens)}</strong></span>
+      <span><small>Cached Input Tokens</small><strong>${formatTokens(usage.cachedInputTokens)}</strong></span>
+      <span><small>Cache Hit Rate</small><strong>${formatRequestCacheHitRate(usage)}</strong></span>
+      <span><small>Output Tokens</small><strong>${formatTokens(usage.outputTokens)}</strong></span>
+      <span><small>Total Tokens</small><strong>${formatTokens(usage.totalTokens)}</strong></span>
+      <span><small>USD</small><strong>${formatUsdEstimate(request?.costEstimate)}</strong></span>
+    </div>
+    <p class="request-inspector-accounting-note">Token 指标表示本次 Request 的计量规模；下方只展示 rollout 中直接可观察的输入/交互证据，不等于完整 Provider Input。</p>
+    <p class="request-inspector-proof"><strong>Evidence</strong><span>${escapeHtml(requestEvidenceLabel(evidence))}</span></p>
+  </section>`;
+}
+
+function renderRequestInspectorSemanticSections(payload) {
+  const items = payload.items ?? [];
+  const observedInput = items.filter((item) => item.section === "observed_input");
+  const runtimeContext = items.filter((item) => item.section === "runtime_context");
+  const interaction = items.filter((item) => item.section === "observed_interaction");
+  const truncated = payload.evidence?.truncated
+    ? '<p class="request-inspector-warning">当前 interaction 已达到读取/正文上限，以下内容为显式截断结果。</p>'
+    : "";
+  const inputContent = observedInput.length
+    ? observedInput.map(renderRequestContentItem).join("")
+    : '<div class="request-inspector-state compact"><strong>没有可直接展示的 pre-model input</strong><span>完整输入可能来自历史上下文，或来自未在当前 slice 中逐项记录的 provider/harness context。</span></div>';
+  const interactionContent = interaction.length
+    ? interaction.map(renderRequestContentItem).join("")
+    : '<div class="request-inspector-state compact"><strong>没有可展示的交互正文</strong><span>该 slice 可能只包含计量、生命周期或 runtime metadata。</span></div>';
+  const cutLabel = payload.preModelCut?.status === "observed"
+    ? `Local evidence cut before first observed model output · line ${payload.preModelCut.lineNumber ?? "—"}`
+    : "Pre-model evidence cut unavailable · current slice is not treated as complete input";
+  return `${truncated}
+    <section class="request-interaction request-observed-input" aria-labelledby="request-input-title">
+      <header><div><p class="eyebrow">OBSERVED INPUT EVIDENCE</p><h3 id="request-input-title">本轮可观察输入证据</h3></div><span>${tokenFormatter.format(observedInput.length)} items</span></header>
+      <p class="request-section-note">${escapeHtml(cutLabel)}。这是本地记录顺序证据，不是 Provider request start。</p>
+      <div class="request-interaction-list">${inputContent}</div>
+    </section>
+    ${renderRuntimeContextSection(runtimeContext)}
+    <section class="request-interaction" aria-labelledby="request-interaction-title">
+    <header><div><p class="eyebrow">OBSERVED INTERACTION</p><h3 id="request-interaction-title">本次可观察交互</h3></div><span>${tokenFormatter.format(payload.summary?.observedItemCount ?? items.length)} items</span></header>
+    <div class="request-interaction-list">${interactionContent}</div>
+  </section>`;
+}
+
+function renderRequestInputContextTab(inputContext) {
+  if (inputContext.loading) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state" role="status">
+        <strong>正在重建输入上下文…</strong>
+        <span>只在当前 tab 主动读取 bounded 同线程历史，不进入 Session snapshot 或 SSE。</span>
+      </div>
+    </section>`;
+  }
+  if (inputContext.error) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state error">
+        <strong>Input Context 读取失败</strong>
+        <span>${escapeHtml(inputContext.error)}</span>
+        <button type="button" data-request-inspector-refresh>重新读取</button>
+      </div>
+    </section>`;
+  }
+  const payload = inputContext.payload;
+  if (!payload) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state compact"><strong>Input Context 尚未读取</strong><span>首次进入该 tab 时才发起 lazy read。</span></div>
+    </section>`;
+  }
+  if (!payload.available) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state unavailable">
+        <strong>Reconstructed Input Context 当前不可用</strong>
+        <span>${escapeHtml(requestInputCoverageLabel(payload.reason))}</span>
+      </div>
+    </section>`;
+  }
+
+  const sections = payload.sections ?? {};
+  const currentInput = sections.currentInput ?? [];
+  const runtimeContext = sections.runtimeContext ?? [];
+  const historyGroups = sections.historyGroups ?? [];
+  const compaction = sections.compaction ?? [];
+  const gaps = sections.gaps ?? [];
+  const currentContent = currentInput.length
+    ? currentInput.map(renderRequestContextItem).join("")
+    : '<div class="request-inspector-state compact"><strong>当前输入证据不可直接展示</strong><span>当前 cut 可能不可用，或本轮没有可公开的 pre-model item。</span></div>';
+  const runtimeContent = runtimeContext.length
+    ? runtimeContext.map(renderRequestContextItem).join("")
+    : '<p class="request-content-empty">当前 Request slice 没有 allowlisted runtime metadata。</p>';
+  const historyContent = historyGroups.length
+    ? historyGroups.map((group, index) => renderRequestHistoryGroup(group, index === historyGroups.length - 1)).join("")
+    : '<div class="request-inspector-state compact"><strong>没有重建出的 retained history</strong><span>这不代表 Provider Input 没有历史上下文。</span></div>';
+  const compactionContent = compaction.length
+    ? compaction.map((item) => `<article class="request-context-evidence-card">
+        <header><strong>${escapeHtml(item.kind === "compaction_snapshot" ? "Compaction snapshot" : "Compaction signal")}</strong>${renderProvenanceBadge(item.provenance)}</header>
+        <p>${escapeHtml(item.label || "Observed compaction evidence")}</p>
+      </article>`).join("")
+    : '<p class="request-content-empty">当前 bounded history 中没有观察到 compaction evidence。</p>';
+  const gapContent = gaps.length
+    ? gaps.map((gap) => `<article class="request-context-gap">
+        <header><strong>${escapeHtml(requestInputCoverageLabel(gap.reason))}</strong>${renderProvenanceBadge(gap.provenance)}</header>
+        <p>${escapeHtml(gap.sourceKey ? `Source: ${gap.sourceKey}` : "Coverage evidence is incomplete.")}</p>
+      </article>`).join("")
+    : '<p class="request-content-empty">在当前 bounded reconstruction 范围内没有额外 rollout coverage gap。</p>';
+
+  return `<section class="request-input-context" aria-labelledby="request-input-context-title">
+    <header class="request-input-context-header">
+      <div><p class="eyebrow">RECONSTRUCTED INPUT CONTEXT</p><h3 id="request-input-context-title">重建输入上下文</h3></div>
+      <span>${escapeHtml(requestInputCoverageLabel(payload.evidence?.rolloutCoverage))}</span>
+    </header>
+    <div class="request-input-context-disclaimer">
+      <strong>Evidence boundary</strong>
+      <span>Reconstructed from local rollout history. Provider payload/serialization unavailable. Token accounting is not allocated to individual items.</span>
+    </div>
+    <section class="request-context-section">
+      <header><h4>Current Input Evidence</h4><span>${tokenFormatter.format(currentInput.length)} items</span></header>
+      <div class="request-interaction-list">${currentContent}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Runtime Context</h4><span>${tokenFormatter.format(runtimeContext.length)} records</span></header>
+      <div class="request-interaction-list">${runtimeContent}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Retained / Reconstructed History</h4><span>${tokenFormatter.format(historyGroups.length)} groups</span></header>
+      <div class="request-history-groups">${historyContent}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Compaction Evidence</h4><span>${tokenFormatter.format(compaction.length)}</span></header>
+      <div class="request-context-evidence-list">${compactionContent}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Coverage Gaps</h4><span>${tokenFormatter.format(gaps.length)}</span></header>
+      <div class="request-context-evidence-list">${gapContent}</div>
+    </section>
+  </section>`;
+}
+
+function renderRequestHistoryGroup(group, newest) {
+  return `<details class="request-history-group"${newest ? " open" : ""}>
+    <summary>
+      <span><strong>${escapeHtml(group.label || "Historical rollout")}</strong><small>${escapeHtml(group.sourceKey || "portable source unavailable")}</small></span>
+      <span>${tokenFormatter.format(group.itemCount ?? group.items?.length ?? 0)} items · ${escapeHtml(provenanceLabel(group.provenance))}</span>
+    </summary>
+    <div class="request-interaction-list">${(group.items ?? []).map(renderRequestContextItem).join("")}</div>
+  </details>`;
+}
+
+function renderRequestContextItem(item) {
+  const content = renderRequestContentItem(item);
+  if (!content) return "";
+  return `<div class="request-context-item">${renderProvenanceBadge(item.provenance)}${content}</div>`;
+}
+
+function renderProvenanceBadge(provenance) {
+  const level = provenance?.level ?? "coverage_gap";
+  const location = provenance?.lineStart != null
+    ? ` · line ${provenance.lineStart}${provenance.lineEnd != null && provenance.lineEnd !== provenance.lineStart ? `–${provenance.lineEnd}` : ""}`
+    : "";
+  return `<span class="request-provenance" aria-label="Evidence provenance: ${escapeHtml(provenanceLabel(level))}">${escapeHtml(provenanceLabel(level))}${escapeHtml(location)}</span>`;
+}
+
+function provenanceLabel(value) {
+  return ({
+    direct_current: "Observed current",
+    historical_rollout: "Historical rollout",
+    compaction_snapshot: "Compaction snapshot",
+    runtime_context: "Runtime metadata",
+    coverage_gap: "Coverage gap",
+  })[value] ?? "Observed evidence";
+}
+
+function requestInputCoverageLabel(value) {
+  return ({
+    complete_observed_history: "Complete observed rollout history",
+    partial: "Partial observed history",
+    partial_source_missing: "Partial · source missing",
+    partial_compaction_snapshot_unavailable: "Partial · compaction snapshot unavailable",
+    partial_unsupported_shape: "Partial · unsupported record shape",
+    partial_bounded_truncation: "Partial · bounded truncation",
+    current_cut_unavailable: "Current pre-model cut unavailable",
+    source_rebind_failed: "Source rebind failed",
+    boundary_ambiguous: "Source ordering / boundary ambiguous",
+    unavailable: "Reconstruction unavailable",
+    source_missing: "Source missing",
+    current_content_unavailable: "Current interaction unavailable",
+  })[value] ?? String(value || "Unknown coverage");
+}
+
+function renderRuntimeContextSection(items) {
+  if (!items.length) return "";
+  const fields = items.flatMap((item) => item.fields ?? []);
+  return `<section class="request-interaction request-runtime-context" aria-labelledby="request-runtime-title">
+    <header><div><p class="eyebrow">RUNTIME CONTEXT</p><h3 id="request-runtime-title">运行时上下文</h3></div><span>${tokenFormatter.format(fields.length)} fields</span></header>
+    <details class="request-content-card runtime-context">
+      <summary><strong>Observed runtime metadata</strong><span>非 system/developer prompt dump</span></summary>
+      <dl class="request-tool-fields">${fields.map((field) => `
+        <div><dt>${escapeHtml(field.label)}</dt><dd class="${field.format === "code" ? "code" : ""}">${renderPlainText(field.value)}</dd>${field.truncated ? '<small>已截断</small>' : ""}</div>
+      `).join("")}</dl>
+    </details>
+  </section>`;
+}
+
+function renderRequestInspectorUnavailable(payload) {
+  return `<section class="request-interaction">
+    <div class="request-inspector-state unavailable">
+      <strong>交互正文当前不可用</strong>
+      <span>${escapeHtml(requestContentReasonLabel(payload.reason))}</span>
+    </div>
+  </section>`;
+}
+
+function renderRequestContentItem(item) {
+  if (item.kind === "runtime_context") {
+    const fields = (item.fields ?? []).length
+      ? `<dl class="request-tool-fields">${item.fields.map((field) => `
+          <div><dt>${escapeHtml(field.label)}</dt><dd class="${field.format === "code" ? "code" : ""}">${renderPlainText(field.value)}</dd>${field.truncated ? '<small>已截断</small>' : ""}</div>
+        `).join("")}</dl>`
+      : '<p class="request-content-empty">没有可展示的 allowlisted runtime metadata。</p>';
+    return `<details class="request-content-card runtime-context">
+      <summary><strong>Runtime metadata</strong><span>非 system/developer prompt dump</span></summary>
+      ${fields}
+    </details>`;
+  }
+  if (item.kind === "message" || item.kind === "assistant_message") {
+    const role = item.kind === "assistant_message" ? "Assistant" : requestRoleLabel(item.role);
+    const route = item.author || item.recipient
+      ? `<small>${escapeHtml([item.author, item.recipient].filter(Boolean).join(" → "))}</small>`
+      : "";
+    return `<article class="request-content-card message ${escapeHtml(item.role || "assistant")}">
+      <header><strong>${escapeHtml(role)}</strong>${route}</header>
+      <div class="request-content-text">${renderPlainText(item.text)}</div>
+      ${item.truncated ? '<span class="request-content-truncated">正文已截断</span>' : ""}
+    </article>`;
+  }
+  if (item.kind === "tool_call") {
+    const normalizedFields = (item.fields ?? []).length
+      ? item.fields
+      : typeof item.text === "string" && item.text
+        ? [{ label: "Arguments", value: item.text, format: "code", truncated: item.truncated }]
+        : [];
+    const fields = normalizedFields.length
+      ? `<dl class="request-tool-fields">${normalizedFields.map((field) => `
+          <div><dt>${escapeHtml(field.label)}</dt><dd class="${field.format === "code" ? "code" : ""}">${renderPlainText(field.value)}</dd>${field.truncated ? '<small>已截断</small>' : ""}</div>
+        `).join("")}</dl>`
+      : '<p class="request-content-empty">没有可展示参数</p>';
+    return `<article class="request-content-card tool-call">
+      <header><strong>Tool · ${escapeHtml(item.tool || "unknown")}</strong>${item.status ? `<small>${escapeHtml(item.status)}</small>` : ""}</header>
+      ${fields}
+    </article>`;
+  }
+  if (item.kind === "tool_result") {
+    const resultIdentity = item.tool && item.tool !== "unknown_tool"
+      ? item.tool
+      : item.callId || "unknown";
+    return `<details class="request-content-card tool-result">
+      <summary><strong>Result · ${escapeHtml(resultIdentity)}</strong><span>${tokenFormatter.format(item.lineCount ?? 0)} lines${item.truncated ? " · 已截断" : ""}</span></summary>
+      <pre><code>${escapeHtml(item.text || "（空结果）")}</code></pre>
+    </details>`;
+  }
+  if (item.kind === "reasoning_summary") {
+    const body = renderPlainText(item.text || "");
+    const count = Number(item.occurrenceCount ?? 1);
+    const occurrence = count > 1
+      ? `${tokenFormatter.format(count)} equivalent summary records`
+      : item.opaqueContentPresent ? "存在 opaque reasoning" : "可公开摘要";
+    return `<details class="request-content-card reasoning">
+      <summary><strong>Reasoning summary</strong><span>${escapeHtml(occurrence)}</span></summary>
+      <div class="request-content-text">${body}</div>
+      ${item.truncated ? '<span class="request-content-truncated">摘要已截断</span>' : ""}
+    </details>`;
+  }
+  if (item.kind === "reasoning_activity") {
+    const count = Number(item.occurrenceCount ?? 1);
+    return `<article class="request-content-card reasoning-activity">
+      <header><strong>Reasoning activity</strong><small>${tokenFormatter.format(count)} opaque records</small></header>
+      <p class="request-content-empty">存在不可公开的 reasoning activity；未推断这些记录的内容相同。</p>
+    </article>`;
+  }
+  if (item.kind === "context_signal") {
+    return `<article class="request-content-card context-signal"><header><strong>Context</strong><small>${escapeHtml(item.signal || "signal")}</small></header><p>${escapeHtml(item.label || "检测到上下文状态记录")}</p></article>`;
+  }
+  return "";
+}
+
+function renderRequestInspectorEvidence(evidence, summary) {
+  return `<section class="request-evidence-details" aria-label="证据边界">
+    <div><strong>Evidence boundary</strong><span>Lines ${escapeHtml(evidence?.startLine ?? "—")}–${escapeHtml(evidence?.endLine ?? "—")}</span></div>
+    <div><strong>Coverage</strong><span>${escapeHtml(requestCoverageLabel(evidence?.coverage))}${evidence?.truncated ? " · truncated" : ""}</span></div>
+    <div><strong>Observed records</strong><span>${tokenFormatter.format(summary?.observedRecordCount ?? 0)}${summary?.unknownRecordCount ? ` · ${tokenFormatter.format(summary.unknownRecordCount)} unsupported` : ""}${summary?.malformedRecordCount ? ` · ${tokenFormatter.format(summary.malformedRecordCount)} malformed` : ""}</span></div>
+    <p>这是一段本地 rollout 的可观察交互证据，不是 Provider HTTP/Responses request body，也不用于推断未记录的历史上下文或 chain-of-thought。</p>
+  </section>`;
+}
+
+function requestEvidenceLabel(evidence) {
+  if (!evidence) return "Rollout observed interaction";
+  return `Rollout observed interaction · Lines ${evidence.startLine ?? "—"}–${evidence.endLine ?? "—"}`;
+}
+
+function requestCoverageLabel(value) {
+  return ({
+    complete: "Complete",
+    record_parse_partial: "Partial · malformed record",
+    content_truncated: "Partial · bounded truncation",
+    unsupported_content_shape: "Partial · unsupported record shape",
+    source_missing: "Source missing",
+    source_rebind_failed: "Source rebind failed",
+    task_boundary_unavailable: "Task boundary unavailable",
+    boundary_ambiguous: "Boundary ambiguous",
+    source_changed: "Source changed",
+  })[value] || value || "Unknown";
+}
+
+function requestContentReasonLabel(reason) {
+  return ({
+    source_missing: "原始 rollout 已不存在；Request 的 Token/Cost 元数据仍然有效。",
+    source_rebind_failed: "原始 rollout 无法重新绑定到当前 Codex 目录。",
+    request_locator_missing: "该 Request 缺少可证明的原始证据定位。",
+    task_boundary_unavailable: "当前 Task 缺少可证明的同源读取边界。",
+    boundary_ambiguous: "Request 与 Task/source 边界存在歧义，因此没有跨 source 猜测正文。",
+    source_changed: "原始 source 的当前内容与持久化 locator 不再一致。",
+    content_truncated: "目标 boundary 超出本次 bounded read 上限，因此没有进行无界文件扫描。",
+  })[reason] || "当前没有足够证据安全读取该 Request 的交互正文。";
+}
+
+function requestRoleLabel(role) {
+  return ({ user: "User", developer: "Developer", system: "System", agent: "Agent", assistant: "Assistant" })[role]
+    || (role ? String(role) : "Message");
+}
+
+function renderPlainText(value) {
+  return escapeHtml(value || "").replace(/\r?\n/gu, "<br>");
 }
 
 
@@ -1903,8 +2524,11 @@ async function withViewTransition(update) {
   }
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { Accept: "application/json", ...(options.headers ?? {}) },
+  });
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
   return payload;

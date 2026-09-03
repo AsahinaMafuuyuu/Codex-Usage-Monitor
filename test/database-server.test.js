@@ -1314,6 +1314,147 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assertSecurityHeaders(missingStatic.headers);
 });
 
+test("Request Content Inspector resolves canonical evidence lazily without persisting or exposing source paths", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-request-content-server-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions", "2026", "09", "02");
+  await mkdir(sessions, { recursive: true });
+  const rollout = join(sessions, `rollout-2026-09-02T12-00-00-${ROOT}.jsonl`);
+  await writeFile(rollout, makeRequestContentRollout());
+  const app = await startApplication({
+    codexHome,
+    databasePath: join(directory, "usage.sqlite"),
+    port: 49_170,
+    openBrowser: false,
+  });
+  t.after(async () => {
+    await app.close();
+    await rm(directory, { recursive: true, force: true });
+  });
+
+  await app.monitor.selectSession(ROOT);
+  const page = app.monitor.taskRequests(ROOT, ROOT, TURN, { page: 1, limit: 10 });
+  assert.equal(page.requests.length, 2);
+  const [firstRequest, secondRequest] = page.requests;
+  const locator = app.monitor.database.getCanonicalRequestContentLocator(ROOT, secondRequest.requestId);
+  assert.equal(locator.requestId, secondRequest.requestId);
+  assert.equal(locator.previousBoundary.requestId, firstRequest.requestId);
+  assert.equal(locator.previousBoundary.lineNumber < locator.lineNumber, true);
+  assert.equal(locator.task.sourceKey, locator.sourceKey);
+  assert.equal(Object.hasOwn(locator, "sourcePath"), false);
+  assert.equal(Object.hasOwn(locator.task, "sourcePath"), false);
+
+  const direct = await app.monitor.requestContent(ROOT, secondRequest.requestId);
+  assert.equal(direct.available, true);
+  assert.equal(direct.version, 2);
+  assert.equal(direct.evidence.providerPayloadReconstructed, false);
+  assert.equal(direct.preModelCut.status, "observed");
+  assert.equal(direct.items[0].section, "observed_input");
+  assert.equal(direct.items[1].section, "observed_interaction");
+  assert.deepEqual(direct.items.map((item) => item.kind), [
+    "tool_result",
+    "reasoning_summary",
+    "assistant_message",
+  ]);
+  assert.equal(direct.items[0].tool, "unknown_tool");
+  assert.equal(direct.items[0].callId, "call-request-content");
+  assert.doesNotMatch(JSON.stringify(direct), /encrypted-request-content/u);
+  assert.doesNotMatch(JSON.stringify(direct), new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
+
+  const exchange = await fetch(app.accessUrl, { redirect: "manual" });
+  const cookie = exchange.headers.get("set-cookie").split(";")[0];
+  const base = `http://127.0.0.1:${app.port}`;
+  const endpoint = `${base}/api/sessions/${ROOT}/requests/${secondRequest.requestId}/content`;
+  const response = await fetch(endpoint, { headers: { Cookie: cookie } });
+  assert.equal(response.status, 200);
+  assert.equal(response.headers.get("cache-control"), "no-store");
+  const payload = await response.json();
+  assert.equal(payload.available, true);
+  assert.equal(payload.request.requestId, secondRequest.requestId);
+  assert.equal(payload.request.usage.totalTokens, 70);
+  assert.equal(payload.evidence.kind, "rollout_observed_interaction");
+  assert.equal(payload.evidence.providerPayloadReconstructed, false);
+  assert.equal(Object.hasOwn(payload.evidence, "sourcePath"), false);
+
+  const head = await fetch(endpoint, { method: "HEAD", headers: { Cookie: cookie } });
+  assert.equal(head.status, 200);
+  assert.equal(await head.text(), "");
+  const injected = await fetch(`${endpoint}?path=C%3A%5Csecret&line=1`, { headers: { Cookie: cookie } });
+  assert.equal(injected.status, 400);
+  const post = await fetch(endpoint, { method: "POST", headers: { Cookie: cookie } });
+  assert.equal(post.status, 405);
+  const wrongSession = await fetch(
+    `${base}/api/sessions/${OTHER_ROOT}/requests/${secondRequest.requestId}/content`,
+    { headers: { Cookie: cookie } },
+  );
+  assert.equal(wrongSession.status, 404);
+
+  const inputLocator = app.monitor.database.getCanonicalRequestInputContextLocator(
+    ROOT,
+    secondRequest.requestId,
+  );
+  assert.equal(inputLocator.sourceChainStatus, "ok");
+  assert.equal(inputLocator.sourceChain.length, 1);
+  assert.equal(inputLocator.sourceChain[0].current, true);
+  assert.equal(inputLocator.sourceOrdering, "rollout_filename_timestamp");
+  assert.equal(Object.hasOwn(inputLocator.sourceChain[0], "sourcePath"), false);
+
+  const directContext = await app.monitor.requestInputContext(ROOT, secondRequest.requestId);
+  assert.equal(directContext.available, true);
+  assert.equal(directContext.evidence.providerPayloadReconstructed, false);
+  assert.equal(directContext.evidence.providerSerializationKnown, false);
+  assert.equal(directContext.evidence.rolloutCoverage, "complete_observed_history");
+  assert.equal(directContext.sections.currentInput[0].kind, "tool_result");
+  assert.equal(directContext.sections.currentInput[0].callId, "call-request-content");
+  assert.ok(
+    directContext.sections.historyGroups.flatMap((group) => group.items)
+      .some((item) => item.text === "Inspect this canonical Request."),
+  );
+  assert.doesNotMatch(JSON.stringify(directContext), /encrypted-request-content/u);
+  assert.doesNotMatch(
+    JSON.stringify(directContext),
+    new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"),
+  );
+  assert.doesNotMatch(JSON.stringify(directContext), /tokenAllocation|itemTokens|providerRequestBody/u);
+
+  const inputEndpoint = `${base}/api/sessions/${ROOT}/requests/${secondRequest.requestId}/input-context`;
+  const inputResponse = await fetch(inputEndpoint, { headers: { Cookie: cookie } });
+  assert.equal(inputResponse.status, 200);
+  assert.equal(inputResponse.headers.get("cache-control"), "no-store");
+  const inputPayload = await inputResponse.json();
+  assert.equal(inputPayload.request.requestId, secondRequest.requestId);
+  assert.equal(inputPayload.evidence.providerPayloadReconstructed, false);
+  assert.equal(inputPayload.evidence.providerSerializationKnown, false);
+  assert.equal(inputPayload.reconstructionCut.kind, "before_first_observed_model_output");
+  const inputHead = await fetch(inputEndpoint, { method: "HEAD", headers: { Cookie: cookie } });
+  assert.equal(inputHead.status, 200);
+  assert.equal(inputHead.headers.get("cache-control"), "no-store");
+  assert.equal(await inputHead.text(), "");
+  const inputInjected = await fetch(`${inputEndpoint}?source=sessions%2Fsecret.jsonl&line=1&byte=0`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(inputInjected.status, 400);
+  const inputWrongSession = await fetch(
+    `${base}/api/sessions/${OTHER_ROOT}/requests/${secondRequest.requestId}/input-context`,
+    { headers: { Cookie: cookie } },
+  );
+  assert.equal(inputWrongSession.status, 404);
+
+  await unlink(rollout);
+  const unavailable = await fetch(endpoint, { headers: { Cookie: cookie } });
+  assert.equal(unavailable.status, 200);
+  const unavailablePayload = await unavailable.json();
+  assert.equal(unavailablePayload.available, false);
+  assert.equal(unavailablePayload.reason, "source_missing");
+  assert.equal(unavailablePayload.request.requestId, secondRequest.requestId);
+
+  const unavailableContext = await fetch(inputEndpoint, { headers: { Cookie: cookie } });
+  assert.equal(unavailableContext.status, 200);
+  const unavailableContextPayload = await unavailableContext.json();
+  assert.equal(unavailableContextPayload.evidence.rolloutCoverage, "unavailable");
+  assert.ok(unavailableContextPayload.sections.gaps.some((gap) => gap.reason === "source_missing"));
+});
+
 test("HTTP async API failures return 500 without escaping the request error boundary", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-server-async-error-"));
   const codexHome = join(directory, ".codex");
@@ -2263,6 +2404,121 @@ function makePortablePreviewRollout() {
       },
     },
     { timestamp, ordinal: 4, type: "event_msg", payload: { type: "task_complete", turn_id: TURN } },
+  ].map(JSON.stringify).join("\n") + "\n";
+}
+
+function makeRequestContentRollout() {
+  const timestamp = "2026-09-02T12:00:00.000Z";
+  const firstUsage = {
+    input_tokens: 80,
+    cached_input_tokens: 40,
+    cache_write_input_tokens: 0,
+    output_tokens: 20,
+    reasoning_output_tokens: 5,
+    total_tokens: 100,
+  };
+  const secondTotal = {
+    input_tokens: 130,
+    cached_input_tokens: 70,
+    cache_write_input_tokens: 0,
+    output_tokens: 40,
+    reasoning_output_tokens: 10,
+    total_tokens: 170,
+  };
+  const secondUsage = {
+    input_tokens: 50,
+    cached_input_tokens: 30,
+    cache_write_input_tokens: 0,
+    output_tokens: 20,
+    reasoning_output_tokens: 5,
+    total_tokens: 70,
+  };
+  return [
+    {
+      timestamp,
+      ordinal: 0,
+      type: "session_meta",
+      payload: {
+        id: ROOT,
+        session_id: ROOT,
+        timestamp,
+        cwd: "C:\\workspace\\request-content",
+      },
+    },
+    { timestamp, ordinal: 1, type: "event_msg", payload: { type: "task_started", turn_id: TURN } },
+    { timestamp, ordinal: 2, type: "turn_context", payload: { turn_id: TURN, model: "gpt-5.6-terra", effort: "xhigh" } },
+    {
+      timestamp,
+      ordinal: 3,
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "user",
+        content: [{ type: "input_text", text: "Inspect this canonical Request." }],
+      },
+    },
+    {
+      timestamp,
+      ordinal: 4,
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call",
+        call_id: "call-request-content",
+        name: "exec_command",
+        input: JSON.stringify({ cmd: "git status --short", workingDirectory: "C:\\workspace\\request-content" }),
+      },
+    },
+    {
+      timestamp,
+      ordinal: 5,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        request_id: "provider-request-content-1",
+        info: { total_token_usage: firstUsage, last_token_usage: firstUsage },
+      },
+    },
+    {
+      timestamp,
+      ordinal: 6,
+      type: "response_item",
+      payload: {
+        type: "custom_tool_call_output",
+        call_id: "call-request-content",
+        output: "Process exited with code 0.\n M public/app.js",
+      },
+    },
+    {
+      timestamp,
+      ordinal: 7,
+      type: "response_item",
+      payload: {
+        type: "reasoning",
+        encrypted_content: "encrypted-request-content",
+        summary: [{ type: "summary_text", text: "Validated the implementation seam." }],
+      },
+    },
+    {
+      timestamp,
+      ordinal: 8,
+      type: "response_item",
+      payload: {
+        type: "message",
+        role: "assistant",
+        content: [{ type: "output_text", text: "The Request Content projection is bounded." }],
+      },
+    },
+    {
+      timestamp,
+      ordinal: 9,
+      type: "event_msg",
+      payload: {
+        type: "token_count",
+        request_id: "provider-request-content-2",
+        info: { total_token_usage: secondTotal, last_token_usage: secondUsage },
+      },
+    },
+    { timestamp, ordinal: 10, type: "event_msg", payload: { type: "task_complete", turn_id: TURN } },
   ].map(JSON.stringify).join("\n") + "\n";
 }
 
