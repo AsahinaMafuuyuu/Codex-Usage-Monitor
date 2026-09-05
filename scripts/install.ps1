@@ -99,6 +99,19 @@ function Assert-SafeZipEntries {
   }
 }
 
+function Get-Sha256Hex {
+  param([Parameter(Mandatory = $true)][string]$Path)
+  $stream = [System.IO.File]::OpenRead($Path)
+  $sha256 = [System.Security.Cryptography.SHA256]::Create()
+  try {
+    $hash = $sha256.ComputeHash($stream)
+  } finally {
+    $stream.Dispose()
+    $sha256.Dispose()
+  }
+  return [System.BitConverter]::ToString($hash).Replace('-', '').ToLowerInvariant()
+}
+
 function Write-AtomicText {
   param(
     [Parameter(Mandatory = $true)][string]$Path,
@@ -183,7 +196,7 @@ function Install-CodexUsageMonitorFromArtifact {
   Assert-ManifestBootstrapFields $manifest
   $artifactInfo = Get-Item $ArtifactPath
   if ($artifactInfo.Length -ne [int64]$manifest.artifact.size) { throw 'Release artifact size mismatch.' }
-  $digest = (Get-FileHash -Algorithm SHA256 -Path $ArtifactPath).Hash.ToLowerInvariant()
+  $digest = Get-Sha256Hex -Path $ArtifactPath
   if ($digest -ne $manifest.artifact.sha256.ToLowerInvariant()) { throw 'Release artifact SHA-256 mismatch.' }
   Assert-SafeZipEntries $ArtifactPath
 
