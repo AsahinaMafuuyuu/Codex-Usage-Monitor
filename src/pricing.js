@@ -1,13 +1,14 @@
 const MILLION = 1_000_000;
+const LONG_CONTEXT_INPUT_THRESHOLD = 272_000;
 
 const VERIFIED_REQUEST_CLASSIFICATIONS = new Set(["verified_increment", "generation_start"]);
 
 export const SUBSCRIPTION_PRICING_CATALOG = Object.freeze({
-  version: "subscription-standard-v2",
+  version: "subscription-standard-v3",
   currency: "USD",
   basis: "subscription-standard-equivalent",
-  capturedAt: "2026-08-28T00:00:00.000Z",
-  policyVersion: "2026-08-28-explicit-fast",
+  capturedAt: "2026-09-04T00:00:00.000Z",
+  policyVersion: "2026-09-04-astra-codex",
   limitations: Object.freeze([
     "codex_subscription_not_billing",
     "quota_not_currency_convertible",
@@ -18,10 +19,12 @@ export const SUBSCRIPTION_PRICING_CATALOG = Object.freeze({
     "https://openai.com/index/introducing-gpt-5-5/",
     "https://openai.com/index/advancing-the-price-performance-frontier-with-gpt-5-6/",
     "https://help.openai.com/en/articles/11647665",
+    "https://help.openai.com/en/articles/20001415-chatgpt-rate-card-enterprise-token-based-pricing",
   ]),
 });
 
 const HISTORICAL_RATE_INTERVALS = Object.freeze([
+  historicalRate("gpt-6-astra", "2026-09-03T00:00:00.000Z", null, 10, 1, 50, "gpt-6-astra@2026-09-03"),
   historicalRate("gpt-5.4", "2026-03-05T00:00:00.000Z", null, 2.5, 0.25, 15, "gpt-5.4@2026-03-05"),
   historicalRate("gpt-5.5", "2026-04-23T00:00:00.000Z", null, 5, 0.5, 30, "gpt-5.5@2026-04-23"),
   historicalRate("gpt-5.6-sol", "2026-07-09T00:00:00.000Z", null, 5, 0.5, 30, "gpt-5.6-sol@2026-07-09"),
@@ -73,13 +76,30 @@ export function estimateRequestCost(event, {
 } = {}) {
   const model = event?.model ?? null;
   const observedAt = event?.observedAt ?? null;
+  const longContextCandidate = isLongContextCandidate(event?.usage);
   if (!VERIFIED_REQUEST_CLASSIFICATIONS.has(event?.classification)) {
-    return unavailableRequestCost("unverified_request_usage", model, observedAt);
+    return unavailableRequestCost("unverified_request_usage", model, observedAt, null, longContextCandidate);
   }
   const rate = resolveHistoricalRate(model, observedAt);
-  if (!rate) return unavailableRequestCost(model ? "historical_rate_unavailable" : "missing_model", model, observedAt);
+  if (!rate) {
+    return unavailableRequestCost(
+      model ? "historical_rate_unavailable" : "missing_model",
+      model,
+      observedAt,
+      null,
+      longContextCandidate,
+    );
+  }
   const usage = validateRequestUsage(event?.usage);
-  if (!usage) return unavailableRequestCost("inconsistent_usage_breakdown", model, observedAt, rate);
+  if (!usage) {
+    return unavailableRequestCost(
+      "inconsistent_usage_breakdown",
+      model,
+      observedAt,
+      rate,
+      longContextCandidate,
+    );
+  }
 
   const serviceTier = normalizeServiceTier(event?.serviceTier);
   const uncachedInputTokens = usage.inputTokens - usage.cachedInputTokens;
@@ -89,7 +109,6 @@ export function estimateRequestCost(event, {
     output: priceTokens(usage.outputTokens, rate.ratesPerMillion.output),
   };
   const baseAmountUsd = baseComponents.uncachedInput + baseComponents.cachedInput + baseComponents.output;
-  const longCandidate = usage.inputTokens > 272_000;
   let status = "estimated";
   let reason = null;
   let longContextStatus = "normal";
@@ -98,16 +117,18 @@ export function estimateRequestCost(event, {
   let fastMultiplier = 1;
 
   if (!applyFeaturePolicy) {
-    longContextStatus = longCandidate ? "candidate" : "normal";
-  } else if (longCandidate && !supportsLongContext(rate.model)) {
+    longContextStatus = longContextCandidate ? "candidate" : "normal";
+  } else if (longContextCandidate && isCodexLongContextExempt(rate.model)) {
+    longContextStatus = "exempt";
+  } else if (longContextCandidate && !supportsLongContext(rate.model)) {
     status = "partial";
     reason = "long_context_model_unsupported";
     longContextStatus = "unknown";
-  } else if (longCandidate && !requestBoundaryVerified) {
+  } else if (longContextCandidate && !requestBoundaryVerified) {
     status = "partial";
     reason = "long_context_request_boundary_unproven";
     longContextStatus = "candidate";
-  } else if (longCandidate) {
+  } else if (longContextCandidate) {
     longContextStatus = "long";
     inputMultiplier = 2;
     outputMultiplier = 1.5;
@@ -146,6 +167,7 @@ export function estimateRequestCost(event, {
     observedAt,
     serviceTier,
     rawServiceTier: event?.serviceTier ?? null,
+    longContextCandidate,
     longContextStatus,
     ratesPerMillion: { ...rate.ratesPerMillion },
     multipliers: {
@@ -282,10 +304,10 @@ export function summarizeRequestCosts(costs) {
 }
 
 export const PRICING_CATALOG = Object.freeze({
-  version: "2026-08-24",
+  version: "2026-09-04",
   currency: "USD",
   basis: "openai-standard-api-short-context",
-  capturedAt: "2026-08-24T00:00:00.000Z",
+  capturedAt: "2026-09-04T00:00:00.000Z",
   reviewAfter: "2026-11-21T23:59:59.999Z",
   limitations: Object.freeze([
     "codex_subscription_not_billing",
@@ -299,10 +321,12 @@ export const PRICING_CATALOG = Object.freeze({
     "https://developers.openai.com/api/docs/models/gpt-5.6-luna",
     "https://developers.openai.com/api/docs/models/gpt-5.5",
     "https://developers.openai.com/api/docs/models/gpt-5.4",
+    "https://developers.openai.com/api/docs/models/gpt-6-astra",
   ]),
 });
 
 const RATE_CARDS = Object.freeze({
+  "gpt-6-astra": rateCard(10, 1, 50, 1.25, PRICING_CATALOG.sources[5]),
   "gpt-5.6-sol": rateCard(4, 0.4, 20, 1.25, PRICING_CATALOG.sources[0]),
   "gpt-5.6-terra": rateCard(2, 0.2, 12, 1.25, PRICING_CATALOG.sources[1]),
   "gpt-5.6-luna": rateCard(0.2, 0.02, 1.2, 1.25, PRICING_CATALOG.sources[2]),
@@ -574,6 +598,7 @@ function historicalRate(
 }
 
 function historicalSourceForModel(model) {
+  if (model === "gpt-6-astra") return SUBSCRIPTION_PRICING_CATALOG.sources[4];
   if (model === "gpt-5.4") return SUBSCRIPTION_PRICING_CATALOG.sources[0];
   if (model === "gpt-5.5") return SUBSCRIPTION_PRICING_CATALOG.sources[1];
   return SUBSCRIPTION_PRICING_CATALOG.sources[2];
@@ -663,13 +688,18 @@ function supportsLongContext(model) {
   return model === "gpt-5.4" || model === "gpt-5.5" || model.startsWith("gpt-5.6-");
 }
 
+function isCodexLongContextExempt(model) {
+  return model === "gpt-6-astra";
+}
+
 function fastMultiplierForModel(model) {
+  if (model === "gpt-6-astra") return 2.5;
   if (model.startsWith("gpt-5.6-") || model === "gpt-5.5") return 2.5;
   if (model === "gpt-5.4") return 2;
   return null;
 }
 
-function unavailableRequestCost(reason, model, observedAt, rate = null) {
+function unavailableRequestCost(reason, model, observedAt, rate = null, longContextCandidate = false) {
   return {
     status: "unavailable",
     amountUsd: null,
@@ -682,6 +712,7 @@ function unavailableRequestCost(reason, model, observedAt, rate = null) {
     observedAt: observedAt ?? null,
     serviceTier: "unknown",
     rawServiceTier: null,
+    longContextCandidate,
     longContextStatus: "unknown",
     ratesPerMillion: rate?.ratesPerMillion ? { ...rate.ratesPerMillion } : null,
     multipliers: null,
@@ -694,6 +725,11 @@ function unavailableRequestCost(reason, model, observedAt, rate = null) {
     limitations: [...SUBSCRIPTION_PRICING_CATALOG.limitations],
     reason,
   };
+}
+
+function isLongContextCandidate(usage) {
+  const inputTokens = validTokenCount(usage?.inputTokens);
+  return inputTokens != null && inputTokens > LONG_CONTEXT_INPUT_THRESHOLD;
 }
 
 function pricingTaskKey(threadId, turnId) {

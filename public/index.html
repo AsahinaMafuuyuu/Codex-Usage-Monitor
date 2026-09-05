@@ -53,7 +53,7 @@
         </header>
 
         <div id="empty-state" class="empty-state">
-          <div class="empty-orbit" aria-hidden="true"><span></span></div>
+          <img class="empty-state-mark" src="/assets/mizuki.png" alt="" aria-hidden="true">
           <p class="eyebrow">OPEN A SESSION RECORD</p>
           <h2>从左侧工程中选择一段工作</h2>
           <p>页面会读取该根会话及全部子智能体的 rollout，历史记录保存在本地 SQLite。</p>
@@ -161,6 +161,56 @@
               </div>
               <div id="quota-windows" class="quota-windows"></div>
             </article>
+
+            <article class="diagnostics-card">
+              <button id="diagnostics-toggle" class="diagnostics-toggle" type="button" aria-expanded="false" aria-controls="diagnostics-panel">
+                <span class="diagnostics-card-copy">
+                  <span>Usage Diagnostics</span>
+                  <small>确定性分析 · Canonical Request evidence</small>
+                </span>
+                <strong id="diagnostics-summary">正在分析…</strong>
+                <i data-lucide="chevron-down" aria-hidden="true"></i>
+              </button>
+            </article>
+          </section>
+
+          <section id="diagnostics-panel" class="diagnostics-panel" aria-label="Usage Diagnostics 明细" hidden>
+            <div id="diagnostics-state" class="diagnostics-state">正在读取诊断结果…</div>
+            <section class="diagnostic-alert-center" aria-labelledby="diagnostic-alert-title">
+              <header class="diagnostic-alert-heading">
+                <div>
+                  <strong id="diagnostic-alert-title">Alerts / 等值预算</strong>
+                  <span id="diagnostic-alert-summary">未配置预算 · High alerts</span>
+                </div>
+                <button id="diagnostic-alert-snooze" class="diagnostic-alert-action" type="button">Snooze</button>
+              </header>
+              <form id="diagnostic-alert-policy-form" class="diagnostic-alert-policy">
+                <label>
+                  <span>Session 等值预算 USD</span>
+                  <input id="diagnostic-budget-usd" type="number" min="0.000001" max="1000000" step="0.01" inputmode="decimal" placeholder="关闭">
+                </label>
+                <label>
+                  <span>最低等级</span>
+                  <select id="diagnostic-alert-severity">
+                    <option value="high">High</option>
+                    <option value="warning">Warning</option>
+                  </select>
+                </label>
+                <label>
+                  <span>Cooldown</span>
+                  <select id="diagnostic-alert-cooldown">
+                    <option value="15">15 min</option>
+                    <option value="60" selected>60 min</option>
+                    <option value="240">4 h</option>
+                    <option value="1440">24 h</option>
+                  </select>
+                </label>
+                <button class="diagnostic-alert-save" type="submit">保存</button>
+              </form>
+              <p class="diagnostic-alert-note">预算按 Subscription Standard-Rate Equivalent 判断，不代表 Plus 实际扣费。通知仅显示在本机页面，不外发。</p>
+              <div id="diagnostic-alerts" class="diagnostic-alert-list"></div>
+            </section>
+            <div id="diagnostics-findings" class="diagnostics-findings"></div>
           </section>
 
           <section class="agent-section">
@@ -181,6 +231,20 @@
         </div>
       </main>
     </div>
+
+    <dialog id="request-inspector" class="request-inspector" aria-labelledby="request-inspector-title" aria-describedby="request-inspector-evidence">
+      <div class="request-inspector-frame">
+        <header class="request-inspector-header">
+          <div>
+            <p class="eyebrow">REQUEST CONTENT / 交互证据</p>
+            <h2 id="request-inspector-title">Request Inspector</h2>
+            <p id="request-inspector-evidence" class="request-inspector-evidence">Rollout observed interaction · Provider payload 未重建</p>
+          </div>
+          <button id="request-inspector-close" class="request-inspector-close" type="button" aria-label="关闭 Request Inspector">关闭</button>
+        </header>
+        <div id="request-inspector-body" class="request-inspector-body" aria-live="polite"></div>
+      </div>
+    </dialog>
 
     <div id="toast" class="toast" role="status" aria-live="polite"></div>
     <script src="/vendor/lucide.min.js" defer></script>

@@ -7,7 +7,7 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0001](0001-read-only-rollout-observer.md) | Accepted | 使用本地只读 rollout observer |
 | [0002](0002-cumulative-boundary-delta.md) | Superseded by ADR-0016 | 历史 Boundary Ledger：用任务边界累计快照做差分 |
 | [0003](0003-metadata-only-persistence.md) | Accepted | SQLite 仅持久化派生元数据 |
-| [0004](0004-loopback-session-security.md) | Accepted | 采用 loopback 和启动会话安全边界 |
+| [0004](0004-loopback-session-security.md) | Superseded by ADR-0034 | 历史方案：loopback + 每进程一次性 launch token / session cookie |
 | [0005](0005-file-observer-and-sse.md) | Accepted | 使用文件观察、轮询与 SSE 实时更新 |
 | [0006](0006-node-builtins-and-vanilla-ui.md) | Accepted | 使用 Node 内置模块和无框架页面 |
 | [0007](0007-versioned-api-equivalent-cost.md) | Superseded by ADR-0019 | 历史标准 API 短上下文等值 estimator |
@@ -28,6 +28,16 @@ ADR 记录已经做出的、会约束后续实现的重要选择。`Accepted` �
 | [0022](0022-independent-task-request-audit-navigation.md) | Accepted | 将 Canonical Requests 移出父表 overflow，建立独立滚动与稳定 drawer；Task 分页交互后由 ADR-0024 替代 |
 | [0023](0023-explicit-fast-service-tier-policy.md) | Accepted | 只有原始 service tier 明确为 `fast` 才应用 Fast；其余值统一按 standard 定价 |
 | [0024](0024-task-scroll-request-pagination-ergonomics.md) | Accepted | Task 使用约 5 行纵向滚动视口；Request 使用自适应 5/10 条分页与居中导航 |
+| [0025](0025-official-codex-usage-polling.md) | Accepted | 账号额度只读查询 Codex 官方 Usage，并以 60 秒周期刷新；Task/Token/Cost 继续保持本地事实源 |
+| [0026](0026-deterministic-usage-diagnostics-projection.md) | Accepted | 在 canonical Request 之上建立独立确定性 Usage Diagnostics projection，首版 compute-on-read 且不改变 accounting |
+| [0027](0027-historical-robust-usage-diagnostics.md) | Accepted | 以严格 project/model/effort cohort、Median/MAD/Robust-Z 与 practical-effect gate 建立 Historical / Cross-session diagnostics |
+| [0028](0028-deterministic-behavioral-usage-diagnostics.md) | Accepted | 以 canonical metadata、历史鲁棒基线和 lazy read path 检测 Reasoning、Request Burst 与 Subagent Amplification |
+| [0029](0029-local-diagnostic-budget-notification-state.md) | Accepted | 用 schema v15 operational tables 与精确 allowlisted local POST 实现工程级等值预算、Ack 与 Snooze，不污染 accounting |
+| [0030](0030-read-through-request-content-inspector.md) | Accepted | 通过 canonical Request source locator 按需只读 rollout，构造 ephemeral Observed Interaction Slice；不持久化正文，也不冒充 Provider wire payload |
+| [0031](0031-reconstructed-input-context-evidence.md) | Accepted | 以 pre-model cut、同线程历史、compaction snapshot 与 provenance 分层重建 Input Context；始终与 Provider serialization 区分 |
+| [0032](0032-gpt-6-astra-codex-pricing.md) | Accepted | GPT-6 Astra 在 Codex/Work 按独立 subscription rate、Fast 2.5x 与 long-context exemption 定价，并与 API feature pricing 分离 |
+| [0033](0033-managed-release-cli-self-update.md) | Accepted | 使用 Managed Install、独立 CLI、GitHub Release manifest/hash 与原子版本指针实现可控 self-update/rollback，并保护 Git checkout 与 SQLite compatibility |
+| [0034](0034-fixed-loopback-persistent-browser-auth.md) | Accepted | 固定精确 loopback endpoint，以本机 secret + challenge/proof 建立跨进程重启的持久浏览器授权，不匿名开放敏感 API |
 
 ## 新增 ADR
 

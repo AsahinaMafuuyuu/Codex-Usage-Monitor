@@ -1,21 +1,41 @@
 import { EventEmitter } from "node:events";
+import { createHash } from "node:crypto";
 import { existsSync, watch } from "node:fs";
 import { join } from "node:path";
 import { stat } from "node:fs/promises";
+import { CodexUsageClient, CodexUsageUnavailableError } from "./codex-usage-client.js";
+import {
+  ADVANCED_USAGE_DIAGNOSTICS_POLICY,
+  analyzeAdvancedUsageDiagnostics,
+} from "./advanced-diagnostics.js";
+import {
+  BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY,
+  analyzeBehavioralUsageDiagnostics,
+} from "./behavioral-diagnostics.js";
+import { analyzeUsageDiagnostics } from "./diagnostics.js";
 import { estimateRequestCost, pricingCatalogSummary } from "./pricing.js";
+import { readRequestContent } from "./request-content.js";
+import { analyzeRequestContextDelta } from "./request-context-delta.js";
+import { readReconstructedInputContext } from "./request-input-context.js";
 import {
   readTaskPreview,
-  scanLatestQuota,
   SessionRolloutParser,
 } from "./rollout-parser.js";
 import { materializeScopedSnapshot, resolveLocalDayRange } from "./snapshot-scope.js";
 import { reconcileRateLimitSnapshots } from "./usage.js";
 
 export class UsageMonitor extends EventEmitter {
-  constructor({ repository, database }) {
+  constructor({
+    repository,
+    database,
+    quotaClient = new CodexUsageClient({ codexHome: repository.codexHome }),
+    quotaRefreshIntervalMs = 60_000,
+  }) {
     super();
     this.repository = repository;
     this.database = database;
+    this.quotaClient = quotaClient;
+    this.quotaRefreshIntervalMs = quotaRefreshIntervalMs;
     this.selectedSessionId = null;
     this.parser = null;
     this.selectedEntries = [];
@@ -25,12 +45,15 @@ export class UsageMonitor extends EventEmitter {
     this.pendingTimer = null;
     this.pollTimer = null;
     this.reconcileTimer = null;
+    this.quotaPollTimer = null;
+    this.quotaRefreshPromise = null;
     this.lastUpdateAt = null;
     this.lastErrors = [];
     this.timelinePromise = null;
     this.indexerPromise = null;
     this.pendingProcessPromise = null;
     this.closePromise = null;
+    this.diagnosticAlertCache = new Map();
     this.timelineDirtySessions = new Set();
     this.timelineStats = {
       dirtySessions: 0,
@@ -47,13 +70,19 @@ export class UsageMonitor extends EventEmitter {
   async initialize() {
     await this.repository.initialize();
     this.refreshTimelineDirtySessions();
-    this.currentQuota = this.database.getLatestQuota();
-    await this.refreshGlobalQuota();
+    const persistedQuota = this.database.getLatestQuota();
+    this.currentQuota = persistedQuota?.source === "official-usage-api" ? persistedQuota : null;
     this.startWatchers();
     this.pollTimer = setInterval(() => void this.pollSelectedFiles(), 1000);
     this.pollTimer.unref();
     this.reconcileTimer = setInterval(() => void this.reconcile(), 10_000);
     this.reconcileTimer.unref();
+    this.quotaPollTimer = setInterval(
+      () => void this.refreshQuotaFromOfficial({ emit: true }),
+      this.quotaRefreshIntervalMs,
+    );
+    this.quotaPollTimer.unref();
+    void this.refreshQuotaFromOfficial({ emit: true });
     void this.runBackgroundIndexer();
     return this.health();
   }
@@ -289,14 +318,13 @@ export class UsageMonitor extends EventEmitter {
         parsed = await parser.parseFiles(files);
       }
       if (this.closed) return;
-      this.database.replaceSession(parsed);
+      this.database.replaceSession(parsed, { persistQuotas: false });
       this.timelineDirtySessions.delete(sessionId);
       this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
       this.parser = parser;
       this.selectedSessionId = sessionId;
       this.selectedEntries = files;
       this.lastUpdateAt = new Date().toISOString();
-      this.saveLatestParsedQuota(parsed.quotas);
     })();
     try {
       await this.selectionPromise;
@@ -343,7 +371,7 @@ export class UsageMonitor extends EventEmitter {
   }
 
   quota() {
-    const quota = this.currentQuota ?? this.database.getLatestQuota();
+    const quota = this.currentQuota;
     if (!quota) return null;
     const ageMs = Date.now() - Date.parse(quota.observedAt);
     return { ...quota, stale: !Number.isFinite(ageMs) || ageMs > 5 * 60 * 1000, ageMs };
@@ -400,6 +428,462 @@ export class UsageMonitor extends EventEmitter {
       pagination: requestPage.pagination,
       projectionGeneration: Number(projection?.generation ?? 0),
     };
+  }
+
+  async requestContent(sessionId, requestId) {
+    const locator = this.database.getCanonicalRequestContentLocator(sessionId, requestId);
+    if (!locator) return null;
+    const projection = this.database.getProjectionState();
+    const request = {
+      requestId: locator.requestId,
+      observedAt: locator.observedAt,
+      model: locator.model,
+      effort: locator.task?.effort ?? null,
+      serviceTier: locator.serviceTier,
+      pricingContextQuality: locator.pricingContextQuality,
+      quality: locator.quality,
+      usage: locator.usage,
+      costEstimate: estimateRequestCost(locator),
+    };
+    if (locator.boundaryStatus !== "ok") {
+      return {
+        available: false,
+        reason: locator.boundaryStatus,
+        version: 2,
+        projectionGeneration: Number(projection?.generation ?? 0),
+        request,
+        evidence: {
+          kind: "rollout_observed_interaction",
+          providerPayloadReconstructed: false,
+          sourceKey: locator.sourceKey,
+          startLine: null,
+          endLine: locator.lineNumber,
+          complete: false,
+          truncated: false,
+          coverage: locator.boundaryStatus,
+        },
+        preModelCut: { status: "unavailable", kind: null, lineNumber: null, recordKind: null },
+        items: [],
+        summary: emptyRequestContentSummary(),
+      };
+    }
+    const sourcePath = this.repository.resolveSourceKey(locator.sourceKey);
+    if (!sourcePath) {
+      return {
+        available: false,
+        reason: "source_missing",
+        version: 2,
+        projectionGeneration: Number(projection?.generation ?? 0),
+        request,
+        evidence: {
+          kind: "rollout_observed_interaction",
+          providerPayloadReconstructed: false,
+          sourceKey: locator.sourceKey,
+          startLine: locator.previousBoundary
+            ? locator.previousBoundary.lineNumber + 1
+            : locator.task?.startLine ?? null,
+          endLine: locator.lineNumber,
+          complete: false,
+          truncated: false,
+          coverage: "source_missing",
+        },
+        preModelCut: { status: "unavailable", kind: null, lineNumber: null, recordKind: null },
+        items: [],
+        summary: emptyRequestContentSummary(),
+      };
+    }
+    const content = await readRequestContent({ sourcePath, locator });
+    return {
+      version: 2,
+      projectionGeneration: Number(projection?.generation ?? 0),
+      request,
+      ...content,
+    };
+  }
+
+  async requestInputContext(sessionId, requestId) {
+    const locator = this.database.getCanonicalRequestInputContextLocator(sessionId, requestId);
+    if (!locator) return null;
+    const projection = this.database.getProjectionState();
+    const request = {
+      requestId: locator.requestId,
+      observedAt: locator.observedAt,
+      model: locator.model,
+      effort: locator.task?.effort ?? null,
+      serviceTier: locator.serviceTier,
+      pricingContextQuality: locator.pricingContextQuality,
+      quality: locator.quality,
+      usage: locator.usage,
+      costEstimate: estimateRequestCost(locator),
+    };
+    const context = await readReconstructedInputContext({
+      locator,
+      resolveSource: (sourceKey) => {
+        const sourcePath = this.repository.resolveSourceKey(sourceKey);
+        return sourcePath && existsSync(sourcePath) ? sourcePath : null;
+      },
+    });
+    return {
+      ...context,
+      version: 1,
+      projectionGeneration: Number(projection?.generation ?? 0),
+      request,
+    };
+  }
+
+  async requestContextDelta(sessionId, requestId) {
+    const pairLocator = this.database.getCanonicalRequestContextDeltaLocator(sessionId, requestId);
+    if (!pairLocator) return null;
+    const projection = this.database.getProjectionState();
+    const reconstructInputContext = (locator) => readReconstructedInputContext({
+      locator,
+      resolveSource: (sourceKey) => {
+        const sourcePath = this.repository.resolveSourceKey(sourceKey);
+        return sourcePath && existsSync(sourcePath) ? sourcePath : null;
+      },
+    });
+    const delta = await analyzeRequestContextDelta({
+      pairLocator,
+      reconstructInputContext,
+    });
+    return {
+      ...delta,
+      projectionGeneration: Number(projection?.generation ?? 0),
+    };
+  }
+
+  diagnostics(sessionId, scope = { type: "session" }) {
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!hasImportedRequestProjection(indexState)) return null;
+    const normalizedScope = scope?.type === "day"
+      ? {
+          type: "day",
+          day: scope.day,
+          range: scope.range ?? resolveLocalDayRange(scope.day),
+        }
+      : { type: "session" };
+    const facts = this.database.getDiagnosticFacts(sessionId, {
+      range: normalizedScope.type === "day" ? normalizedScope.range : null,
+    });
+    const enrichedFacts = facts.map((fact) => Object.freeze({
+      ...fact,
+      costEstimate: estimateRequestCost(fact),
+    }));
+    const report = analyzeUsageDiagnostics(enrichedFacts);
+    const projection = this.database.getProjectionState();
+    return {
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            timezone: normalizedScope.range?.timezone ?? null,
+          }
+        : { type: "session" },
+      projectionGeneration: Number(projection?.generation ?? 0),
+      stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+      ...report,
+    };
+  }
+
+  advancedDiagnostics(sessionId, scope = { type: "session" }) {
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!hasImportedRequestProjection(indexState)) return null;
+    const normalizedScope = scope?.type === "day"
+      ? {
+          type: "day",
+          day: scope.day,
+          range: scope.range ?? resolveLocalDayRange(scope.day),
+        }
+      : { type: "session" };
+    const currentFacts = this.database.getDiagnosticFacts(sessionId, {
+      range: normalizedScope.type === "day" ? normalizedScope.range : null,
+    });
+    const projectPath = currentFacts.find((fact) => fact.projectPath)?.projectPath ?? null;
+    const observedTimes = currentFacts
+      .map((fact) => Date.parse(fact.observedAt))
+      .filter(Number.isFinite);
+    const firstObservedMs = observedTimes.length ? Math.min(...observedTimes) : null;
+    const lastObservedMs = observedTimes.length ? Math.max(...observedTimes) : null;
+    let historicalFacts = [];
+    let historicalSessionFacts = [];
+    if (projectPath && firstObservedMs != null && lastObservedMs != null) {
+      const before = new Date(lastObservedMs + 1).toISOString();
+      historicalFacts = this.database.getHistoricalDiagnosticFacts(sessionId, {
+        projectPath,
+        after: new Date(
+          firstObservedMs - ADVANCED_USAGE_DIAGNOSTICS_POLICY.requestHistory.horizonDays * 86_400_000,
+        ).toISOString(),
+        before,
+        maxSamplesPerCohort: ADVANCED_USAGE_DIAGNOSTICS_POLICY.requestHistory.maxSamplesPerCohort,
+      });
+      if (normalizedScope.type === "session") {
+        historicalSessionFacts = this.database.getHistoricalDiagnosticSessionFacts(sessionId, {
+          projectPath,
+          after: new Date(
+            firstObservedMs - ADVANCED_USAGE_DIAGNOSTICS_POLICY.sessionHistory.horizonDays * 86_400_000,
+          ).toISOString(),
+          before,
+          maxSlicesPerCohort: ADVANCED_USAGE_DIAGNOSTICS_POLICY.sessionHistory.maxSlicesPerCohort,
+        });
+      }
+    }
+    const enrich = (facts) => facts.map((fact) => Object.freeze({
+      ...fact,
+      costEstimate: estimateRequestCost(fact),
+    }));
+    const report = analyzeAdvancedUsageDiagnostics({
+      currentFacts: enrich(currentFacts),
+      historicalFacts: enrich(historicalFacts),
+      historicalSessionFacts: enrich(historicalSessionFacts),
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            startAt: new Date(normalizedScope.range.startMs).toISOString(),
+            endAt: new Date(normalizedScope.range.endMs).toISOString(),
+          }
+        : { type: "session" },
+    });
+    const { candidates: _shadowCandidates, ...publicReport } = report;
+    const projection = this.database.getProjectionState();
+    return {
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            timezone: normalizedScope.range?.timezone ?? null,
+          }
+        : { type: "session" },
+      projectionGeneration: Number(projection?.generation ?? 0),
+      stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+      ...publicReport,
+    };
+  }
+
+  behavioralDiagnostics(sessionId, scope = { type: "session" }) {
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!hasImportedRequestProjection(indexState)) return null;
+    const normalizedScope = scope?.type === "day"
+      ? {
+          type: "day",
+          day: scope.day,
+          range: scope.range ?? resolveLocalDayRange(scope.day),
+        }
+      : { type: "session" };
+    const currentFacts = this.database.getDiagnosticFacts(sessionId, {
+      range: normalizedScope.type === "day" ? normalizedScope.range : null,
+    });
+    const projectPath = currentFacts.find((fact) => fact.projectPath)?.projectPath ?? null;
+    const observedTimes = currentFacts
+      .map((fact) => Date.parse(fact.observedAt))
+      .filter(Number.isFinite);
+    const firstObservedMs = observedTimes.length ? Math.min(...observedTimes) : null;
+    const lastObservedMs = observedTimes.length ? Math.max(...observedTimes) : null;
+    let historicalFacts = [];
+    let historicalSessionFacts = [];
+    let historicalAmplificationSamples = [];
+    if (projectPath && firstObservedMs != null && lastObservedMs != null) {
+      const before = new Date(lastObservedMs + 1).toISOString();
+      historicalFacts = this.database.getHistoricalDiagnosticFacts(sessionId, {
+        projectPath,
+        after: new Date(
+          firstObservedMs - BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.requestHistory.horizonDays * 86_400_000,
+        ).toISOString(),
+        before,
+        maxSamplesPerCohort: BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.requestHistory.maxSamplesPerCohort,
+      });
+      if (normalizedScope.type === "session") {
+        historicalSessionFacts = this.database.getHistoricalDiagnosticSessionFacts(sessionId, {
+          projectPath,
+          after: new Date(
+            firstObservedMs - BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.burst.horizonDays * 86_400_000,
+          ).toISOString(),
+          before,
+          maxSlicesPerCohort: BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.burst.maxSlicesPerCohort,
+        });
+        historicalAmplificationSamples = this.database.getHistoricalSubagentAmplificationSamples(sessionId, {
+          projectPath,
+          after: new Date(
+            firstObservedMs - BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.subagentAmplification.horizonDays * 86_400_000,
+          ).toISOString(),
+          before,
+          maxSessions: BEHAVIORAL_USAGE_DIAGNOSTICS_POLICY.subagentAmplification.maxSessions,
+        });
+      }
+    }
+    const report = analyzeBehavioralUsageDiagnostics({
+      currentFacts,
+      historicalFacts,
+      historicalSessionFacts,
+      historicalAmplificationSamples,
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            startAt: new Date(normalizedScope.range.startMs).toISOString(),
+            endAt: new Date(normalizedScope.range.endMs).toISOString(),
+          }
+        : { type: "session" },
+    });
+    const { candidates: _shadowCandidates, ...publicReport } = report;
+    const projection = this.database.getProjectionState();
+    return {
+      scope: normalizedScope.type === "day"
+        ? {
+            type: "day",
+            day: normalizedScope.day,
+            timezone: normalizedScope.range?.timezone ?? null,
+          }
+        : { type: "session" },
+      projectionGeneration: Number(projection?.generation ?? 0),
+      stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+      ...publicReport,
+    };
+  }
+
+  diagnosticAlerts(sessionId, { includeAcknowledged = false } = {}) {
+    const indexState = this.database.getSessionIndexState(sessionId);
+    if (!hasImportedRequestProjection(indexState)) return null;
+    const projectionGeneration = Number(this.database.getProjectionState()?.generation ?? 0);
+    const cached = this.diagnosticAlertCache.get(sessionId);
+    if (cached?.projectionGeneration === projectionGeneration) {
+      return materializeDiagnosticAlertReport(cached, {
+        includeAcknowledged,
+        stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+      });
+    }
+    const snapshot = this.snapshot(sessionId, { type: "session" });
+    if (!snapshot) return null;
+    const projectPath = snapshot.session?.projectPath ?? null;
+    if (!projectPath) return null;
+    const policy = {
+      sessionCostBudgetUsd: null,
+      minimumSeverity: "high",
+      cooldownMinutes: 60,
+      snoozedUntil: null,
+      updatedAt: null,
+      ...(this.database.getDiagnosticAlertPolicy(projectPath) ?? {}),
+      projectPath,
+    };
+    const acknowledgements = new Map(
+      this.database.getDiagnosticAlertAcknowledgements(sessionId)
+        .map((entry) => [entry.alertId, entry.acknowledgedAt]),
+    );
+    const local = this.diagnostics(sessionId);
+    const advanced = this.advancedDiagnostics(sessionId);
+    const behavioral = this.behavioralDiagnostics(sessionId);
+    const findings = [
+      ...(local?.findings ?? []),
+      ...(advanced?.findings ?? []),
+      ...(behavioral?.findings ?? []),
+    ];
+    const minimumSeverityRank = diagnosticSeverityRank(policy.minimumSeverity);
+    const alerts = findings
+      .filter((finding) => diagnosticSeverityRank(finding.severity) >= minimumSeverityRank)
+      .map((finding) => diagnosticFindingAlert(sessionId, finding, acknowledgements));
+    const cost = snapshot.summary?.totalCostEstimate ?? null;
+    if (
+      Number.isFinite(policy.sessionCostBudgetUsd) &&
+      policy.sessionCostBudgetUsd > 0 &&
+      cost?.status === "estimated" &&
+      Number.isFinite(cost.amountUsd) &&
+      cost.amountUsd >= policy.sessionCostBudgetUsd
+    ) {
+      alerts.push(diagnosticBudgetAlert({
+        sessionId,
+        projectPath,
+        budgetUsd: policy.sessionCostBudgetUsd,
+        amountUsd: cost.amountUsd,
+        pricingPolicyVersion: pricingCatalogSummary().policyVersion,
+        acknowledgements,
+      }));
+    }
+    alerts.sort(compareDiagnosticAlerts);
+    const snoozed = Number.isFinite(Date.parse(policy.snoozedUntil)) && Date.parse(policy.snoozedUntil) > Date.now();
+    const cacheEntry = {
+      sessionId,
+      projectPath,
+      projectionGeneration,
+      policy: {
+        sessionCostBudgetUsd: policy.sessionCostBudgetUsd,
+        minimumSeverity: policy.minimumSeverity,
+        cooldownMinutes: policy.cooldownMinutes,
+        snoozedUntil: policy.snoozedUntil,
+        updatedAt: policy.updatedAt,
+      },
+      snoozed,
+      allAlerts: alerts,
+    };
+    this.diagnosticAlertCache.set(sessionId, cacheEntry);
+    if (this.diagnosticAlertCache.size > 32) {
+      this.diagnosticAlertCache.delete(this.diagnosticAlertCache.keys().next().value);
+    }
+    return materializeDiagnosticAlertReport(cacheEntry, {
+      includeAcknowledged,
+      stale: this.timelineDirtySessions.has(sessionId) || !this.isTimelineSessionCurrent(sessionId),
+    });
+  }
+
+  updateDiagnosticAlertPolicy(sessionId, input = {}) {
+    const snapshot = this.snapshot(sessionId, { type: "session" });
+    const projectPath = snapshot?.session?.projectPath ?? null;
+    if (!projectPath) return null;
+    const current = this.database.getDiagnosticAlertPolicy(projectPath) ?? {};
+    const sessionCostBudgetUsd = input.sessionCostBudgetUsd == null || input.sessionCostBudgetUsd === ""
+      ? null
+      : Number(input.sessionCostBudgetUsd);
+    if (sessionCostBudgetUsd != null && (!Number.isFinite(sessionCostBudgetUsd) || sessionCostBudgetUsd <= 0 || sessionCostBudgetUsd > 1_000_000)) {
+      throw new RangeError("sessionCostBudgetUsd 必须为空或位于 (0, 1000000] USD");
+    }
+    const minimumSeverity = input.minimumSeverity ?? current.minimumSeverity ?? "high";
+    if (!new Set(["warning", "high"]).has(minimumSeverity)) {
+      throw new RangeError("minimumSeverity 仅支持 warning/high");
+    }
+    const cooldownMinutes = input.cooldownMinutes == null
+      ? Number(current.cooldownMinutes ?? 60)
+      : Number(input.cooldownMinutes);
+    if (!Number.isInteger(cooldownMinutes) || cooldownMinutes < 5 || cooldownMinutes > 1_440) {
+      throw new RangeError("cooldownMinutes 必须是 5..1440 的整数");
+    }
+    const policy = this.database.upsertDiagnosticAlertPolicy(projectPath, {
+      sessionCostBudgetUsd,
+      minimumSeverity,
+      cooldownMinutes,
+      snoozedUntil: current.snoozedUntil ?? null,
+    });
+    this.diagnosticAlertCache.clear();
+    return policy;
+  }
+
+  acknowledgeDiagnosticAlert(sessionId, alertId) {
+    const report = this.diagnosticAlerts(sessionId, { includeAcknowledged: true });
+    if (!report) return null;
+    const alert = report.alerts.find((candidate) => candidate.alertId === alertId);
+    if (!alert) return false;
+    const acknowledgement = this.database.acknowledgeDiagnosticAlert(sessionId, alertId);
+    this.diagnosticAlertCache.delete(sessionId);
+    return acknowledgement;
+  }
+
+  snoozeDiagnosticAlerts(sessionId) {
+    const snapshot = this.snapshot(sessionId, { type: "session" });
+    const projectPath = snapshot?.session?.projectPath ?? null;
+    if (!projectPath) return null;
+    const current = this.database.getDiagnosticAlertPolicy(projectPath) ?? {
+      sessionCostBudgetUsd: null,
+      minimumSeverity: "high",
+      cooldownMinutes: 60,
+    };
+    const cooldownMinutes = Number(current.cooldownMinutes ?? 60);
+    const snoozedUntil = new Date(Date.now() + cooldownMinutes * 60_000).toISOString();
+    const policy = this.database.upsertDiagnosticAlertPolicy(projectPath, {
+      sessionCostBudgetUsd: current.sessionCostBudgetUsd ?? null,
+      minimumSeverity: current.minimumSeverity ?? "high",
+      cooldownMinutes,
+      snoozedUntil,
+    });
+    this.diagnosticAlertCache.clear();
+    return policy;
   }
 
   health() {
@@ -491,8 +975,6 @@ export class UsageMonitor extends EventEmitter {
           selectedChanged ||= result.changed;
           requiresRebuild ||= result.rebuilt;
           if (!this.selectedEntries.some((item) => item.path === entry.path)) this.selectedEntries.push(entry);
-        } else {
-          await this.refreshQuotaFromFile(entry);
         }
       } catch (error) {
         this.recordError(`处理文件更新失败：${path}`, error);
@@ -533,10 +1015,9 @@ export class UsageMonitor extends EventEmitter {
   persistAndBroadcast() {
     if (this.closed || !this.parser || !this.selectedSessionId) return;
     const parsed = this.parser.snapshot();
-    this.database.replaceSession(parsed);
+    this.database.replaceSession(parsed, { persistQuotas: false });
     this.timelineDirtySessions.delete(this.selectedSessionId);
     this.timelineStats.dirtySessions = this.timelineDirtySessions.size;
-    this.saveLatestParsedQuota(parsed.quotas);
     this.lastUpdateAt = new Date().toISOString();
     this.emit("update", { sessionId: this.selectedSessionId });
   }
@@ -564,87 +1045,43 @@ export class UsageMonitor extends EventEmitter {
           if (error?.code !== "ENOENT") this.recordError(`后台 stat 校验失败：${entry.path}`, error);
         }
       }
-      await this.refreshGlobalQuota();
     } catch (error) {
       this.recordError("后台校验失败", error);
     }
   }
 
-  async refreshGlobalQuota() {
-    const recent = this.repository
-      .allFiles()
-      .sort((a, b) => (b.modifiedAtMs ?? 0) - (a.modifiedAtMs ?? 0))
-      .slice(0, 12);
-    let latest = this.currentQuota ?? this.database.getLatestQuota();
-    for (const entry of recent) {
-      try {
-        const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
-        if (!quota) continue;
-        this.database.saveQuota(quota);
-        latest = reconcileRateLimitSnapshots(latest, quota);
-      } catch (error) {
-        if (error?.code !== "ENOENT") this.recordError(`额度扫描失败：${entry.path}`, error);
-      }
-    }
-    this.currentQuota = latest;
-    return latest;
-  }
-
   async refreshQuotaNow() {
-    const additions = await this.repository.discoverNewFiles();
-    for (const entry of additions) this.markTimelineDirty(entry.rootSessionId);
-
-    const candidates = [];
-    for (const entry of this.repository.allFiles()) {
-      try {
-        const fileStat = await stat(entry.path);
-        candidates.push({ entry, modifiedAtMs: fileStat.mtimeMs });
-      } catch (error) {
-        if (error?.code !== "ENOENT") this.recordError(`额度刷新 stat 失败：${entry.path}`, error);
-      }
-    }
-    candidates.sort((left, right) => right.modifiedAtMs - left.modifiedAtMs);
-
-    let latest = this.currentQuota ?? this.database.getLatestQuota();
-    for (const { entry } of candidates.slice(0, 24)) {
-      try {
-        const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
-        if (!quota) continue;
-        this.database.saveQuota(quota);
-        latest = reconcileRateLimitSnapshots(latest, quota);
-      } catch (error) {
-        if (error?.code !== "ENOENT") this.recordError(`手动额度刷新失败：${entry.path}`, error);
-      }
-    }
-    this.currentQuota = latest;
-    const quota = this.quota();
-    if (quota) this.emit("quota", quota);
-    return quota;
+    return this.refreshQuotaFromOfficial({ emit: true, throwOnError: true });
   }
 
-  async refreshQuotaFromFile(entry) {
-    try {
-      const quota = await scanLatestQuota(entry.path, undefined, entry.sourceKey);
-      if (!quota) return;
-      this.database.saveQuota(quota);
+  async refreshQuotaFromOfficial({ emit = true, throwOnError = false } = {}) {
+    if (this.quotaRefreshPromise) return this.quotaRefreshPromise;
+    this.quotaRefreshPromise = (async () => {
+      let candidate;
+      try {
+        candidate = await this.quotaClient.fetchQuota();
+      } catch (error) {
+        const isMissingAuth =
+          error instanceof CodexUsageUnavailableError
+          && error.code === "chatgpt_auth_unavailable";
+        if (throwOnError) throw error;
+        if (!isMissingAuth) this.recordError("官方 Codex Usage 额度查询失败", error);
+        return this.quota();
+      }
+      this.database.saveQuota(candidate);
       this.currentQuota = reconcileRateLimitSnapshots(
-        this.currentQuota ?? this.database.getLatestQuota(),
-        quota,
+        this.currentQuota,
+        candidate,
       );
-      this.emit("quota", this.quota());
-    } catch (error) {
-      if (error?.code !== "ENOENT") throw error;
+      const quota = this.quota();
+      if (emit && quota) this.emit("quota", quota);
+      return quota;
+    })();
+    try {
+      return await this.quotaRefreshPromise;
+    } finally {
+      this.quotaRefreshPromise = null;
     }
-  }
-
-  saveLatestParsedQuota(quotas) {
-    const snapshots = [...(quotas ?? [])].sort((a, b) => a.observedAt.localeCompare(b.observedAt));
-    let current = this.currentQuota ?? this.database.getLatestQuota();
-    for (const quota of snapshots) {
-      this.database.saveQuota(quota);
-      current = reconcileRateLimitSnapshots(current, quota);
-    }
-    this.currentQuota = current;
   }
 
   recordError(context, error) {
@@ -663,12 +1100,18 @@ export class UsageMonitor extends EventEmitter {
     if (this.pendingTimer) clearTimeout(this.pendingTimer);
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
+    if (this.quotaPollTimer) clearInterval(this.quotaPollTimer);
     for (const watcher of this.watchers) watcher.close();
     this.watchers = [];
     this.pendingPaths.clear();
     this.timelineDirtySessions.clear();
     this.timelineStats.dirtySessions = 0;
-    const active = [this.pendingProcessPromise, this.selectionPromise, this.indexerPromise].filter(Boolean);
+    const active = [
+      this.pendingProcessPromise,
+      this.selectionPromise,
+      this.indexerPromise,
+      this.quotaRefreshPromise,
+    ].filter(Boolean);
     this.closePromise = Promise.allSettled(active).then(() => undefined);
     return this.closePromise;
   }
@@ -676,4 +1119,102 @@ export class UsageMonitor extends EventEmitter {
 
 function hasImportedRequestProjection(indexState) {
   return Boolean(indexState?.requestLedgerReady && indexState.parseStatus !== "not_imported");
+}
+
+function emptyRequestContentSummary() {
+  return {
+    observedItemCount: 0,
+    observedRecordCount: 0,
+    messageCount: 0,
+    toolCallCount: 0,
+    toolResultCount: 0,
+    reasoningSummaryCount: 0,
+    reasoningRecordCount: 0,
+    reasoningCardCount: 0,
+    observedInputItemCount: 0,
+    runtimeContextItemCount: 0,
+    observedInteractionItemCount: 0,
+    contextSignalCount: 0,
+    malformedRecordCount: 0,
+    unknownRecordCount: 0,
+    omittedRecordCount: 0,
+    omittedItemCount: 0,
+    truncatedItemCount: 0,
+    payloadCharacters: 0,
+  };
+}
+
+function diagnosticSeverityRank(value) {
+  if (value === "high") return 2;
+  if (value === "warning") return 1;
+  return 0;
+}
+
+function diagnosticFindingAlert(sessionId, finding, acknowledgements) {
+  const alertId = `alert_${finding.findingId}`;
+  return {
+    alertId,
+    kind: "diagnostic_finding",
+    severity: finding.severity,
+    type: finding.type,
+    family: finding.family ?? "local",
+    findingId: finding.findingId,
+    title: finding.type,
+    observedAt: finding.observedAt ?? null,
+    locator: finding.locator ?? finding.supportingLocator ?? null,
+    acknowledgedAt: acknowledgements.get(alertId) ?? null,
+    sessionId,
+  };
+}
+
+function diagnosticBudgetAlert({
+  sessionId,
+  projectPath,
+  budgetUsd,
+  amountUsd,
+  pricingPolicyVersion,
+  acknowledgements,
+}) {
+  const digest = createHash("sha256")
+    .update(JSON.stringify([sessionId, projectPath, budgetUsd, pricingPolicyVersion]))
+    .digest("hex")
+    .slice(0, 24);
+  const alertId = `budget_${digest}`;
+  return {
+    alertId,
+    kind: "session_cost_budget",
+    severity: "high",
+    type: "session_cost_budget",
+    family: "operational",
+    title: "Session 等值费用超过预算",
+    budgetUsd,
+    amountUsd,
+    ratio: budgetUsd > 0 ? amountUsd / budgetUsd : null,
+    pricingPolicyVersion,
+    acknowledgedAt: acknowledgements.get(alertId) ?? null,
+    sessionId,
+  };
+}
+
+function compareDiagnosticAlerts(left, right) {
+  const severity = diagnosticSeverityRank(right.severity) - diagnosticSeverityRank(left.severity);
+  if (severity !== 0) return severity;
+  return String(right.observedAt ?? "").localeCompare(String(left.observedAt ?? ""));
+}
+
+function materializeDiagnosticAlertReport(cacheEntry, { includeAcknowledged, stale }) {
+  const visible = cacheEntry.allAlerts.filter(
+    (alert) => includeAcknowledged || !alert.acknowledgedAt,
+  );
+  return {
+    sessionId: cacheEntry.sessionId,
+    projectPath: cacheEntry.projectPath,
+    projectionGeneration: cacheEntry.projectionGeneration,
+    stale,
+    policy: cacheEntry.policy,
+    snoozed: cacheEntry.snoozed,
+    alerts: cacheEntry.snoozed ? [] : visible,
+    suppressedBySnooze: cacheEntry.snoozed ? visible.length : 0,
+    acknowledgedCount: cacheEntry.allAlerts.filter((alert) => alert.acknowledgedAt).length,
+  };
 }

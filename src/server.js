@@ -1,13 +1,14 @@
-import { randomBytes } from "node:crypto";
 import { existsSync, readFileSync } from "node:fs";
 import { createServer } from "node:http";
 import { homedir } from "node:os";
-import { dirname, isAbsolute, join, relative, resolve } from "node:path";
-import { fileURLToPath, pathToFileURL } from "node:url";
-import { spawn } from "node:child_process";
+import { dirname, join, resolve } from "node:path";
+import { fileURLToPath } from "node:url";
+import { createBrowserAuth, ensureBrowserAuthSecret } from "./browser-auth.js";
+import { CodexUsageUnavailableError } from "./codex-usage-client.js";
 import { MonitorDatabase } from "./database.js";
 import { UsageMonitor } from "./monitor.js";
 import { CodexRepository } from "./repository.js";
+import { resolveDatabaseStorage, resolveRuntimeLayout } from "./runtime-layout.js";
 import { resolveLocalDayRange } from "./snapshot-scope.js";
 
 const sourceDirectory = dirname(fileURLToPath(import.meta.url));
@@ -24,20 +25,41 @@ const STATIC_FILES = new Map([
 const ID_PATTERN = /^[a-zA-Z0-9_-]{8,128}$/u;
 
 export async function startApplication(options = {}) {
+  const environment = options.environment ?? process.env;
+  const runtimeLayout = options.runtimeLayout ?? resolveRuntimeLayout({
+    entryPath: options.entryPath,
+    environment,
+    localAppData: options.localAppData ?? environment.LOCALAPPDATA,
+    projectRoot: options.projectRoot ?? projectRoot,
+  });
   const codexHomeResolution = resolveCodexHome(options.codexHome);
   const codexHome = codexHomeResolution.path;
-  const databaseResolution = resolveDatabaseStorage(options.databasePath);
+  const databaseResolution = resolveDatabaseStorage({
+    layout: runtimeLayout,
+    optionValue: options.databasePath,
+    environment,
+  });
   const databasePath = databaseResolution.path;
   const preferredPort = Number(
-    options.port ?? process.env.CODEX_MONITOR_PORT ?? 47_832,
+    options.port ?? environment.CODEX_MONITOR_PORT ?? 47_832,
   );
+  if (!Number.isInteger(preferredPort) || preferredPort < 1 || preferredPort > 65_535) {
+    throw new RangeError("CODEX_MONITOR_PORT 必须是 1-65535 的整数");
+  }
+  const browserAuthSecret = options.browserAuthSecret ?? ensureBrowserAuthSecret({
+    stateRoot: runtimeLayout.stateRoot,
+    mutableRoot: runtimeLayout.mutableRoot,
+  });
+  const browserAuth = createBrowserAuth({
+    secret: browserAuthSecret,
+    now: options.browserAuthNow,
+    randomBytes: options.browserAuthRandomBytes,
+  });
   const database = new MonitorDatabase(databasePath);
   const repository = new CodexRepository(codexHome, database);
   const monitor = new UsageMonitor({ repository, database });
   await monitor.initialize();
 
-  let launchToken = randomBytes(24).toString("base64url");
-  const sessionSecret = randomBytes(24).toString("base64url");
   let boundPort = preferredPort;
   let server;
 
@@ -46,27 +68,50 @@ export async function startApplication(options = {}) {
       applySecurityHeaders(response);
       if (!isAllowedHost(request.headers.host, boundPort)) return sendText(response, 403, "Host 不受信任");
       if (!isAllowedOrigin(request)) return sendText(response, 403, "Origin 不受信任");
-      if (request.method !== "GET" && request.method !== "HEAD") {
+      const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
+      const requestOrigin = `http://${request.headers.host}`;
+      const allowedMutation = request.method === "POST" && isAllowedApiMutationPath(url.pathname);
+      if (request.method !== "GET" && request.method !== "HEAD" && !allowedMutation) {
         response.setHeader("Allow", "GET, HEAD");
         return sendText(response, 405, "只支持只读请求");
       }
 
-      const url = new URL(request.url ?? "/", `http://${request.headers.host}`);
-      if (url.pathname === "/favicon.ico") return sendEmpty(response, 204);
-      if (url.pathname === "/" && launchToken && url.searchParams.get("token") === launchToken) {
-        launchToken = null;
+      if (url.pathname === "/auth/challenge") {
+        if (request.method !== "GET") return sendText(response, 405, "challenge 仅支持 GET");
+        return sendJson(response, 200, browserAuth.createBootstrapChallenge(requestOrigin));
+      }
+      if (url.pathname === "/auth/bootstrap") {
+        if (request.method !== "GET") return sendText(response, 405, "bootstrap 仅支持 GET");
+        const protocolVersion = Number(url.searchParams.get("version"));
+        const challenge = url.searchParams.get("challenge");
+        const expiresAt = Number(url.searchParams.get("expiresAt"));
+        const proof = url.searchParams.get("proof");
+        if (!challenge || !proof || !Number.isFinite(expiresAt)) {
+          return sendText(response, 400, "浏览器授权参数无效");
+        }
+        const valid = browserAuth.consumeBootstrapProof({
+          origin: requestOrigin,
+          challenge,
+          proof,
+          expiresAt,
+          protocolVersion,
+        });
+        if (!valid) return sendText(response, 401, "浏览器授权已失效或无效");
+        const cookieValue = browserAuth.issueCookie(requestOrigin);
         response.statusCode = 302;
         response.setHeader(
           "Set-Cookie",
-          `codex_monitor=${sessionSecret}; HttpOnly; SameSite=Strict; Path=/`,
+          `codex_monitor=${cookieValue}; HttpOnly; SameSite=Strict; Path=/; Max-Age=15552000`,
         );
+        response.setHeader("Cache-Control", "no-store");
         response.setHeader("Location", "/");
         return response.end();
       }
 
-      if (!hasValidSession(request, sessionSecret)) {
-        return sendText(response, 401, "请使用启动命令输出的本次访问链接");
+      if (!hasValidSession(request, browserAuth, requestOrigin)) {
+        return sendText(response, 401, "浏览器尚未授权；请运行 codex-usage-monitor open");
       }
+      if (url.pathname === "/favicon.ico") return sendEmpty(response, 204);
 
       if (url.pathname.startsWith("/api/")) {
         return await handleApi({ request, response, url, monitor });
@@ -85,9 +130,15 @@ export async function startApplication(options = {}) {
     }
   };
 
-  ({ server, port: boundPort } = await listenOnAvailable(handler, preferredPort));
-  const accessUrl = `http://127.0.0.1:${boundPort}/?token=${launchToken}`;
-  if (options.openBrowser !== false) openBrowser(accessUrl);
+  try {
+    ({ server, port: boundPort } = await listenExactly(handler, preferredPort));
+  } catch (error) {
+    await monitor.close().catch(() => {});
+    database.close();
+    throw error;
+  }
+  const origin = `http://127.0.0.1:${boundPort}`;
+  const accessUrl = `${origin}/`;
 
   const close = async () => {
     await monitor.close();
@@ -99,10 +150,12 @@ export async function startApplication(options = {}) {
     server,
     port: boundPort,
     accessUrl,
+    origin,
     codexHome,
     codexHomeResolution,
     databasePath,
     databaseResolution,
+    runtimeLayout,
     monitor,
     close,
   };
@@ -146,38 +199,8 @@ export function resolveCodexHome(
 }
 
 export function resolveDatabasePath(optionValue, environment = process.env) {
-  return resolveDatabaseStorage(optionValue, environment).path;
-}
-
-function resolveDatabaseStorage(optionValue, environment = process.env) {
-  const defaultPath = join(projectRoot, "data", "usage.sqlite");
-  if (optionValue) {
-    return {
-      path: isAbsolute(optionValue) ? resolve(optionValue) : resolve(projectRoot, optionValue),
-      source: "option",
-      warning: null,
-    };
-  }
-
-  const configured = environment.CODEX_MONITOR_DB;
-  if (!configured) return { path: defaultPath, source: "project-default", warning: null };
-  const candidate = isAbsolute(configured) ? resolve(configured) : resolve(projectRoot, configured);
-  if (isInsideProject(candidate)) {
-    return { path: candidate, source: "environment", warning: null };
-  }
-  return {
-    path: defaultPath,
-    source: "project-default",
-    warning: `CODEX_MONITOR_DB 指向工程目录之外，为保持可移植存储已改用：${defaultPath}`,
-  };
-}
-
-function isInsideProject(candidate) {
-  const relativePath = relative(projectRoot, candidate);
-  return relativePath === "" || (
-    !isAbsolute(relativePath) &&
-    relativePath.split(/[\\/]/u)[0] !== ".."
-  );
+  const layout = resolveRuntimeLayout({ environment, projectRoot });
+  return resolveDatabaseStorage({ layout, optionValue, environment }).path;
 }
 
 async function handleApi({ request, response, url, monitor }) {
@@ -189,12 +212,73 @@ async function handleApi({ request, response, url, monitor }) {
     return sendJson(response, 200, await monitor.timeline());
   }
   if (url.pathname === "/api/quota") {
-    const quota = url.searchParams.get("refresh") === "1"
-      ? await monitor.refreshQuotaNow()
-      : monitor.quota();
-    return sendJson(response, 200, { quota });
+    try {
+      const quota = url.searchParams.get("refresh") === "1"
+        ? await monitor.refreshQuotaNow()
+        : monitor.quota();
+      return sendJson(response, 200, { quota });
+    } catch (error) {
+      if (error instanceof CodexUsageUnavailableError) {
+        return sendJson(response, 503, { error: error.message, code: error.code });
+      }
+      throw error;
+    }
   }
   if (url.pathname === "/api/health") return sendJson(response, 200, { health: monitor.health() });
+
+  const alertPolicyMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostic-alert-policy$/u);
+  if (alertPolicyMatch) {
+    const sessionId = decodeAndValidateId(alertPolicyMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    if (request.method !== "POST") return sendJson(response, 405, { error: "该接口仅支持 POST" });
+    const body = await readJsonBody(request);
+    if (body.error) return sendJson(response, body.status, { error: body.error });
+    try {
+      const policy = monitor.updateDiagnosticAlertPolicy(sessionId, body.value);
+      return policy
+        ? sendJson(response, 200, { policy })
+        : sendJson(response, 404, { error: "找不到该会话或工程" });
+    } catch (error) {
+      if (error instanceof RangeError) return sendJson(response, 400, { error: error.message });
+      throw error;
+    }
+  }
+
+  const alertSnoozeMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostic-alerts\/snooze$/u);
+  if (alertSnoozeMatch) {
+    const sessionId = decodeAndValidateId(alertSnoozeMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    if (request.method !== "POST") return sendJson(response, 405, { error: "该接口仅支持 POST" });
+    const policy = monitor.snoozeDiagnosticAlerts(sessionId);
+    return policy
+      ? sendJson(response, 200, { policy })
+      : sendJson(response, 404, { error: "找不到该会话或工程" });
+  }
+
+  const alertAckMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/diagnostic-alerts\/([^/]+)\/ack$/u,
+  );
+  if (alertAckMatch) {
+    const sessionId = decodeAndValidateId(alertAckMatch[1]);
+    const alertId = decodeAndValidateId(alertAckMatch[2]);
+    if (!sessionId || !alertId) return sendJson(response, 400, { error: "会话或 Alert ID 无效" });
+    if (request.method !== "POST") return sendJson(response, 405, { error: "该接口仅支持 POST" });
+    const acknowledgement = monitor.acknowledgeDiagnosticAlert(sessionId, alertId);
+    if (acknowledgement == null) return sendJson(response, 404, { error: "找不到该会话" });
+    if (acknowledgement === false) return sendJson(response, 404, { error: "当前会话不存在该 Alert" });
+    return sendJson(response, 200, { acknowledgement });
+  }
+
+  const alertsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostic-alerts$/u);
+  if (alertsMatch) {
+    const sessionId = decodeAndValidateId(alertsMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    if (request.method !== "GET") return sendJson(response, 405, { error: "该接口仅支持 GET" });
+    const payload = monitor.diagnosticAlerts(sessionId);
+    return payload
+      ? sendJson(response, 200, payload)
+      : sendJson(response, 404, { error: "找不到该会话或工程" });
+  }
 
   const taskRequestsMatch = url.pathname.match(
     /^\/api\/sessions\/([^/]+)\/tasks\/([^/]+)\/([^/]+)\/requests$/u,
@@ -215,6 +299,100 @@ async function handleApi({ request, response, url, monitor }) {
       ...body,
       nextCursor: nextAfter ? encodeTaskRequestCursor(nextAfter) : null,
     });
+  }
+
+  const requestContentMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/requests\/([^/]+)\/content$/u,
+  );
+  if (requestContentMatch) {
+    const sessionId = decodeAndValidateId(requestContentMatch[1]);
+    const requestId = decodeAndValidateId(requestContentMatch[2]);
+    if (!sessionId || !requestId) {
+      return sendJson(response, 400, { error: "会话或 Request ID 无效" });
+    }
+    if ([...url.searchParams.keys()].length > 0) {
+      return sendJson(response, 400, { error: "Request Content 接口不接受查询参数" });
+    }
+    const payload = await monitor.requestContent(sessionId, requestId);
+    if (!payload) return sendJson(response, 404, { error: "找不到该 Request" });
+    if (request.method === "HEAD") return sendJsonHead(response, 200);
+    return sendJson(response, 200, payload);
+  }
+
+  const requestInputContextMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/requests\/([^/]+)\/input-context$/u,
+  );
+  if (requestInputContextMatch) {
+    const sessionId = decodeAndValidateId(requestInputContextMatch[1]);
+    const requestId = decodeAndValidateId(requestInputContextMatch[2]);
+    if (!sessionId || !requestId) {
+      return sendJson(response, 400, { error: "会话或 Request ID 无效" });
+    }
+    if ([...url.searchParams.keys()].length > 0) {
+      return sendJson(response, 400, { error: "Input Context 接口不接受查询参数" });
+    }
+    const payload = await monitor.requestInputContext(sessionId, requestId);
+    if (!payload) return sendJson(response, 404, { error: "找不到该 Request" });
+    if (request.method === "HEAD") return sendJsonHead(response, 200);
+    return sendJson(response, 200, payload);
+  }
+
+  const requestContextDeltaMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/requests\/([^/]+)\/context-delta$/u,
+  );
+  if (requestContextDeltaMatch) {
+    const sessionId = decodeAndValidateId(requestContextDeltaMatch[1]);
+    const requestId = decodeAndValidateId(requestContextDeltaMatch[2]);
+    if (!sessionId || !requestId) {
+      return sendJson(response, 400, { error: "会话或 Request ID 无效" });
+    }
+    if ([...url.searchParams.keys()].length > 0) {
+      return sendJson(response, 400, { error: "Context Delta 接口不接受查询参数" });
+    }
+    const payload = await monitor.requestContextDelta(sessionId, requestId);
+    if (!payload) return sendJson(response, 404, { error: "找不到该 Request" });
+    if (request.method === "HEAD") return sendJsonHead(response, 200);
+    return sendJson(response, 200, payload);
+  }
+
+  const diagnosticsMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)\/diagnostics$/u);
+  if (diagnosticsMatch) {
+    const sessionId = decodeAndValidateId(diagnosticsMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    const scope = parseSnapshotScope(url);
+    if (scope.error) return sendJson(response, 400, { error: scope.error });
+    const payload = monitor.diagnostics(sessionId, scope.value);
+    return payload
+      ? sendJson(response, 200, payload)
+      : sendJson(response, 404, { error: "找不到该会话" });
+  }
+
+  const advancedDiagnosticsMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/advanced-diagnostics$/u,
+  );
+  if (advancedDiagnosticsMatch) {
+    const sessionId = decodeAndValidateId(advancedDiagnosticsMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    const scope = parseSnapshotScope(url);
+    if (scope.error) return sendJson(response, 400, { error: scope.error });
+    const payload = monitor.advancedDiagnostics(sessionId, scope.value);
+    return payload
+      ? sendJson(response, 200, payload)
+      : sendJson(response, 404, { error: "找不到该会话" });
+  }
+
+  const behavioralDiagnosticsMatch = url.pathname.match(
+    /^\/api\/sessions\/([^/]+)\/behavioral-diagnostics$/u,
+  );
+  if (behavioralDiagnosticsMatch) {
+    const sessionId = decodeAndValidateId(behavioralDiagnosticsMatch[1]);
+    if (!sessionId) return sendJson(response, 400, { error: "会话 ID 无效" });
+    const scope = parseSnapshotScope(url);
+    if (scope.error) return sendJson(response, 400, { error: scope.error });
+    const payload = monitor.behavioralDiagnostics(sessionId, scope.value);
+    return payload
+      ? sendJson(response, 200, payload)
+      : sendJson(response, 404, { error: "找不到该会话" });
   }
 
   const sessionMatch = url.pathname.match(/^\/api\/sessions\/([^/]+)$/u);
@@ -355,36 +533,33 @@ function sendEvent(response, event, data) {
   response.write(`data: ${JSON.stringify(data)}\n\n`);
 }
 
-async function listenOnAvailable(handler, preferredPort) {
-  for (let port = preferredPort; port < preferredPort + 11; port += 1) {
-    const server = createServer((request, response) => void handler(request, response));
-    const result = await new Promise((resolveListen) => {
-      const onError = (error) => resolveListen({ error });
-      server.once("error", onError);
-      server.listen(port, "127.0.0.1", () => {
-        server.off("error", onError);
-        resolveListen({ server });
-      });
+async function listenExactly(handler, port) {
+  const server = createServer((request, response) => void handler(request, response));
+  const result = await new Promise((resolveListen) => {
+    const onError = (error) => resolveListen({ error });
+    server.once("error", onError);
+    server.listen(port, "127.0.0.1", () => {
+      server.off("error", onError);
+      resolveListen({ server });
     });
-    if (result.server) return { server: result.server, port };
-    server.close();
-    if (result.error?.code !== "EADDRINUSE") throw result.error;
-  }
-  throw new Error(`端口 ${preferredPort}-${preferredPort + 10} 均被占用`);
-}
-
-function openBrowser(url) {
-  const child = spawn("cmd.exe", ["/c", "start", "", url], {
-    detached: true,
-    stdio: "ignore",
-    windowsHide: true,
   });
-  child.unref();
+  if (result.error) {
+    server.close();
+    if (result.error.code === "EADDRINUSE") {
+      const error = new Error(`端口 ${port} 已被占用`);
+      error.name = "PortInUseError";
+      error.code = "port_in_use";
+      error.systemCode = "EADDRINUSE";
+      throw error;
+    }
+    throw result.error;
+  }
+  return { server, port };
 }
 
-function hasValidSession(request, sessionSecret) {
+function hasValidSession(request, browserAuth, origin) {
   const cookies = parseCookies(request.headers.cookie ?? "");
-  return cookies.codex_monitor === sessionSecret;
+  return browserAuth.verifyCookie(cookies.codex_monitor, origin);
 }
 
 function parseCookies(header) {
@@ -405,6 +580,38 @@ function isAllowedOrigin(request) {
   const origin = request.headers.origin;
   if (!origin) return true;
   return origin === `http://${request.headers.host}`;
+}
+
+function isAllowedApiMutationPath(pathname) {
+  return Boolean(
+    /^\/api\/sessions\/[^/]+\/diagnostic-alert-policy$/u.test(pathname) ||
+    /^\/api\/sessions\/[^/]+\/diagnostic-alerts\/snooze$/u.test(pathname) ||
+    /^\/api\/sessions\/[^/]+\/diagnostic-alerts\/[^/]+\/ack$/u.test(pathname)
+  );
+}
+
+async function readJsonBody(request, { maxBytes = 8_192 } = {}) {
+  const contentType = String(request.headers["content-type"] ?? "").toLowerCase();
+  if (!contentType.startsWith("application/json")) {
+    return { error: "Content-Type 必须为 application/json", status: 415 };
+  }
+  let size = 0;
+  const chunks = [];
+  try {
+    for await (const chunk of request) {
+      size += chunk.length;
+      if (size > maxBytes) return { error: "JSON 请求体过大", status: 413 };
+      chunks.push(chunk);
+    }
+    const text = Buffer.concat(chunks).toString("utf8");
+    const value = text ? JSON.parse(text) : {};
+    if (!value || typeof value !== "object" || Array.isArray(value)) {
+      return { error: "JSON 请求体必须是对象", status: 400 };
+    }
+    return { value };
+  } catch {
+    return { error: "JSON 请求体无效", status: 400 };
+  }
 }
 
 function decodeAndValidateId(raw) {
@@ -433,6 +640,12 @@ function sendJson(response, status, payload) {
   response.end(JSON.stringify(payload));
 }
 
+function sendJsonHead(response, status) {
+  response.statusCode = status;
+  response.setHeader("Content-Type", "application/json; charset=utf-8");
+  response.end();
+}
+
 function sendText(response, status, text) {
   response.statusCode = status;
   response.setHeader("Content-Type", "text/plain; charset=utf-8");
@@ -442,30 +655,4 @@ function sendText(response, status, text) {
 function sendEmpty(response, status) {
   response.statusCode = status;
   response.end();
-}
-
-async function main() {
-  const openBrowser = !process.argv.includes("--no-open");
-  const app = await startApplication({ openBrowser });
-  process.stdout.write(`Codex Usage Monitor\n${app.accessUrl}\n`);
-  if (app.codexHomeResolution.warning) {
-    process.stderr.write(`${app.codexHomeResolution.warning}\n`);
-  }
-  if (app.databaseResolution.warning) {
-    process.stderr.write(`${app.databaseResolution.warning}\n`);
-  }
-  const shutdown = async () => {
-    await app.close();
-    process.exit(0);
-  };
-  process.once("SIGINT", () => void shutdown());
-  process.once("SIGTERM", () => void shutdown());
-}
-
-const isMain = process.argv[1] && import.meta.url === pathToFileURL(resolve(process.argv[1])).href;
-if (isMain) {
-  main().catch((error) => {
-    process.stderr.write(`${error.stack ?? error.message}\n`);
-    process.exitCode = 1;
-  });
 }

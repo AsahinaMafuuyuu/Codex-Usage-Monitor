@@ -16,7 +16,7 @@
 ## 不可破坏的不变量
 
 - `.codex` 是只读数据源：不得改写 rollout、`session_index.jsonl`、最新的 `state_*.sqlite` 或 `config.toml`。
-- 监控器不得启动或 resume Codex App Server，不得启用 Hooks/OTel，不得调用模型或联网补全数据。
+- 监控器不得启动或 resume Codex App Server，不得启用 Hooks/OTel，不得调用模型或联网补全 Task/Token/Cost 数据。唯一网络例外由 ADR-0025 约束：账号额度可以只读调用 Codex 官方 Usage endpoint；不得把该接口用于补算本地 Request Ledger，也不得写回 Codex 配置或认证文件。
 - 主任务用量必须来自经相邻 `total_token_usage` 逐字段证明的 Request Ledger 事件；`last_token_usage` 只能作为候选新增量接受累计快照验证，严禁裸累加。schema v11 起 Request Ledger 是唯一运行时用量事实源；已退役的 Boundary Ledger 只保存在 Git 历史 tag `usage-boundary-ledger-v1`，不得在没有新 ADR 和回归证据时重新引入。
 - 必须尊重 `subagent_history_start_ordinal`，防止分页复制的父历史被重复归因。
 - 累计值倒退、缺前序累计快照、字段缺失、unverified/anomaly 等情况必须保留对应质量/coverage 状态；只有已验证 Request Ledger 部分可以进入主用量，不得用旧边界差分、Profile 数字或补偿系数填平缺口。

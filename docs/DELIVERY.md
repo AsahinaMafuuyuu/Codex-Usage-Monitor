@@ -8,6 +8,51 @@
 
 **运行要求：** Windows、Node.js 24+
 
+## Phase 23：Usage Diagnostics
+
+**状态：Implemented / Verified。** 已在现有 canonical Request accounting 之上交付独立确定性诊断层，覆盖 Context Inflation、Cache Regression/Breakpoint、Cost Spike 和 Long Context Trigger。实现保持 Request Ledger / ownership / pricing accounting 不变，不新增模型调用，也不读取或持久化 Prompt/Response。
+
+- 设计方案：[DESIGN-USAGE-DIAGNOSTICS.md](DESIGN-USAGE-DIAGNOSTICS.md)
+- 技术实现：[TECHNICAL-IMPLEMENTATION-USAGE-DIAGNOSTICS.md](TECHNICAL-IMPLEMENTATION-USAGE-DIAGNOSTICS.md)
+- 交付契约：[DELIVERY-USAGE-DIAGNOSTICS.md](DELIVERY-USAGE-DIAGNOSTICS.md)
+- 架构决策：[ADR-0026](decisions/0026-deterministic-usage-diagnostics-projection.md)
+
+实际 Shadow Validation、性能、Chrome/CDP、accounting reconciliation 与 `.codex` read-only 证据已写入 [VERIFICATION.md](VERIFICATION.md)。
+
+## Phase 24A：Advanced Usage Diagnostics
+
+**状态：Implemented / Verified。** Phase 24A 已在 Phase 23 Local Diagnostics 之外交付独立 Historical Robust Diagnostics 层：strict historical cohort、Median/MAD/Robust-Z、Historical Context/Cache/Cost、Session Cohort Slice 与 Cross-session Context/Cache/Cost regression 均已实现，并通过 real-history shadow、性能、浏览器、安全、accounting 与 rollout read-only gate。
+
+- 设计方案：[DESIGN-ADVANCED-USAGE-DIAGNOSTICS.md](DESIGN-ADVANCED-USAGE-DIAGNOSTICS.md)
+- 技术实现：[TECHNICAL-IMPLEMENTATION-ADVANCED-USAGE-DIAGNOSTICS.md](TECHNICAL-IMPLEMENTATION-ADVANCED-USAGE-DIAGNOSTICS.md)
+- 交付契约：[DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md](DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md)
+- 架构决策：[ADR-0027](decisions/0027-historical-robust-usage-diagnostics.md)
+
+`advanced-usage-diagnostics-v1` 已基于 `242 sessions / 30,198 canonical Requests` 的真实 shadow 冻结；20 轮 warm benchmark 为 common P95 `84.298ms`、最大真实工程最新 Session P95 `416.362ms`。UI 已分为 Local / Historical / Cross-session，并复用 Canonical Request audit。
+
+## Phase 24B1：Behavioral Usage Diagnostics
+
+**状态：Implemented / Verified。** Reasoning Anomaly、Request Burst 与 Subagent Amplification 已在独立 `src/behavioral-diagnostics.js` 中实现，继续只消费 canonical metadata、Task effort 与 Agent lineage，不读取 Prompt/Response、不新增模型调用或外部网络。
+
+- 架构决策：[ADR-0028](decisions/0028-deterministic-behavioral-usage-diagnostics.md)
+- 交付契约：[DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md](DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md)
+- Final shadow：`26 findings / 30,198 Requests`（Reasoning `24`、Burst `1`、Subagent Amplification `1`，约 `0.09/100`）。
+- 20 轮 warm benchmark：common P95 `85.607ms`；最大真实工程最新 Session P95 `381.353ms`。
+- Chrome/CDP 已验证 Behavioral Request/Session family、median/MAD/Z/effect、Canonical Request evidence locator、SSE state 与 720px 窄屏。
+
+## Phase 24B2：Budget / In-app Notification
+
+**状态：Implemented / Verified。** [ADR-0029](decisions/0029-local-diagnostic-budget-notification-state.md) 已接受并实现：SQLite schema 从 v14 升至 v15，但只新增 alert policy / acknowledgement operational tables；canonical Request accounting 与 calendar projection 语义不变。Budget 使用 Session `Subscription Standard-Rate Equivalent`，并支持 Warning/High 最低等级、Ack、Snooze/cooldown 与本机 in-app Alerts。
+
+- 通知不发送邮件、Webhook 或其他外部消息；LLM Root-Cause Explanation 仍未实现。
+- 本地写接口采用严格 POST allowlist，Host / Origin / Strict Cookie 继续作为安全边界，其他 POST 仍返回 `405`。
+- Alerts 使用 projection-generation scoped cache，policy/Ack/Snooze 或 generation 变化即失效，最多缓存 32 个 Session。
+- 最终 20 轮 steady-state warm HTTP：common P95 `2.208ms`；最大真实工程最新 Session P95 `2.335ms`。
+- schema v15 reconciliation 仍为 canonical/calendar `30,201 Requests / 3,712,877,422 total tokens`，known calendar cost `$2569.48648723`；`.codex` 450 rollout manifest 仍为 `8d535514aef5b8dff3fa532afeb01922fc2e9e46941bf52d5899fc3cf0a02fee`。
+- 最终全量自动化：`npm test`=`176 tests / 175 passed / 0 failed / 1 optional skipped`，`npm run check` 与 `git diff --check` Green。
+
+**LLM Root-Cause Explanation：Pending。** 该能力会突破 `no-model-call / no-new-network` 边界，必须另立 ADR，并冻结 explicit opt-in、data-egress 与模型调用费用契约。
+
 ## 交付范围
 
 本版本交付一个只读、仅本机可访问的 Codex 子智能体用量监控器。它能发现根会话及递归子智能体，把累计 token 快照归因到单个 `thread_id + turn_id` 任务，持久化派生结果，并通过中文页面实时展示。

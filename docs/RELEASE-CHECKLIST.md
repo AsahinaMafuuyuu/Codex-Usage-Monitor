@@ -42,3 +42,29 @@ git diff --cached --stat
 - [ ] 提交信息准确反映交付内容。
 - [ ] 提交后工作区只剩预期的 ignored runtime 文件。
 - [ ] 只有明确发布时才创建版本 tag；没有远程授权时不 push。
+
+## Phase 28 Managed Release gate
+
+- [ ] `package.json.version`、`package-lock.json` root version、SemVer tag 与 `docs/releases/vX.Y.Z.md` 完全一致。
+- [ ] `node scripts/verify-release-gate.js --tag vX.Y.Z` 通过。
+- [ ] release build 使用 clean tagged checkout；禁止从 dirty worktree 生成正式发布资产。
+- [ ] `release-manifest.json` 的 version/tag/commit/runtime/storage 与 ZIP 内 `build-manifest.json` 一致。
+- [ ] release ZIP 的 exact size 与 SHA-256 已由 `scripts/verify-release.js` 复核。
+- [ ] clean extract 后直接运行 `--version` 与 `doctor --release-self-check`，不执行 `npm install`/`npm ci`。
+- [ ] artifact 不含 `data/state/backups/downloads`、SQLite、日志、`.codex`、`.git`、browser auth secret 或其他凭据。
+- [ ] Managed install/update/rollback 与 SQLite compatibility/restore smoke tests 已在临时 `%LOCALAPPDATA%` 真实执行。
+- [ ] GitHub Actions 仅创建 Draft Release；由维护者复核资产后显式 Publish。
+- [ ] Publish 前重新确认 stable updater 不消费 Draft/Prerelease。
+
+### Phase 28 implementation verification baseline (2026-09-05)
+
+本节记录实现验证，不替代上面的**每次正式发布**手工 checklist：
+
+- local full suite: `274 tests / 273 passed / 0 failed / 1 existing optional skipped`；
+- `npm run check` / `git diff --check`: PASS；
+- deterministic release build + clean extract `--version` / release self-check: PASS；
+- temp `%LOCALAPPDATA%` Managed Install + SQLite migration + stable shim: PASS；
+- clean artifact `v1.2.0 install -> temporary v1.2.1 update -> v1.2.0 rollback`: PASS；
+- accounting before/after: `30,239` canonical Requests、`3,718,496,297` total tokens、known cost `$2579.79482923`，一致；
+- `.codex`: `452` rollout，combined SHA-256 `fb704efd96f4dc0019737a0ed9bed8fc7ecfe394f6029db8e9cb15302cc813cf`，一致；
+- 未创建/push 正式 tag，未实际创建 GitHub Draft，未 Publish；这些项目必须在 clean tagged checkout 上重新执行本清单。

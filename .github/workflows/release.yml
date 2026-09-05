@@ -1,0 +1,86 @@
+name: Draft Release
+
+on:
+  push:
+    tags:
+      - 'v*.*.*'
+
+jobs:
+  verify:
+    runs-on: windows-latest
+    permissions:
+      contents: read
+    steps:
+      - name: Checkout exact tag
+        uses: actions/checkout@v4
+        with:
+          fetch-depth: 0
+
+      - name: Setup Node 24
+        uses: actions/setup-node@v4
+        with:
+          node-version: '24'
+          cache: npm
+
+      - name: Install dependencies
+        run: npm ci
+
+      - name: Verify tag, package, lock, and release note
+        shell: pwsh
+        run: node scripts/verify-release-gate.js --tag "${{ github.ref_name }}"
+
+      - name: Test
+        run: npm test
+
+      - name: Syntax and static checks
+        run: npm run check
+
+      - name: Diff hygiene
+        run: git diff --check
+
+      - name: Build runtime release
+        shell: pwsh
+        run: node --disable-warning=ExperimentalWarning scripts/build-release.js --tag "${{ github.ref_name }}" --commit "${{ github.sha }}" --output-dir dist/release
+
+      - name: Verify clean release artifact
+        shell: pwsh
+        run: node --disable-warning=ExperimentalWarning scripts/verify-release.js --manifest dist/release/release-manifest.json --artifact "dist/release/codex-usage-monitor-${{ github.ref_name }}-win.zip"
+
+      - name: Upload verified release assets
+        uses: actions/upload-artifact@v4
+        with:
+          name: verified-release-assets
+          if-no-files-found: error
+          path: |
+            dist/release/codex-usage-monitor-${{ github.ref_name }}-win.zip
+            dist/release/release-manifest.json
+            dist/release/install.ps1
+
+  draft:
+    needs: verify
+    runs-on: windows-latest
+    permissions:
+      contents: write
+    steps:
+      - name: Checkout release note
+        uses: actions/checkout@v4
+
+      - name: Download verified release assets
+        uses: actions/download-artifact@v4
+        with:
+          name: verified-release-assets
+          path: dist/release
+
+      - name: Create Draft GitHub Release
+        shell: pwsh
+        env:
+          GH_TOKEN: ${{ github.token }}
+        run: |
+          gh release create "${{ github.ref_name }}" `
+            --draft `
+            --verify-tag `
+            --title "Codex Usage Monitor ${{ github.ref_name }}" `
+            --notes-file "docs/releases/${{ github.ref_name }}.md" `
+            "dist/release/codex-usage-monitor-${{ github.ref_name }}-win.zip" `
+            "dist/release/release-manifest.json" `
+            "dist/release/install.ps1"

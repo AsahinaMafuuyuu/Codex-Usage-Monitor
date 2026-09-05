@@ -11,6 +11,34 @@ const state = {
   connected: false,
   quotaRefreshing: false,
   requestDetails: new Map(),
+  diagnostics: null,
+  highlightedRequestId: null,
+  requestInspector: {
+    open: false,
+    requestId: null,
+    loading: false,
+    error: null,
+    payload: null,
+    activeTab: "interaction",
+    inputContext: {
+      loading: false,
+      error: null,
+      payload: null,
+      abortController: null,
+    },
+    contextDelta: {
+      loading: false,
+      error: null,
+      payload: null,
+      abortController: null,
+    },
+    stale: false,
+    selectionVersion: 0,
+    projectionGeneration: null,
+    abortController: null,
+    trigger: null,
+    restoreFocusOnClose: true,
+  },
 };
 
 const REQUEST_PAGE_SIZE = 10;
@@ -24,7 +52,11 @@ const elements = Object.fromEntries(
     "session-version", "hero-total", "agent-count", "task-count-label", "task-count", "active-task-count",
     "input-total", "cached-total", "cache-hit-rate", "output-total", "session-cost",
     "session-cost-coverage", "quota-plan", "quota-refresh", "quota-windows",
-    "agent-tree", "toast",
+    "diagnostics-summary", "diagnostics-toggle", "diagnostics-panel", "diagnostics-state", "diagnostics-findings",
+    "diagnostic-alert-summary", "diagnostic-alert-snooze", "diagnostic-alert-policy-form",
+    "diagnostic-budget-usd", "diagnostic-alert-severity", "diagnostic-alert-cooldown", "diagnostic-alerts",
+    "agent-tree", "request-inspector", "request-inspector-title", "request-inspector-evidence",
+    "request-inspector-body", "request-inspector-close", "toast",
   ].map((id) => [id, document.getElementById(id)]),
 );
 
@@ -35,6 +67,7 @@ const dateFormatter = new Intl.DateTimeFormat("zh-CN", {
 });
 
 refreshLucideIcons();
+installLiveQaHooks();
 
 function refreshLucideIcons() {
   window.lucide?.createIcons({
@@ -43,6 +76,12 @@ function refreshLucideIcons() {
       "stroke-width": 1.8,
     },
   });
+}
+
+function installLiveQaHooks() {
+  if (!window.__codexLiveUiQa || typeof window.__codexLiveUiQa !== "object") return;
+  window.__codexLiveUiQa.renderRequestContentItem = renderRequestContentItem;
+  window.__codexLiveUiQa.renderRequestContextDeltaTab = renderRequestContextDeltaTab;
 }
 
 elements["session-search"].addEventListener("input", (event) => {
@@ -75,6 +114,11 @@ elements["session-list"].addEventListener("click", (event) => {
   if (button) void selectSession(button.dataset.sessionId, button.dataset.sessionDay ?? null);
 });
 elements["agent-tree"].addEventListener("click", (event) => {
+  const requestInspect = event.target.closest("[data-request-inspect]");
+  if (requestInspect) {
+    void openRequestInspector(requestInspect);
+    return;
+  }
   const requestCollapse = event.target.closest("[data-request-collapse]");
   if (requestCollapse) {
     void toggleTaskRequests(requestCollapse.dataset.threadId, requestCollapse.dataset.turnId, { forceOpen: false });
@@ -110,6 +154,62 @@ elements["agent-tree"].addEventListener("keydown", (event) => {
 });
 elements["agent-tree"].addEventListener("wheel", routeTaskWheelToWorkspace, { passive: false });
 elements["quota-refresh"].addEventListener("click", () => void refreshQuota());
+elements["diagnostics-toggle"].addEventListener("click", () => void toggleDiagnosticsPanel());
+elements["diagnostics-panel"].addEventListener("click", (event) => {
+  const alertAck = event.target.closest("[data-diagnostic-alert-ack]");
+  if (alertAck) {
+    void acknowledgeDiagnosticAlert(alertAck.dataset.diagnosticAlertAck);
+    return;
+  }
+  const alertLocate = event.target.closest("[data-diagnostic-alert-locate]");
+  if (alertLocate) {
+    const alert = state.diagnostics?.alertsReport?.alerts?.find(
+      (candidate) => candidate.alertId === alertLocate.dataset.diagnosticAlertLocate,
+    );
+    if (alert?.locator) void locateDiagnosticRequest({ locator: alert.locator });
+    return;
+  }
+  const control = event.target.closest("[data-diagnostic-locate]");
+  if (!control) return;
+  const finding = state.diagnostics?.report?.findings?.find(
+    (candidate) => candidate.findingId === control.dataset.diagnosticLocate,
+  );
+  if (finding) void locateDiagnosticRequest(finding);
+});
+elements["diagnostic-alert-policy-form"].addEventListener("submit", (event) => {
+  event.preventDefault();
+  void saveDiagnosticAlertPolicy();
+});
+elements["diagnostic-alert-snooze"].addEventListener("click", () => void snoozeDiagnosticAlerts());
+elements["request-inspector-close"].addEventListener("click", () => closeRequestInspector());
+elements["request-inspector"].addEventListener("click", (event) => {
+  const tab = event.target.closest("[data-request-inspector-tab]");
+  if (tab) {
+    const nextTab = tab.dataset.requestInspectorTab === "input_context"
+      ? "input_context"
+      : tab.dataset.requestInspectorTab === "context_delta"
+        ? "context_delta"
+        : "interaction";
+    state.requestInspector.activeTab = nextTab;
+    renderRequestInspector();
+    if (nextTab === "input_context" && !state.requestInspector.inputContext.payload) {
+      void loadRequestInputContext();
+    } else if (nextTab === "context_delta" && !state.requestInspector.contextDelta.payload) {
+      void loadRequestContextDelta();
+    }
+    return;
+  }
+  const refresh = event.target.closest("[data-request-inspector-refresh]");
+  if (refresh) {
+    if (state.requestInspector.activeTab === "input_context") void loadRequestInputContext({ force: true });
+    else if (state.requestInspector.activeTab === "context_delta") void loadRequestContextDelta({ force: true });
+    else void refreshRequestInspector();
+  }
+});
+elements["request-inspector"].addEventListener("close", () => releaseRequestInspectorContent());
+elements["request-inspector"].addEventListener("cancel", () => {
+  state.requestInspector.restoreFocusOnClose = true;
+});
 
 function routeTaskWheelToWorkspace(event) {
   const wrap = event.target.closest?.(".task-table-wrap");
@@ -174,7 +274,10 @@ async function selectSession(sessionId, requestedDay = null) {
   const previousSelectionKey = `${state.selectedId ?? ""}|${state.selectedDay ?? ""}`;
   const nextSelectionKey = `${sessionId}|${day ?? ""}`;
   if (previousSelectionKey !== nextSelectionKey) {
+    closeRequestInspector({ restoreFocus: false });
     state.requestDetails.clear();
+    state.diagnostics = createDiagnosticsState(nextSelectionKey);
+    state.highlightedRequestId = null;
   }
   state.selectedId = sessionId;
   state.selectedDay = day;
@@ -195,6 +298,7 @@ async function selectSession(sessionId, requestedDay = null) {
       setLoading(false);
       renderDashboard();
     });
+    void loadDiagnostics(selectionVersion);
     connectEvents(sessionId, day, selectionVersion);
   } catch (error) {
     if (selectionVersion !== state.selectionVersion) return;
@@ -220,8 +324,10 @@ function connectEvents(sessionId, day, selectionVersion) {
       day !== state.selectedDay
     ) return;
     state.snapshot = JSON.parse(event.data);
+    markRequestInspectorStaleIfNeeded();
     renderDashboard();
     void refreshStaleOpenRequestDetails();
+    void refreshDiagnosticsIfStale();
     if (state.sessionView === "time") void refreshTimelineNavigation(selectionVersion);
   });
   source.addEventListener("quota", (event) => {
@@ -524,6 +630,7 @@ function renderDashboard() {
     ? `更新 ${formatDate(snapshot.health.lastUpdateAt)}`
     : `导入 ${formatDate(snapshot.session.importedAt)}`;
   renderQuota();
+  renderDiagnostics();
   renderAgents();
   setHealth(snapshot.health);
 }
@@ -531,8 +638,8 @@ function renderDashboard() {
 function renderQuota() {
   const quota = state.snapshot?.quota;
   if (!quota) {
-    elements["quota-plan"].textContent = "暂无本地快照";
-    elements["quota-windows"].innerHTML = '<span class="empty-agent">等待下一条 rate_limits 记录</span>';
+    elements["quota-plan"].textContent = "暂无官方额度";
+    elements["quota-windows"].innerHTML = '<span class="empty-agent">等待 Codex Usage 返回额度</span>';
     syncQuotaRefreshButton();
     return;
   }
@@ -552,7 +659,7 @@ function renderQuota() {
 
 async function refreshQuota() {
   if (state.quotaRefreshing) return;
-  const previousObservedAt = state.snapshot?.quota?.observedAt ?? null;
+  const previousQuotaSignature = quotaValueSignature(state.snapshot?.quota);
   state.quotaRefreshing = true;
   syncQuotaRefreshButton();
   try {
@@ -560,12 +667,12 @@ async function refreshQuota() {
     if (state.snapshot) state.snapshot.quota = payload.quota;
     renderQuota();
     const currentObservedAt = payload.quota?.observedAt ?? null;
-    if (currentObservedAt && currentObservedAt !== previousObservedAt) {
+    if (payload.quota && quotaValueSignature(payload.quota) !== previousQuotaSignature) {
       toast(`额度已更新 · ${formatDate(currentObservedAt)}`);
     } else if (payload.quota) {
-      toast("已重新扫描本地额度，暂未发现新的快照");
+      toast("已查询官方 Codex Usage，额度暂无变化");
     } else {
-      toast("已重新扫描，但尚未发现 rate_limits 记录");
+      toast("官方 Codex Usage 暂未返回额度");
     }
   } catch (error) {
     toast(`额度刷新失败：${error.message}`);
@@ -573,6 +680,17 @@ async function refreshQuota() {
     state.quotaRefreshing = false;
     syncQuotaRefreshButton();
   }
+}
+
+function quotaValueSignature(quota) {
+  if (!quota) return "";
+  return JSON.stringify({
+    planType: quota.planType ?? null,
+    limitId: quota.limitId ?? null,
+    primary: quota.primary ?? null,
+    secondary: quota.secondary ?? null,
+    credits: quota.credits ?? null,
+  });
 }
 
 function syncQuotaRefreshButton() {
@@ -583,13 +701,556 @@ function syncQuotaRefreshButton() {
   button.setAttribute("aria-busy", String(state.quotaRefreshing));
   if (state.quotaRefreshing) {
     button.setAttribute("aria-label", "正在刷新账号额度");
-    button.title = "正在重新扫描本地 Codex 额度快照";
+    button.title = "正在查询官方 Codex Usage";
     return;
   }
   button.setAttribute("aria-label", "刷新账号额度");
   button.title = quota?.observedAt
     ? `刷新账号额度 · 当前快照 ${formatDate(quota.observedAt)}`
     : "刷新账号额度";
+}
+
+function createDiagnosticsState(selectionKey) {
+  return {
+    selectionKey,
+    open: false,
+    loading: false,
+    loaded: false,
+    error: null,
+    report: null,
+    alertsReport: null,
+    alertsLoading: false,
+    alertsError: null,
+    requestFindings: new Map(),
+    renderVersion: 0,
+  };
+}
+
+async function loadDiagnosticAlerts(selectionVersion, { force = false } = {}) {
+  if (!state.selectedId || selectionVersion !== state.selectionVersion) return;
+  const diagnostics = state.diagnostics;
+  if (!diagnostics || diagnostics.alertsLoading || (diagnostics.alertsReport && !force)) return;
+  diagnostics.alertsLoading = true;
+  diagnostics.alertsError = null;
+  renderDiagnosticAlerts();
+  try {
+    const report = await fetchJson(
+      `/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostic-alerts`,
+    );
+    if (selectionVersion !== state.selectionVersion || state.diagnostics !== diagnostics) return;
+    diagnostics.alertsReport = report;
+  } catch (error) {
+    if (selectionVersion === state.selectionVersion && state.diagnostics === diagnostics) {
+      diagnostics.alertsError = error.message;
+    }
+  } finally {
+    if (state.diagnostics === diagnostics) diagnostics.alertsLoading = false;
+    renderDiagnosticAlerts();
+  }
+}
+
+async function loadDiagnostics(selectionVersion, { force = false } = {}) {
+  if (!state.selectedId || selectionVersion !== state.selectionVersion) return;
+  const selectionKey = `${state.selectedId}|${state.selectedDay ?? ""}`;
+  let diagnostics = state.diagnostics;
+  if (!diagnostics || diagnostics.selectionKey !== selectionKey) {
+    diagnostics = createDiagnosticsState(selectionKey);
+    state.diagnostics = diagnostics;
+  }
+  if (diagnostics.loading || (diagnostics.loaded && !force)) return;
+  diagnostics.loading = true;
+  diagnostics.error = null;
+  renderDiagnostics();
+  try {
+    const query = state.selectedDay ? `?day=${encodeURIComponent(state.selectedDay)}` : "";
+    const [localReport, advancedReport, behavioralReport] = await Promise.all([
+      fetchJson(`/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostics${query}`),
+      fetchJson(`/api/sessions/${encodeURIComponent(state.selectedId)}/advanced-diagnostics${query}`),
+      fetchJson(`/api/sessions/${encodeURIComponent(state.selectedId)}/behavioral-diagnostics${query}`),
+    ]);
+    if (
+      selectionVersion !== state.selectionVersion ||
+      state.diagnostics !== diagnostics ||
+      diagnostics.selectionKey !== `${state.selectedId}|${state.selectedDay ?? ""}`
+    ) return;
+    diagnostics.report = combineDiagnosticsReports(localReport, advancedReport, behavioralReport);
+    diagnostics.loaded = true;
+    diagnostics.requestFindings = groupDiagnosticsByRequest(diagnostics.report.findings ?? []);
+    diagnostics.renderVersion += 1;
+    renderDiagnostics();
+    refreshOpenRequestDiagnosticMarkers();
+  } catch (error) {
+    if (selectionVersion === state.selectionVersion && state.diagnostics === diagnostics) {
+      diagnostics.error = error.message;
+      diagnostics.loaded = false;
+      renderDiagnostics();
+    }
+  } finally {
+    if (state.diagnostics === diagnostics) diagnostics.loading = false;
+    renderDiagnostics();
+  }
+}
+
+function refreshDiagnosticsIfStale() {
+  const diagnostics = state.diagnostics;
+  if (!diagnostics?.loaded || diagnostics.loading || !diagnostics.report) return;
+  const currentGeneration = Number(state.snapshot?.health?.projectionGeneration ?? 0);
+  if (Number(diagnostics.report.projectionGeneration ?? -1) === currentGeneration) return;
+  return loadDiagnostics(state.selectionVersion, { force: true });
+}
+
+function combineDiagnosticsReports(localReport, advancedReport, behavioralReport) {
+  const findings = [
+    ...(localReport?.findings ?? []).map((finding) => ({ ...finding, family: finding.family ?? "local" })),
+    ...(advancedReport?.findings ?? []),
+    ...(behavioralReport?.findings ?? []),
+  ];
+  return {
+    scope: behavioralReport?.scope ?? advancedReport?.scope ?? localReport?.scope ?? { type: "session" },
+    projectionGeneration: Math.max(
+      Number(localReport?.projectionGeneration ?? 0),
+      Number(advancedReport?.projectionGeneration ?? 0),
+      Number(behavioralReport?.projectionGeneration ?? 0),
+    ),
+    stale: Boolean(localReport?.stale || advancedReport?.stale || behavioralReport?.stale),
+    policies: {
+      local: localReport?.policy ?? null,
+      advanced: advancedReport?.policy ?? null,
+      behavioral: behavioralReport?.policy ?? null,
+    },
+    coverage: {
+      advanced: advancedReport?.coverage ?? null,
+      behavioral: behavioralReport?.coverage ?? null,
+    },
+    summary: summarizeDiagnosticFindings(findings),
+    findings,
+  };
+}
+
+function summarizeDiagnosticFindings(findings) {
+  const summary = { high: 0, warning: 0, info: 0 };
+  for (const finding of findings ?? []) {
+    if (Object.hasOwn(summary, finding.severity)) summary[finding.severity] += 1;
+  }
+  return summary;
+}
+
+async function toggleDiagnosticsPanel() {
+  const diagnostics = state.diagnostics;
+  if (!diagnostics) return;
+  diagnostics.open = !diagnostics.open;
+  renderDiagnostics();
+  if (diagnostics.open && !diagnostics.loaded && !diagnostics.loading) {
+    await loadDiagnostics(state.selectionVersion);
+  }
+  if (diagnostics.open && !diagnostics.alertsReport && !diagnostics.alertsLoading) {
+    await loadDiagnosticAlerts(state.selectionVersion);
+  }
+}
+
+function renderDiagnostics() {
+  const diagnostics = state.diagnostics;
+  if (!diagnostics) {
+    elements["diagnostics-summary"].textContent = "等待会话";
+    elements["diagnostics-toggle"].setAttribute("aria-expanded", "false");
+    elements["diagnostics-panel"].hidden = true;
+    return;
+  }
+  elements["diagnostics-toggle"].setAttribute("aria-expanded", String(diagnostics.open));
+  elements["diagnostics-panel"].hidden = !diagnostics.open;
+  const report = diagnostics.report;
+  if (diagnostics.loading && !report) {
+    elements["diagnostics-summary"].textContent = "正在分析…";
+    elements["diagnostics-state"].textContent = "正在从 canonical Request projection 读取诊断事实…";
+    elements["diagnostics-findings"].innerHTML = "";
+    return;
+  }
+  if (diagnostics.error) {
+    elements["diagnostics-summary"].textContent = "读取失败";
+    elements["diagnostics-state"].textContent = `Diagnostics 读取失败：${diagnostics.error}`;
+    elements["diagnostics-findings"].innerHTML = "";
+    return;
+  }
+  if (!report) {
+    elements["diagnostics-summary"].textContent = "正在分析…";
+    elements["diagnostics-state"].textContent = "等待诊断结果…";
+    elements["diagnostics-findings"].innerHTML = "";
+    return;
+  }
+  const summary = report.summary ?? {};
+  const total = Number(summary.high ?? 0) + Number(summary.warning ?? 0) + Number(summary.info ?? 0);
+  elements["diagnostics-summary"].textContent = total
+    ? `${summary.high ?? 0} High · ${summary.warning ?? 0} Warning · ${summary.info ?? 0} Info`
+    : "未发现异常";
+  elements["diagnostics-state"].textContent = `${report.policies?.local?.version ?? "local policy unknown"} + ${
+    report.policies?.advanced?.version ?? "advanced policy unknown"
+  } + ${report.policies?.behavioral?.version ?? "behavioral policy unknown"
+  } · ${
+    report.stale ? "上一完整 projection · 等待索引刷新" : "当前 projection"
+  } · ${total} findings`;
+  const findings = [...(report.findings ?? [])].sort(compareDiagnosticFindings);
+  const groups = [
+    {
+      family: "local",
+      title: "Local",
+      description: "当前 Session 最近几次可比较 Request 的局部变化",
+    },
+    {
+      family: "historical",
+      title: "Historical",
+      description: "同工程、同模型、同 effort 的长期 Robust Baseline",
+    },
+    {
+      family: "cross_session",
+      title: "Cross-session",
+      description: "当前 Session slice 相对历史 Session slice 的整体退化",
+    },
+    {
+      family: "behavioral_request",
+      title: "Behavioral · Request",
+      description: "同 cohort 历史下的 Reasoning token 行为异常",
+    },
+    {
+      family: "behavioral_session",
+      title: "Behavioral · Session",
+      description: "Request Burst 与 Subagent Amplification 的 Session-level 异常",
+    },
+  ];
+  elements["diagnostics-findings"].innerHTML = groups.map((group) => {
+    const groupFindings = findings.filter((finding) => (finding.family ?? "local") === group.family);
+    return `<section class="diagnostics-family" data-diagnostic-family="${group.family}">
+      <header class="diagnostics-family-heading">
+        <div><strong>${group.title}</strong><span>${group.description}</span></div>
+        <code>${groupFindings.length}</code>
+      </header>
+      <div class="diagnostics-family-findings">${groupFindings.length
+        ? groupFindings.map(renderDiagnosticFinding).join("")
+        : '<div class="diagnostics-empty">当前 scope 没有该基线类型的 finding。</div>'}</div>
+    </section>`;
+  }).join("");
+  renderDiagnosticAlerts();
+}
+
+function renderDiagnosticAlerts() {
+  const diagnostics = state.diagnostics;
+  const report = diagnostics?.alertsReport;
+  if (!diagnostics) return;
+  elements["diagnostic-alert-snooze"].disabled = diagnostics.alertsLoading || !state.selectedId;
+  if (diagnostics.alertsLoading && !report) {
+    elements["diagnostic-alert-summary"].textContent = "正在读取 Alerts…";
+    elements["diagnostic-alerts"].innerHTML = '<div class="diagnostics-empty">正在读取本地 operational state…</div>';
+    return;
+  }
+  if (diagnostics.alertsError) {
+    elements["diagnostic-alert-summary"].textContent = "Alerts 读取失败";
+    elements["diagnostic-alerts"].innerHTML = `<div class="diagnostics-empty">${escapeHtml(diagnostics.alertsError)}</div>`;
+    return;
+  }
+  if (!report) {
+    elements["diagnostic-alert-summary"].textContent = "未加载";
+    elements["diagnostic-alerts"].innerHTML = '<div class="diagnostics-empty">展开 Diagnostics 后读取 Alerts。</div>';
+    return;
+  }
+  const policy = report.policy ?? {};
+  elements["diagnostic-budget-usd"].value = Number.isFinite(policy.sessionCostBudgetUsd)
+    ? String(policy.sessionCostBudgetUsd)
+    : "";
+  elements["diagnostic-alert-severity"].value = policy.minimumSeverity === "warning" ? "warning" : "high";
+  const cooldown = String(policy.cooldownMinutes ?? 60);
+  if ([...elements["diagnostic-alert-cooldown"].options].some((option) => option.value === cooldown)) {
+    elements["diagnostic-alert-cooldown"].value = cooldown;
+  }
+  const active = report.alerts ?? [];
+  elements["diagnostic-alert-summary"].textContent = report.snoozed
+    ? `Snoozed 至 ${formatDate(policy.snoozedUntil)} · ${report.suppressedBySnooze ?? 0} suppressed`
+    : `${active.length} active · ${report.acknowledgedCount ?? 0} ack`;
+  elements["diagnostic-alerts"].innerHTML = active.length
+    ? active.map(renderDiagnosticAlert).join("")
+    : `<div class="diagnostics-empty">${report.snoozed ? "当前处于 cooldown。" : "当前没有未确认 Alert。"}</div>`;
+}
+
+function renderDiagnosticAlert(alert) {
+  const isBudget = alert.kind === "session_cost_budget";
+  const title = isBudget ? "Session 等值预算超限" : diagnosticTypeLabel(alert.type);
+  const metric = isBudget
+    ? `${formatUsdAmount(alert.amountUsd)} / budget ${formatUsdAmount(alert.budgetUsd)} · ${formatRatio(alert.ratio)}`
+    : `${alert.family === "behavioral_session" ? "Behavioral Session" : alert.family ?? "diagnostic"} · ${formatDate(alert.observedAt)}`;
+  return `<article class="diagnostic-alert-item ${escapeHtml(alert.severity || "warning")}">
+    <div class="diagnostic-alert-copy">
+      <div><strong>${escapeHtml(title)}</strong><span class="diagnostic-severity ${escapeHtml(alert.severity || "warning")}">${escapeHtml(String(alert.severity || "warning").toUpperCase())}</span></div>
+      <small>${escapeHtml(metric)}</small>
+    </div>
+    <div class="diagnostic-alert-controls">
+      ${alert.locator?.requestId ? `<button type="button" data-diagnostic-alert-locate="${escapeHtml(alert.alertId)}">定位</button>` : ""}
+      <button type="button" data-diagnostic-alert-ack="${escapeHtml(alert.alertId)}">Ack</button>
+    </div>
+  </article>`;
+}
+
+async function saveDiagnosticAlertPolicy() {
+  if (!state.selectedId || !state.diagnostics) return;
+  const rawBudget = elements["diagnostic-budget-usd"].value.trim();
+  const payload = {
+    sessionCostBudgetUsd: rawBudget === "" ? null : Number(rawBudget),
+    minimumSeverity: elements["diagnostic-alert-severity"].value,
+    cooldownMinutes: Number(elements["diagnostic-alert-cooldown"].value),
+  };
+  try {
+    await postJson(
+      `/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostic-alert-policy`,
+      payload,
+    );
+    state.diagnostics.alertsReport = null;
+    toast("Alerts 策略已保存");
+    await loadDiagnosticAlerts(state.selectionVersion, { force: true });
+  } catch (error) {
+    toast(`保存 Alerts 策略失败：${error.message}`);
+  }
+}
+
+async function acknowledgeDiagnosticAlert(alertId) {
+  if (!state.selectedId || !alertId || !state.diagnostics) return;
+  try {
+    await postJson(
+      `/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostic-alerts/${encodeURIComponent(alertId)}/ack`,
+    );
+    state.diagnostics.alertsReport = null;
+    await loadDiagnosticAlerts(state.selectionVersion, { force: true });
+  } catch (error) {
+    toast(`Ack 失败：${error.message}`);
+  }
+}
+
+async function snoozeDiagnosticAlerts() {
+  if (!state.selectedId || !state.diagnostics) return;
+  try {
+    await postJson(`/api/sessions/${encodeURIComponent(state.selectedId)}/diagnostic-alerts/snooze`);
+    state.diagnostics.alertsReport = null;
+    await loadDiagnosticAlerts(state.selectionVersion, { force: true });
+  } catch (error) {
+    toast(`Snooze 失败：${error.message}`);
+  }
+}
+
+function compareDiagnosticFindings(left, right) {
+  const severityOrder = { high: 3, warning: 2, info: 1 };
+  const severityDelta = (severityOrder[right.severity] ?? 0) - (severityOrder[left.severity] ?? 0);
+  if (severityDelta !== 0) return severityDelta;
+  return String(right.observedAt ?? "").localeCompare(String(left.observedAt ?? ""));
+}
+
+function renderDiagnosticFinding(finding) {
+  const factors = diagnosticFactorLabels(finding);
+  const locator = diagnosticLocator(finding);
+  return `<article class="diagnostic-finding ${escapeHtml(finding.severity || "info")}">
+    <div class="diagnostic-finding-main">
+      <div class="diagnostic-finding-heading">
+        <strong>${escapeHtml(diagnosticTypeLabel(finding.type))}</strong>
+        <span class="diagnostic-severity ${escapeHtml(finding.severity || "info")}">${escapeHtml(String(finding.severity || "info").toUpperCase())}</span>
+      </div>
+      <div class="diagnostic-metric">${escapeHtml(diagnosticMetricText(finding))}</div>
+      <div class="diagnostic-meta"><span>${formatDate(finding.observedAt ?? locator?.observedAt)}</span><code title="${escapeHtml(locator?.requestId || finding.requestId || "")}">${escapeHtml(shortId(locator?.requestId || finding.requestId || ""))}</code><span>${escapeHtml(finding.baseline?.kind || "explicit")}${finding.baseline?.sampleCount ? ` · n=${finding.baseline.sampleCount}` : ""}</span>${renderRobustBaselineMeta(finding)}</div>
+      ${factors.length ? `<div class="diagnostic-factors">${factors.map((factor) => `<span>${escapeHtml(factor)}</span>`).join("")}</div>` : ""}
+    </div>
+    ${locator?.requestId ? `<button class="diagnostic-locate" type="button" data-diagnostic-locate="${escapeHtml(finding.findingId)}">${finding.family === "cross_session" || finding.family === "behavioral_session" ? "定位证据 Request" : "定位 Request"}</button>` : ""}
+  </article>`;
+}
+
+function diagnosticLocator(finding) {
+  if (finding?.locator?.requestId) return finding.locator;
+  if (finding?.supportingLocator?.requestId) return finding.supportingLocator;
+  if (!finding?.requestId) return null;
+  return {
+    ...(finding.locator ?? {}),
+    requestId: finding.requestId,
+    rootSessionId: finding.rootSessionId ?? null,
+    threadId: finding.threadId ?? null,
+    turnId: finding.turnId ?? null,
+    observedAt: finding.observedAt ?? null,
+  };
+}
+
+function renderRobustBaselineMeta(finding) {
+  if (!["historical", "cross_session", "behavioral_request", "behavioral_session"].includes(finding.family)) return "";
+  const baseline = finding.baseline ?? {};
+  const parts = [];
+  if (Number.isFinite(baseline.median)) parts.push(`median ${formatDiagnosticValue(finding, baseline.median)}`);
+  if (Number.isFinite(baseline.mad)) parts.push(`MAD ${formatDiagnosticValue(finding, baseline.mad)}`);
+  if (Number.isFinite(baseline.robustZ)) parts.push(`Z ${baseline.robustZ.toFixed(2)}`);
+  return parts.length ? `<span>${escapeHtml(parts.join(" · "))}</span>` : "";
+}
+
+function diagnosticTypeLabel(type) {
+  if (type === "context_inflation") return "Context Inflation";
+  if (type === "cache_regression") return "Cache Regression";
+  if (type === "cost_spike") return "Cost Spike";
+  if (type === "long_context_trigger") return "Long Context Trigger";
+  if (type === "historical_context_inflation") return "Historical Context Inflation";
+  if (type === "historical_cache_regression") return "Historical Cache Regression";
+  if (type === "historical_cost_spike") return "Historical Cost Spike";
+  if (type === "cross_session_context_regression") return "Cross-session Context Regression";
+  if (type === "cross_session_cache_regression") return "Cross-session Cache Regression";
+  if (type === "cross_session_cost_regression") return "Cross-session Cost Regression";
+  if (type === "reasoning_anomaly") return "Reasoning Anomaly";
+  if (type === "request_burst") return "Request Burst";
+  if (type === "subagent_amplification") return "Subagent Amplification";
+  return type || "Usage Diagnostic";
+}
+
+function diagnosticMetricText(finding) {
+  const metric = finding.metric ?? {};
+  if (finding.type === "context_inflation") {
+    return `${formatTokens(metric.current)} → baseline ${formatTokens(metric.baseline)} · +${formatTokens(metric.absoluteDelta)}`;
+  }
+  if (finding.type === "cache_regression") {
+    return `${formatPercent(metric.current)} → baseline ${formatPercent(metric.baseline)} · drop ${formatPercent(finding.evidence?.drop)}`;
+  }
+  if (finding.type === "cost_spike") {
+    return `${formatUsdAmount(metric.current)} → baseline ${formatUsdAmount(metric.baseline)} · +${formatUsdAmount(metric.absoluteDelta)}`;
+  }
+  if (finding.type === "long_context_trigger") {
+    return `Input ${formatTokens(finding.evidence?.inputTokens)} · ${finding.evidence?.longContextStatus ?? "unknown"}`;
+  }
+  if (finding.type === "historical_context_inflation" || finding.type === "cross_session_context_regression") {
+    return `${formatTokens(metric.current)} → historical median ${formatTokens(finding.baseline?.median)} · Δ ${signedCompact(finding.effect?.absolute)}`;
+  }
+  if (finding.type === "historical_cache_regression" || finding.type === "cross_session_cache_regression") {
+    return `${formatPercent(metric.current)} → historical median ${formatPercent(finding.baseline?.median)} · Δ ${signedPercent(finding.effect?.percentagePoints)}`;
+  }
+  if (finding.type === "historical_cost_spike" || finding.type === "cross_session_cost_regression") {
+    return `${formatUsdAmount(metric.current)} → historical median ${formatUsdAmount(finding.baseline?.median)} · Δ ${formatUsdAmount(finding.effect?.absolute)}`;
+  }
+  if (finding.type === "reasoning_anomaly") {
+    return `${formatPercent(metric.current)} reasoning share → historical median ${formatPercent(finding.baseline?.median)} · Δ ${signedPercent(finding.effect?.percentagePoints)}`;
+  }
+  if (finding.type === "request_burst") {
+    return `${Math.round(metric.current ?? 0)} Requests / 60s → historical median ${formatDiagnosticValue(finding, finding.baseline?.median)} · ${formatRatio(finding.effect?.ratio)}`;
+  }
+  if (finding.type === "subagent_amplification") {
+    return `Descendant / Root ${formatRatio(metric.current)} → historical median ${formatRatio(finding.baseline?.median)} · extra ${signedCompact(finding.evidence?.descendantExtraTokens)} tokens`;
+  }
+  return String(metric.current ?? "—");
+}
+
+function formatDiagnosticValue(finding, value) {
+  if (finding.type?.includes("cache")) return formatPercent(value);
+  if (finding.type?.includes("cost")) return formatUsdAmount(value);
+  if (finding.type === "reasoning_anomaly") return formatPercent(value);
+  if (finding.type === "request_burst") return Number.isFinite(value) ? `${Number(value).toFixed(1)} req` : "—";
+  if (finding.type === "subagent_amplification") return formatRatio(value);
+  return formatTokens(value);
+}
+
+function diagnosticFactorLabels(finding) {
+  const evidence = finding.evidence ?? {};
+  const factors = [];
+  if (finding.type === "cache_regression" && evidence.breakpointCandidate) factors.push("cache breakpoint candidate");
+  if (Number.isFinite(evidence.inputDelta)) factors.push(`Input Δ ${signedCompact(evidence.inputDelta)}`);
+  if (Number.isFinite(evidence.cacheHitDelta)) factors.push(`Cache Δ ${signedPercent(evidence.cacheHitDelta)}`);
+  if (evidence.longContextStatus && evidence.longContextStatus !== "normal") factors.push(`Long ${evidence.longContextStatus}`);
+  if (evidence.serviceTier) factors.push(`Tier ${evidence.serviceTier}`);
+  if (evidence.pricingStatus) factors.push(`Pricing ${evidence.pricingStatus}`);
+  if (finding.type === "reasoning_anomaly") {
+    if (Number.isFinite(evidence.reasoningOutputTokens)) factors.push(`Reasoning ${formatTokens(evidence.reasoningOutputTokens)}`);
+    if (Number.isFinite(evidence.outputTokens)) factors.push(`Output ${formatTokens(evidence.outputTokens)}`);
+  }
+  if (finding.type === "request_burst") {
+    if (Number.isFinite(evidence.requestCount)) factors.push(`${evidence.requestCount} Requests / 60s`);
+    if (evidence.episodeStart && evidence.episodeEnd) factors.push("120s idle-gap episode");
+  }
+  if (finding.type === "subagent_amplification") {
+    if (Number.isFinite(evidence.descendantRequests)) factors.push(`${evidence.descendantRequests} descendant Requests`);
+    if (Number.isFinite(evidence.descendantAgents)) factors.push(`${evidence.descendantAgents} descendant agents`);
+    if (Number.isFinite(evidence.maxDepth)) factors.push(`depth ${evidence.maxDepth}`);
+  }
+  return factors;
+}
+
+function groupDiagnosticsByRequest(findings) {
+  const grouped = new Map();
+  for (const finding of findings ?? []) {
+    if (!finding?.requestId) continue;
+    const current = grouped.get(finding.requestId) ?? [];
+    current.push(finding);
+    grouped.set(finding.requestId, current);
+  }
+  return grouped;
+}
+
+function refreshOpenRequestDiagnosticMarkers() {
+  for (const detail of state.requestDetails.values()) {
+    if (detail.open) patchVisibleTaskDetail(detail.threadId, detail.turnId);
+  }
+}
+
+async function locateDiagnosticRequest(finding) {
+  const locator = diagnosticLocator(finding);
+  const threadId = locator?.threadId ?? finding.threadId;
+  const turnId = locator?.turnId ?? finding.turnId;
+  const requestId = locator?.requestId ?? finding.requestId;
+  const task = currentTask(threadId, turnId);
+  if (!task) {
+    toast("当前 scope 中找不到该 finding 对应的 Task");
+    return;
+  }
+  expandDiagnosticTaskContainer(threadId, turnId);
+  await toggleTaskRequests(threadId, turnId, { forceOpen: true });
+  const detail = requestDetailState(threadId, turnId);
+  if (!detail?.open) {
+    toast("Canonical Requests 无法展开");
+    return;
+  }
+  const ordinal = Number(locator?.requestOrdinalInScope);
+  if (!Number.isInteger(ordinal) || ordinal < 1) {
+    toast("该 finding 缺少可用的 Request ordinal");
+    return;
+  }
+  const pageSize = REQUEST_PAGE_SIZE_OPTIONS.includes(Number(detail.pageSize))
+    ? Number(detail.pageSize)
+    : REQUEST_PAGE_SIZE;
+  const targetPage = Math.ceil(ordinal / pageSize);
+  if (!detail.loaded || detail.page !== targetPage) {
+    await setRequestPage(threadId, turnId, targetPage);
+  }
+  await new Promise((resolve) => requestAnimationFrame(resolve));
+  const row = [...elements["agent-tree"].querySelectorAll("tr[data-request-id]")]
+    .find((candidate) => candidate.dataset.requestId === requestId);
+  if (!row) {
+    toast("已打开目标 Request 页，但未找到对应 canonical request_id");
+    return;
+  }
+  state.highlightedRequestId = requestId;
+  for (const candidate of elements["agent-tree"].querySelectorAll("tr.diagnostic-target")) {
+    candidate.classList.remove("diagnostic-target");
+  }
+  const reduceMotion = window.matchMedia("(prefers-reduced-motion: reduce)").matches;
+  row.classList.add("diagnostic-target");
+  row.scrollIntoView({ behavior: reduceMotion ? "auto" : "smooth", block: "center", inline: "nearest" });
+}
+
+function expandDiagnosticTaskContainer(threadId, turnId) {
+  const row = [...elements["agent-tree"].querySelectorAll("tr[data-task-id][data-thread-id]")]
+    .find((candidate) => candidate.dataset.taskId === turnId && candidate.dataset.threadId === threadId);
+  const agentCard = row?.closest(".agent-card");
+  if (agentCard && !agentCard.open) agentCard.open = true;
+}
+
+function formatPercent(value) {
+  return Number.isFinite(value) ? `${(value * 100).toFixed(1)}%` : "—";
+}
+
+function formatRatio(value) {
+  return Number.isFinite(value) ? `${Number(value).toFixed(2)}×` : "—";
+}
+
+function signedPercent(value) {
+  if (!Number.isFinite(value)) return "—";
+  return `${value >= 0 ? "+" : ""}${(value * 100).toFixed(1)}pp`;
+}
+
+function signedCompact(value) {
+  if (!Number.isFinite(value)) return "—";
+  return `${value >= 0 ? "+" : ""}${compactFormatter.format(value)}`;
 }
 
 function renderAgents() {
@@ -992,6 +1653,7 @@ function requestDetailRenderSignature(detail, task) {
     pagination?.totalItems ?? "",
     pagination?.totalPages ?? "",
     detail.projectionGeneration ?? "",
+    state.diagnostics?.renderVersion ?? 0,
     task?.effort ?? "",
     requestIds,
   ].join("|");
@@ -1144,7 +1806,7 @@ function renderRequestDetail(detail, task) {
     content = '<div class="request-detail-state">这个 Task 没有可展示的 canonical Request。</div>';
   } else {
     content = `<div class="request-audit-scroll" role="region" tabindex="0" aria-label="Canonical Requests 表格，可独立横向滚动"><table class="request-table">
-      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="只有 service_tier 明确为 fast 才使用 Fast 定价；default、standard、priority、缺失或其他值一律按 standard 计费。">服务层级</th><th>USD</th></tr></thead>
+      <thead><tr><th>时间</th><th>Input</th><th>Cached</th><th title="Cached / Input">Cache Hit Rate</th><th>Cache Write</th><th>Output</th><th>Reasoning</th><th>Total</th><th>Model</th><th>推理强度</th><th title="只有 service_tier 明确为 fast 才使用 Fast 定价；default、standard、priority、缺失或其他值一律按 standard 计费。">服务层级</th><th>USD</th><th>诊断</th><th>详情</th></tr></thead>
       <tbody>${detail.requests.map((request) => renderRequestRow(request, task?.effort)).join("")}</tbody>
     </table></div>
     ${renderRequestPagination(detail)}`;
@@ -1219,10 +1881,12 @@ async function setRequestPage(threadId, turnId, requestedPage) {
 }
 
 function renderRequestRow(request, effort) {
-  return `<tr>
+  const highlighted = request.requestId && request.requestId === state.highlightedRequestId;
+  return `<tr data-request-id="${escapeHtml(request.requestId || "")}"${highlighted ? ' class="diagnostic-target"' : ""}>
     <td title="${escapeHtml(request.observedAt || "")}">${formatDate(request.observedAt)}</td>
     <td>${formatTokens(request.usage?.inputTokens)}</td>
     <td>${formatTokens(request.usage?.cachedInputTokens)}</td>
+    <td class="request-cache-hit">${formatRequestCacheHitRate(request.usage)}</td>
     <td>${formatTokens(request.usage?.cacheWriteInputTokens)}</td>
     <td>${formatTokens(request.usage?.outputTokens)}</td>
     <td>${formatTokens(request.usage?.reasoningOutputTokens)}</td>
@@ -1231,7 +1895,881 @@ function renderRequestRow(request, effort) {
     <td><span class="effort-chip">${escapeHtml(effortLabel(effort))}</span></td>
     <td><span class="tier-chip ${serviceTierClass(request.serviceTier)}">${escapeHtml(serviceTierLabel(request.serviceTier, request.costEstimate))}</span></td>
     <td class="request-cost ${escapeHtml(request.costEstimate?.status || "unavailable")}" title="${escapeHtml(requestCostEstimateTitle(request.costEstimate))}">${formatUsdEstimate(request.costEstimate)}</td>
+    <td class="request-diagnostic-cell">${renderRequestDiagnosticMarker(request.requestId)}</td>
+    <td class="request-inspect-cell"><button class="request-inspect-button" type="button" data-request-inspect="${escapeHtml(request.requestId || "")}" aria-label="查看 Request ${escapeHtml(shortId(request.requestId))} 的交互内容">查看</button></td>
   </tr>`;
+}
+
+function formatRequestCacheHitRate(usage) {
+  const inputTokens = Number(usage?.inputTokens);
+  const cachedInputTokens = Number(usage?.cachedInputTokens);
+  if (!Number.isFinite(inputTokens) || inputTokens <= 0 || !Number.isFinite(cachedInputTokens) || cachedInputTokens < 0) {
+    return "—";
+  }
+  return formatPercent(Math.min(cachedInputTokens, inputTokens) / inputTokens);
+}
+
+function renderRequestDiagnosticMarker(requestId) {
+  const findings = state.diagnostics?.requestFindings?.get(requestId) ?? [];
+  if (!findings.length) return '<span class="request-diagnostic-none">—</span>';
+  const severityOrder = { high: 3, warning: 2, info: 1 };
+  const highest = findings.reduce((selected, finding) =>
+    (severityOrder[finding.severity] ?? 0) > (severityOrder[selected?.severity] ?? 0) ? finding : selected
+  , null);
+  const severity = highest?.severity ?? "info";
+  const title = findings.map((finding) => diagnosticTypeLabel(finding.type)).join(" · ");
+  return `<span class="request-diagnostic-marker ${escapeHtml(severity)}" title="${escapeHtml(title)}">${findings.length}</span>`;
+}
+
+async function openRequestInspector(trigger) {
+  const requestId = trigger?.dataset?.requestInspect;
+  const sessionId = state.selectedId;
+  if (!requestId || !sessionId) return;
+  const inspector = state.requestInspector;
+  inspector.abortController?.abort();
+  const selectionVersion = ++inspector.selectionVersion;
+  inspector.open = true;
+  inspector.requestId = requestId;
+  inspector.loading = true;
+  inspector.error = null;
+  inspector.payload = null;
+  inspector.activeTab = "interaction";
+  inspector.inputContext.abortController?.abort();
+  inspector.inputContext = { loading: false, error: null, payload: null, abortController: null };
+  inspector.contextDelta.abortController?.abort();
+  inspector.contextDelta = { loading: false, error: null, payload: null, abortController: null };
+  inspector.stale = false;
+  inspector.projectionGeneration = null;
+  inspector.trigger = trigger;
+  inspector.restoreFocusOnClose = true;
+  inspector.abortController = new AbortController();
+  renderRequestInspector();
+  if (!elements["request-inspector"].open) elements["request-inspector"].showModal();
+  try {
+    const payload = await fetchJson(
+      `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}/content`,
+      { signal: inspector.abortController.signal },
+    );
+    if (
+      selectionVersion !== inspector.selectionVersion ||
+      requestId !== inspector.requestId ||
+      sessionId !== state.selectedId
+    ) return;
+    inspector.payload = payload;
+    inspector.projectionGeneration = payload.projectionGeneration ?? null;
+    inspector.loading = false;
+    inspector.error = null;
+    renderRequestInspector();
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (selectionVersion !== inspector.selectionVersion || requestId !== inspector.requestId) return;
+    inspector.loading = false;
+    inspector.error = error.message;
+    renderRequestInspector();
+  } finally {
+    if (selectionVersion === inspector.selectionVersion) inspector.abortController = null;
+  }
+}
+
+async function loadRequestInputContext({ force = false } = {}) {
+  const inspector = state.requestInspector;
+  const requestId = inspector.requestId;
+  const sessionId = state.selectedId;
+  if (!inspector.open || !requestId || !sessionId) return;
+  if (inspector.inputContext.payload && !force) return;
+  inspector.inputContext.abortController?.abort();
+  const selectionVersion = inspector.selectionVersion;
+  const controller = new AbortController();
+  inspector.inputContext = {
+    loading: true,
+    error: null,
+    payload: force ? null : inspector.inputContext.payload,
+    abortController: controller,
+  };
+  renderRequestInspector();
+  try {
+    const payload = await fetchJson(
+      `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}/input-context`,
+      { signal: controller.signal },
+    );
+    if (
+      selectionVersion !== inspector.selectionVersion ||
+      requestId !== inspector.requestId ||
+      sessionId !== state.selectedId
+    ) return;
+    inspector.inputContext = { loading: false, error: null, payload, abortController: null };
+    inspector.projectionGeneration = payload.projectionGeneration ?? inspector.projectionGeneration;
+    inspector.stale = false;
+    renderRequestInspector();
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (selectionVersion !== inspector.selectionVersion || requestId !== inspector.requestId) return;
+    inspector.inputContext = { loading: false, error: error.message, payload: null, abortController: null };
+    renderRequestInspector();
+  }
+}
+
+async function loadRequestContextDelta({ force = false } = {}) {
+  const inspector = state.requestInspector;
+  const requestId = inspector.requestId;
+  const sessionId = state.selectedId;
+  if (!inspector.open || !requestId || !sessionId) return;
+  if (inspector.contextDelta.payload && !force) return;
+  inspector.contextDelta.abortController?.abort();
+  const selectionVersion = inspector.selectionVersion;
+  const controller = new AbortController();
+  inspector.contextDelta = {
+    loading: true,
+    error: null,
+    payload: force ? null : inspector.contextDelta.payload,
+    abortController: controller,
+  };
+  renderRequestInspector();
+  try {
+    const payload = await fetchJson(
+      `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}/context-delta`,
+      { signal: controller.signal },
+    );
+    if (
+      selectionVersion !== inspector.selectionVersion ||
+      requestId !== inspector.requestId ||
+      sessionId !== state.selectedId
+    ) return;
+    inspector.contextDelta = { loading: false, error: null, payload, abortController: null };
+    inspector.projectionGeneration = payload.projectionGeneration ?? inspector.projectionGeneration;
+    inspector.stale = false;
+    renderRequestInspector();
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (selectionVersion !== inspector.selectionVersion || requestId !== inspector.requestId) return;
+    inspector.contextDelta = { loading: false, error: error.message, payload: null, abortController: null };
+    renderRequestInspector();
+  }
+}
+
+async function refreshRequestInspector() {
+  const inspector = state.requestInspector;
+  if (!inspector.open || !inspector.requestId || !state.selectedId) return;
+  const trigger = inspector.trigger ?? findRequestInspectorTrigger(inspector.requestId);
+  if (!trigger) return;
+  await openRequestInspector(trigger);
+}
+
+function closeRequestInspector({ restoreFocus = true } = {}) {
+  const dialog = elements["request-inspector"];
+  state.requestInspector.restoreFocusOnClose = restoreFocus;
+  state.requestInspector.abortController?.abort();
+  state.requestInspector.abortController = null;
+  if (dialog.open) dialog.close();
+  else releaseRequestInspectorContent();
+}
+
+function releaseRequestInspectorContent() {
+  const inspector = state.requestInspector;
+  const requestId = inspector.requestId;
+  const trigger = inspector.trigger;
+  const restoreFocus = inspector.restoreFocusOnClose;
+  inspector.selectionVersion += 1;
+  inspector.abortController?.abort();
+  inspector.inputContext.abortController?.abort();
+  inspector.contextDelta.abortController?.abort();
+  inspector.open = false;
+  inspector.requestId = null;
+  inspector.loading = false;
+  inspector.error = null;
+  inspector.payload = null;
+  inspector.activeTab = "interaction";
+  inspector.inputContext = { loading: false, error: null, payload: null, abortController: null };
+  inspector.contextDelta = { loading: false, error: null, payload: null, abortController: null };
+  inspector.stale = false;
+  inspector.projectionGeneration = null;
+  inspector.abortController = null;
+  inspector.trigger = null;
+  inspector.restoreFocusOnClose = true;
+  elements["request-inspector-body"].replaceChildren();
+  if (!restoreFocus) return;
+  const focusTarget = trigger?.isConnected ? trigger : findRequestInspectorTrigger(requestId);
+  if (focusTarget) queueMicrotask(() => focusTarget.focus({ preventScroll: true }));
+}
+
+function findRequestInspectorTrigger(requestId) {
+  if (!requestId) return null;
+  return [...elements["agent-tree"].querySelectorAll("[data-request-inspect]")]
+    .find((candidate) => candidate.dataset.requestInspect === requestId) ?? null;
+}
+
+function markRequestInspectorStaleIfNeeded() {
+  const inspector = state.requestInspector;
+  if (!inspector.open || !inspector.payload || inspector.projectionGeneration == null) return;
+  const currentGeneration = Number(state.snapshot?.health?.projectionGeneration ?? 0);
+  if (!Number.isFinite(currentGeneration) || currentGeneration === Number(inspector.projectionGeneration)) return;
+  inspector.stale = true;
+  renderRequestInspector();
+}
+
+function renderRequestInspector() {
+  const inspector = state.requestInspector;
+  const request = inspector.payload?.request ?? null;
+  elements["request-inspector-title"].textContent = request?.requestId
+    ? `Request ${shortId(request.requestId)}`
+    : inspector.requestId
+      ? `Request ${shortId(inspector.requestId)}`
+      : "Request Inspector";
+  elements["request-inspector-evidence"].textContent = inspector.activeTab === "input_context"
+    ? "Reconstructed Input Context · Provider payload / serialization unavailable"
+    : inspector.activeTab === "context_delta"
+      ? "Context Delta & Cache Correlation · exact provider cache causality unavailable"
+      : "Rollout observed interaction · Provider Payload unavailable / not reconstructed";
+  if (inspector.loading) {
+    elements["request-inspector-body"].innerHTML = `
+      <div class="request-inspector-state" role="status">
+        <strong>正在读取本地 rollout…</strong>
+        <span>只读取当前 Request 的 bounded interaction slice，不重放 Session。</span>
+      </div>`;
+    return;
+  }
+  if (inspector.error) {
+    elements["request-inspector-body"].innerHTML = `
+      <div class="request-inspector-state error">
+        <strong>Request 内容读取失败</strong>
+        <span>${escapeHtml(inspector.error)}</span>
+        <button type="button" data-request-inspector-refresh>重新读取</button>
+      </div>`;
+    return;
+  }
+  const payload = inspector.payload;
+  if (!payload) {
+    elements["request-inspector-body"].replaceChildren();
+    return;
+  }
+  const stale = inspector.stale
+    ? `<div class="request-inspector-stale"><span>Canonical projection 已更新；当前内容仍保持打开时的只读快照。</span><button type="button" data-request-inspector-refresh>重新读取</button></div>`
+    : "";
+  const tabs = renderRequestInspectorTabs(inspector.activeTab);
+  const availability = inspector.activeTab === "input_context"
+    ? renderRequestInputContextTab(inspector.inputContext)
+    : inspector.activeTab === "context_delta"
+      ? renderRequestContextDeltaTab(inspector.contextDelta)
+      : payload.available
+        ? renderRequestInspectorSemanticSections(payload)
+        : renderRequestInspectorUnavailable(payload);
+  elements["request-inspector-body"].innerHTML = `
+    ${stale}
+    ${renderRequestInspectorSummary(payload.request, payload.evidence)}
+    ${tabs}
+    ${availability}
+    ${inspector.activeTab === "interaction" ? renderRequestInspectorEvidence(payload.evidence, payload.summary) : ""}`;
+}
+
+function renderRequestInspectorTabs(activeTab) {
+  return `<div class="request-inspector-tabs" role="tablist" aria-label="Request Inspector 视图">
+    <button type="button" role="tab" aria-selected="${activeTab === "interaction"}" class="${activeTab === "interaction" ? "active" : ""}" data-request-inspector-tab="interaction">Interaction</button>
+    <button type="button" role="tab" aria-selected="${activeTab === "input_context"}" class="${activeTab === "input_context" ? "active" : ""}" data-request-inspector-tab="input_context">Input Context</button>
+    <button type="button" role="tab" aria-selected="${activeTab === "context_delta"}" class="${activeTab === "context_delta" ? "active" : ""}" data-request-inspector-tab="context_delta">Context Delta</button>
+  </div>`;
+}
+
+function renderRequestInspectorSummary(request, evidence) {
+  const usage = request?.usage ?? {};
+  return `<section class="request-inspector-summary" aria-label="Request 摘要">
+    <div class="request-inspector-meta">
+      <span><small>时间</small><strong>${escapeHtml(formatDate(request?.observedAt))}</strong></span>
+      <span><small>Model</small><strong>${escapeHtml(request?.model || "未知")}</strong></span>
+      <span><small>Effort</small><strong>${escapeHtml(effortLabel(request?.effort))}</strong></span>
+      <span><small>Tier</small><strong>${escapeHtml(serviceTierLabel(request?.serviceTier, request?.costEstimate))}</strong></span>
+    </div>
+    <div class="request-inspector-usage">
+      <span><small>Input Tokens</small><strong>${formatTokens(usage.inputTokens)}</strong></span>
+      <span><small>Cached Input Tokens</small><strong>${formatTokens(usage.cachedInputTokens)}</strong></span>
+      <span><small>Cache Hit Rate</small><strong>${formatRequestCacheHitRate(usage)}</strong></span>
+      <span><small>Output Tokens</small><strong>${formatTokens(usage.outputTokens)}</strong></span>
+      <span><small>Total Tokens</small><strong>${formatTokens(usage.totalTokens)}</strong></span>
+      <span><small>USD</small><strong>${formatUsdEstimate(request?.costEstimate)}</strong></span>
+    </div>
+    <p class="request-inspector-accounting-note">Token 指标表示本次 Request 的计量规模；下方只展示 rollout 中直接可观察的输入/交互证据，不等于完整 Provider Input。</p>
+    <p class="request-inspector-proof"><strong>Evidence</strong><span>${escapeHtml(requestEvidenceLabel(evidence))}</span></p>
+  </section>`;
+}
+
+function renderRequestInspectorSemanticSections(payload) {
+  const items = payload.items ?? [];
+  const observedInput = items.filter((item) => item.section === "observed_input");
+  const runtimeContext = items.filter((item) => item.section === "runtime_context");
+  const interaction = items.filter((item) => item.section === "observed_interaction");
+  const truncated = payload.evidence?.truncated
+    ? '<p class="request-inspector-warning">当前 interaction 已达到读取/正文上限，以下内容为显式截断结果。</p>'
+    : "";
+  const inputContent = observedInput.length
+    ? observedInput.map(renderRequestContentItem).join("")
+    : '<div class="request-inspector-state compact"><strong>没有可直接展示的 pre-model input</strong><span>完整输入可能来自历史上下文，或来自未在当前 slice 中逐项记录的 provider/harness context。</span></div>';
+  const interactionContent = interaction.length
+    ? interaction.map(renderRequestContentItem).join("")
+    : '<div class="request-inspector-state compact"><strong>没有可展示的交互正文</strong><span>该 slice 可能只包含计量、生命周期或 runtime metadata。</span></div>';
+  const cutLabel = payload.preModelCut?.status === "observed"
+    ? `Local evidence cut before first observed model output · line ${payload.preModelCut.lineNumber ?? "—"}`
+    : "Pre-model evidence cut unavailable · current slice is not treated as complete input";
+  return `${truncated}
+    <section class="request-interaction request-observed-input" aria-labelledby="request-input-title">
+      <header><div><p class="eyebrow">OBSERVED INPUT EVIDENCE</p><h3 id="request-input-title">本轮可观察输入证据</h3></div><span>${tokenFormatter.format(observedInput.length)} items</span></header>
+      <p class="request-section-note">${escapeHtml(cutLabel)}。这是本地记录顺序证据，不是 Provider request start。</p>
+      <div class="request-interaction-list">${inputContent}</div>
+    </section>
+    ${renderRuntimeContextSection(runtimeContext)}
+    <section class="request-interaction" aria-labelledby="request-interaction-title">
+    <header><div><p class="eyebrow">OBSERVED INTERACTION</p><h3 id="request-interaction-title">本次可观察交互</h3></div><span>${tokenFormatter.format(payload.summary?.observedItemCount ?? items.length)} items</span></header>
+    <div class="request-interaction-list">${interactionContent}</div>
+  </section>`;
+}
+
+function renderRequestInputContextTab(inputContext) {
+  if (inputContext.loading) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state" role="status">
+        <strong>正在重建输入上下文…</strong>
+        <span>只在当前 tab 主动读取 bounded 同线程历史，不进入 Session snapshot 或 SSE。</span>
+      </div>
+    </section>`;
+  }
+  if (inputContext.error) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state error">
+        <strong>Input Context 读取失败</strong>
+        <span>${escapeHtml(inputContext.error)}</span>
+        <button type="button" data-request-inspector-refresh>重新读取</button>
+      </div>
+    </section>`;
+  }
+  const payload = inputContext.payload;
+  if (!payload) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state compact"><strong>Input Context 尚未读取</strong><span>首次进入该 tab 时才发起 lazy read。</span></div>
+    </section>`;
+  }
+  if (!payload.available) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state unavailable">
+        <strong>Reconstructed Input Context 当前不可用</strong>
+        <span>${escapeHtml(requestInputCoverageLabel(payload.reason))}</span>
+      </div>
+    </section>`;
+  }
+
+  const sections = payload.sections ?? {};
+  const currentInput = sections.currentInput ?? [];
+  const runtimeContext = sections.runtimeContext ?? [];
+  const historyGroups = sections.historyGroups ?? [];
+  const compaction = sections.compaction ?? [];
+  const gaps = sections.gaps ?? [];
+  const currentContent = currentInput.length
+    ? currentInput.map(renderRequestContextItem).join("")
+    : '<div class="request-inspector-state compact"><strong>当前输入证据不可直接展示</strong><span>当前 cut 可能不可用，或本轮没有可公开的 pre-model item。</span></div>';
+  const runtimeContent = runtimeContext.length
+    ? runtimeContext.map(renderRequestContextItem).join("")
+    : '<p class="request-content-empty">当前 Request slice 没有 allowlisted runtime metadata。</p>';
+  const historyContent = historyGroups.length
+    ? historyGroups.map((group, index) => renderRequestHistoryGroup(group, index === historyGroups.length - 1)).join("")
+    : '<div class="request-inspector-state compact"><strong>没有重建出的 retained history</strong><span>这不代表 Provider Input 没有历史上下文。</span></div>';
+  const compactionContent = compaction.length
+    ? compaction.map((item) => `<article class="request-context-evidence-card">
+        <header><strong>${escapeHtml(item.kind === "compaction_snapshot" ? "Compaction snapshot" : "Compaction signal")}</strong>${renderProvenanceBadge(item.provenance)}</header>
+        <p>${escapeHtml(item.label || "Observed compaction evidence")}</p>
+      </article>`).join("")
+    : '<p class="request-content-empty">当前 bounded history 中没有观察到 compaction evidence。</p>';
+  const gapContent = gaps.length
+    ? gaps.map((gap) => `<article class="request-context-gap">
+        <header><strong>${escapeHtml(requestInputCoverageLabel(gap.reason))}</strong>${renderProvenanceBadge(gap.provenance)}</header>
+        <p>${escapeHtml(gap.sourceKey ? `Source: ${gap.sourceKey}` : "Coverage evidence is incomplete.")}</p>
+      </article>`).join("")
+    : '<p class="request-content-empty">在当前 bounded reconstruction 范围内没有额外 rollout coverage gap。</p>';
+
+  return `<section class="request-input-context" aria-labelledby="request-input-context-title">
+    <header class="request-input-context-header">
+      <div><p class="eyebrow">RECONSTRUCTED INPUT CONTEXT</p><h3 id="request-input-context-title">重建输入上下文</h3></div>
+      <span>${escapeHtml(requestInputCoverageLabel(payload.evidence?.rolloutCoverage))}</span>
+    </header>
+    <div class="request-input-context-disclaimer">
+      <strong>Evidence boundary</strong>
+      <span>Reconstructed from local rollout history. Provider payload/serialization unavailable. Token accounting is not allocated to individual items.</span>
+    </div>
+    <section class="request-context-section">
+      <header><h4>Current Input Evidence</h4><span>${tokenFormatter.format(currentInput.length)} items</span></header>
+      <div class="request-interaction-list">${currentContent}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Runtime Context</h4><span>${tokenFormatter.format(runtimeContext.length)} records</span></header>
+      <div class="request-interaction-list">${runtimeContent}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Retained / Reconstructed History</h4><span>${tokenFormatter.format(historyGroups.length)} groups</span></header>
+      <div class="request-history-groups">${historyContent}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Compaction Evidence</h4><span>${tokenFormatter.format(compaction.length)}</span></header>
+      <div class="request-context-evidence-list">${compactionContent}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Coverage Gaps</h4><span>${tokenFormatter.format(gaps.length)}</span></header>
+      <div class="request-context-evidence-list">${gapContent}</div>
+    </section>
+  </section>`;
+}
+
+function renderRequestContextDeltaTab(contextDelta) {
+  if (contextDelta.loading) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state" role="status">
+        <strong>正在比较 Context Delta…</strong>
+        <span>按同 thread immediate previous canonical Request 读取两侧 bounded reconstruction。</span>
+      </div>
+    </section>`;
+  }
+  if (contextDelta.error) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state error">
+        <strong>Context Delta 读取失败</strong>
+        <span>${escapeHtml(contextDelta.error)}</span>
+        <button type="button" data-request-inspector-refresh>重新读取</button>
+      </div>
+    </section>`;
+  }
+  const payload = contextDelta.payload;
+  if (!payload) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state compact"><strong>Context Delta 尚未读取</strong><span>首次进入该 tab 时才发起 lazy read。</span></div>
+    </section>`;
+  }
+
+  const pair = payload.pair ?? {};
+  if (pair.status !== "complete_pair") {
+    return `<section class="request-context-delta">
+      ${renderContextDeltaDisclaimer()}
+      <div class="request-inspector-state unavailable">
+        <strong>${escapeHtml(contextDeltaPairStateTitle(pair.status))}</strong>
+        <span>${escapeHtml(contextDeltaPairStateDescription(pair.status))}</span>
+      </div>
+      ${renderContextDeltaCoverage(payload)}
+    </section>`;
+  }
+
+  const accounting = payload.accounting ?? {};
+  const previous = accounting.previous ?? {};
+  const current = accounting.current ?? {};
+  const delta = accounting.delta ?? {};
+  const context = payload.contextDelta ?? {};
+  const summary = context.summary ?? {};
+  const added = context.added ?? [];
+  const removed = context.removedOrSuperseded ?? [];
+  const runtimeChanges = context.runtimeChanges ?? [];
+  const compaction = context.compaction ?? [];
+  const sourceTransitions = context.sourceTransitions ?? [];
+  const correlations = payload.correlationSignals ?? [];
+  const truncated = payload.evidence?.diffTruncated
+    ? '<p class="request-inspector-warning">Context Delta 达到 bounded diff/detail 预算；summary 仍保留，但 detailed evidence 为 partial。</p>'
+    : "";
+
+  return `<section class="request-context-delta" aria-labelledby="request-context-delta-title">
+    <header class="request-input-context-header">
+      <div><p class="eyebrow">CONTEXT DELTA & CACHE CORRELATION</p><h3 id="request-context-delta-title">Request-to-Request 上下文变化</h3></div>
+      <span>${escapeHtml(shortId(pair.previousRequestId))} → ${escapeHtml(shortId(pair.currentRequestId))}</span>
+    </header>
+    ${renderContextDeltaDisclaimer()}
+    ${truncated}
+    <section class="request-context-section request-delta-accounting">
+      <header><h4>Canonical Accounting Delta</h4><span>${escapeHtml(payload.policyVersion || "request-context-delta-v1")}</span></header>
+      <div class="request-delta-accounting-grid">
+        ${renderAccountingDeltaMetric("Input Tokens", previous.inputTokens, current.inputTokens, delta.inputTokens, "tokens")}
+        ${renderAccountingDeltaMetric("Cached Input Tokens", previous.cachedInputTokens, current.cachedInputTokens, delta.cachedInputTokens, "tokens")}
+        ${renderAccountingDeltaMetric("Cache Hit Rate", previous.cacheHitRate, current.cacheHitRate, delta.cacheHitRatePoints, "rate")}
+      </div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Context Change Summary</h4><span>${escapeHtml(contextDeltaCoverageLabel(payload.evidence?.comparisonCoverage))}</span></header>
+      <div class="request-delta-summary-grid">
+        <span><small>Retained</small><strong>${tokenFormatter.format(summary.retainedItems ?? 0)}</strong></span>
+        <span><small>Added</small><strong>${tokenFormatter.format(summary.addedItems ?? 0)}</strong></span>
+        <span><small>Removed / Superseded</small><strong>${tokenFormatter.format(summary.removedOrSupersededItems ?? 0)}</strong></span>
+        <span><small>Visible characters</small><strong>${formatSignedInteger(summary.visibleCharactersDelta)}</strong></span>
+      </div>
+    </section>
+    ${renderContextDeltaDetails("Added Context", added, "没有观察到新增 semantic context item。")}
+    ${renderContextDeltaDetails("Removed / Superseded Context", removed, "没有观察到 removed / superseded semantic context item。")}
+    <section class="request-context-section">
+      <header><h4>Runtime Context Changes</h4><span>${tokenFormatter.format(runtimeChanges.length)}</span></header>
+      <div class="request-context-evidence-list">${runtimeChanges.length
+        ? runtimeChanges.map(renderRuntimeDeltaChange).join("")
+        : '<p class="request-content-empty">Phase 25.1 allowlist runtime fields 未观察到变化。</p>'}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Compaction / Source Evidence</h4><span>${tokenFormatter.format(compaction.length + sourceTransitions.length)}</span></header>
+      <div class="request-context-evidence-list">
+        ${compaction.map(renderContextDeltaCompaction).join("")}
+        ${sourceTransitions.map(renderContextDeltaSourceTransition).join("")}
+        ${compaction.length + sourceTransitions.length === 0 ? '<p class="request-content-empty">该 Request pair 未观察到新的 compaction 或 rollout source transition。</p>' : ""}
+      </div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Cache Correlation Evidence</h4><span>${tokenFormatter.format(correlations.length)} signals</span></header>
+      <div class="request-context-evidence-list">${correlations.length
+        ? correlations.map(renderContextDeltaCorrelation).join("")
+        : '<p class="request-content-empty">当前 pair 没有触发 request-context-delta-v1 correlation signal。</p>'}</div>
+    </section>
+    ${renderContextDeltaCoverage(payload)}
+  </section>`;
+}
+
+function renderContextDeltaDisclaimer() {
+  return `<div class="request-input-context-disclaimer request-delta-disclaimer">
+    <strong>Evidence boundary</strong>
+    <span>Context changes are reconstructed from local rollout evidence. Cache metrics are canonical accounting facts. Exact provider cache-key behavior and causal attribution are unavailable.</span>
+  </div>`;
+}
+
+function renderAccountingDeltaMetric(label, previous, current, delta, type) {
+  const left = type === "rate" ? formatContextDeltaRate(previous) : formatTokens(previous);
+  const right = type === "rate" ? formatContextDeltaRate(current) : formatTokens(current);
+  const change = type === "rate" ? formatSignedPercentagePoints(delta) : formatSignedTokenDelta(delta);
+  return `<article>
+    <small>${escapeHtml(label)}</small>
+    <strong>${escapeHtml(left)} <span aria-hidden="true">→</span> ${escapeHtml(right)}</strong>
+    <span>${escapeHtml(change)}</span>
+  </article>`;
+}
+
+function renderContextDeltaDetails(title, items, emptyText) {
+  return `<section class="request-context-section">
+    <header><h4>${escapeHtml(title)}</h4><span>${tokenFormatter.format(items.length)} detailed items</span></header>
+    ${items.length
+      ? `<details class="request-delta-details"><summary><strong>展开 bounded detail</strong><span>${tokenFormatter.format(items.length)} items</span></summary><div class="request-interaction-list">${items.map(renderRequestDeltaItem).join("")}</div></details>`
+      : `<p class="request-content-empty">${escapeHtml(emptyText)}</p>`}
+  </section>`;
+}
+
+function renderRequestDeltaItem(item) {
+  return `<div class="request-delta-item">
+    <div class="request-delta-item-meta"><span>${escapeHtml(deltaDispositionLabel(item.deltaDisposition))}</span>${renderProvenanceBadge(item.provenance)}</div>
+    ${renderRequestContentItem(item)}
+  </div>`;
+}
+
+function renderRuntimeDeltaChange(change) {
+  return `<article class="request-context-evidence-card request-runtime-delta">
+    <header><strong>${escapeHtml(change.label || change.key || "Runtime field")}</strong><span class="request-provenance">Runtime metadata</span></header>
+    <dl><div><dt>Previous</dt><dd>${renderPlainText(change.previousValue ?? "—")}</dd></div><div><dt>Current</dt><dd>${renderPlainText(change.currentValue ?? "—")}</dd></div></dl>
+  </article>`;
+}
+
+function renderContextDeltaCompaction(item) {
+  return `<article class="request-context-evidence-card">
+    <header><strong>${escapeHtml(item.kind === "compaction_snapshot" ? "Compaction rebase" : "Compaction coverage signal")}</strong>${renderProvenanceBadge(item.provenance)}</header>
+    <p>${escapeHtml(item.label || "Observed compaction evidence")}</p>
+  </article>`;
+}
+
+function renderContextDeltaSourceTransition(item) {
+  return `<article class="request-context-evidence-card">
+    <header><strong>Rollout source transition</strong><span class="request-provenance">${escapeHtml(item.sourceOrdering || "source chronology")}</span></header>
+    <p><code>${escapeHtml(item.fromSourceKey || "unknown")}</code> → <code>${escapeHtml(item.toSourceKey || "unknown")}</code></p>
+  </article>`;
+}
+
+function renderContextDeltaCorrelation(signal) {
+  const evidence = signal.contextEvidence ?? {};
+  return `<article class="request-context-evidence-card request-correlation-card">
+    <header><strong>${escapeHtml(contextDeltaCorrelationLabel(signal.type))}</strong><span class="request-provenance">Correlation only</span></header>
+    <p>${escapeHtml(contextDeltaCorrelationDescription(signal.type, evidence))}</p>
+    <small>${escapeHtml(signal.limitation || "Exact provider cache causality unavailable.")}</small>
+  </article>`;
+}
+
+function renderContextDeltaCoverage(payload) {
+  const changes = payload.contextDelta?.coverageChanges ?? [];
+  const limitations = payload.limitations ?? [];
+  return `<section class="request-context-section request-delta-coverage">
+    <header><h4>Coverage & Limitations</h4><span>${escapeHtml(contextDeltaCoverageLabel(payload.evidence?.comparisonCoverage))}</span></header>
+    ${changes.length ? `<div class="request-context-evidence-list">${changes.map((change) => `<article class="request-context-gap"><header><strong>Coverage changed</strong></header><p>${escapeHtml(requestInputCoverageLabel(change.previous))} → ${escapeHtml(requestInputCoverageLabel(change.current))}</p></article>`).join("")}</div>` : ""}
+    <ul>${limitations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+  </section>`;
+}
+
+function contextDeltaPairStateTitle(status) {
+  return ({
+    no_predecessor: "该 thread 没有可比较的上一 canonical Request",
+    predecessor_unavailable: "上一 canonical Request 的 comparison evidence 不可用",
+    boundary_ambiguous: "Request pair chronology 无法唯一证明",
+  })[status] ?? "Context Delta 当前不可用";
+}
+
+function contextDeltaPairStateDescription(status) {
+  return ({
+    no_predecessor: "这是该 thread 的第一条 canonical Request；不会人为跨 thread 或按 UI 顺序寻找 predecessor。",
+    predecessor_unavailable: "已停止比较，不会用 observedAt、mtime 或任意 Request 猜测 predecessor。",
+    boundary_ambiguous: "rollout source chronology / origin line 存在歧义，因此没有构造假 comparison pair。",
+  })[status] ?? "当前证据不足以形成 bounded Request-to-Request comparison。";
+}
+
+function contextDeltaCoverageLabel(value) {
+  return ({
+    complete_pair: "Complete pair evidence",
+    no_predecessor: "No predecessor",
+    predecessor_unavailable: "Predecessor unavailable",
+    boundary_ambiguous: "Pair boundary ambiguous",
+    current_context_partial: "Current context partial",
+    previous_context_partial: "Previous context partial",
+    both_context_partial: "Both contexts partial",
+  })[value] ?? String(value || "Unknown comparison coverage");
+}
+
+function deltaDispositionLabel(value) {
+  return ({
+    added: "Added",
+    superseded_by_compaction: "Superseded by compaction",
+    unresolved_due_to_compaction_gap: "Unresolved after compaction gap",
+    removed_or_not_observed: "Removed / no longer observed",
+  })[value] ?? "Changed";
+}
+
+function contextDeltaCorrelationLabel(value) {
+  return ({
+    cache_hit_drop_with_context_growth: "Cache hit drop + context growth",
+    cache_hit_drop_with_compaction: "Cache hit drop + compaction",
+    cache_hit_drop_with_runtime_change: "Cache hit drop + runtime change",
+    cached_input_drop_with_source_transition: "Cached input drop + source transition",
+    context_changed_cache_stable: "Context changed while cache stayed stable",
+    cache_changed_without_visible_context_change: "Cache changed without visible context change",
+    insufficient_context_coverage: "Context coverage limits correlation",
+  })[value] ?? String(value || "Correlation signal");
+}
+
+function contextDeltaCorrelationDescription(type, evidence) {
+  const context = `${evidence.addedItems ?? 0} added · ${evidence.removedOrSupersededItems ?? 0} removed/superseded · ${evidence.runtimeChangeCount ?? 0} runtime changes`;
+  if (type === "insufficient_context_coverage") return `Local context evidence is partial (${context}). Do not infer an exact cache cause.`;
+  return `Canonical cache/accounting movement occurred in the same Request pair as local context evidence (${context}).`;
+}
+
+function formatContextDeltaRate(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  return Number.isFinite(number) ? formatPercent(number) : "—";
+}
+
+function formatSignedPercentagePoints(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const sign = number > 0 ? "+" : "";
+  return `${sign}${number.toFixed(1)} pp`;
+}
+
+function formatSignedTokenDelta(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const sign = number > 0 ? "+" : number < 0 ? "−" : "";
+  return `${sign}${formatTokens(Math.abs(number))}`;
+}
+
+function formatSignedInteger(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const sign = number > 0 ? "+" : number < 0 ? "−" : "";
+  return `${sign}${tokenFormatter.format(Math.abs(number))}`;
+}
+
+function renderRequestHistoryGroup(group, newest) {
+  return `<details class="request-history-group"${newest ? " open" : ""}>
+    <summary>
+      <span><strong>${escapeHtml(group.label || "Historical rollout")}</strong><small>${escapeHtml(group.sourceKey || "portable source unavailable")}</small></span>
+      <span>${tokenFormatter.format(group.itemCount ?? group.items?.length ?? 0)} items · ${escapeHtml(provenanceLabel(group.provenance))}</span>
+    </summary>
+    <div class="request-interaction-list">${(group.items ?? []).map(renderRequestContextItem).join("")}</div>
+  </details>`;
+}
+
+function renderRequestContextItem(item) {
+  const content = renderRequestContentItem(item);
+  if (!content) return "";
+  return `<div class="request-context-item">${renderProvenanceBadge(item.provenance)}${content}</div>`;
+}
+
+function renderProvenanceBadge(provenance) {
+  const level = provenance?.level ?? "coverage_gap";
+  const location = provenance?.lineStart != null
+    ? ` · line ${provenance.lineStart}${provenance.lineEnd != null && provenance.lineEnd !== provenance.lineStart ? `–${provenance.lineEnd}` : ""}`
+    : "";
+  return `<span class="request-provenance" aria-label="Evidence provenance: ${escapeHtml(provenanceLabel(level))}">${escapeHtml(provenanceLabel(level))}${escapeHtml(location)}</span>`;
+}
+
+function provenanceLabel(value) {
+  return ({
+    direct_current: "Observed current",
+    historical_rollout: "Historical rollout",
+    compaction_snapshot: "Compaction snapshot",
+    runtime_context: "Runtime metadata",
+    coverage_gap: "Coverage gap",
+  })[value] ?? "Observed evidence";
+}
+
+function requestInputCoverageLabel(value) {
+  return ({
+    complete_observed_history: "Complete observed rollout history",
+    partial: "Partial observed history",
+    partial_source_missing: "Partial · source missing",
+    partial_compaction_snapshot_unavailable: "Partial · compaction snapshot unavailable",
+    partial_unsupported_shape: "Partial · unsupported record shape",
+    partial_bounded_truncation: "Partial · bounded truncation",
+    current_cut_unavailable: "Current pre-model cut unavailable",
+    source_rebind_failed: "Source rebind failed",
+    boundary_ambiguous: "Source ordering / boundary ambiguous",
+    unavailable: "Reconstruction unavailable",
+    source_missing: "Source missing",
+    current_content_unavailable: "Current interaction unavailable",
+  })[value] ?? String(value || "Unknown coverage");
+}
+
+function renderRuntimeContextSection(items) {
+  if (!items.length) return "";
+  const fields = items.flatMap((item) => item.fields ?? []);
+  return `<section class="request-interaction request-runtime-context" aria-labelledby="request-runtime-title">
+    <header><div><p class="eyebrow">RUNTIME CONTEXT</p><h3 id="request-runtime-title">运行时上下文</h3></div><span>${tokenFormatter.format(fields.length)} fields</span></header>
+    <details class="request-content-card runtime-context">
+      <summary><strong>Observed runtime metadata</strong><span>非 system/developer prompt dump</span></summary>
+      <dl class="request-tool-fields">${fields.map((field) => `
+        <div><dt>${escapeHtml(field.label)}</dt><dd class="${field.format === "code" ? "code" : ""}">${renderPlainText(field.value)}</dd>${field.truncated ? '<small>已截断</small>' : ""}</div>
+      `).join("")}</dl>
+    </details>
+  </section>`;
+}
+
+function renderRequestInspectorUnavailable(payload) {
+  return `<section class="request-interaction">
+    <div class="request-inspector-state unavailable">
+      <strong>交互正文当前不可用</strong>
+      <span>${escapeHtml(requestContentReasonLabel(payload.reason))}</span>
+    </div>
+  </section>`;
+}
+
+function renderRequestContentItem(item) {
+  if (item.kind === "runtime_context") {
+    const fields = (item.fields ?? []).length
+      ? `<dl class="request-tool-fields">${item.fields.map((field) => `
+          <div><dt>${escapeHtml(field.label)}</dt><dd class="${field.format === "code" ? "code" : ""}">${renderPlainText(field.value)}</dd>${field.truncated ? '<small>已截断</small>' : ""}</div>
+        `).join("")}</dl>`
+      : '<p class="request-content-empty">没有可展示的 allowlisted runtime metadata。</p>';
+    return `<details class="request-content-card runtime-context">
+      <summary><strong>Runtime metadata</strong><span>非 system/developer prompt dump</span></summary>
+      ${fields}
+    </details>`;
+  }
+  if (item.kind === "message" || item.kind === "assistant_message") {
+    const role = item.kind === "assistant_message" ? "Assistant" : requestRoleLabel(item.role);
+    const route = item.author || item.recipient
+      ? `<small>${escapeHtml([item.author, item.recipient].filter(Boolean).join(" → "))}</small>`
+      : "";
+    return `<article class="request-content-card message ${escapeHtml(item.role || "assistant")}">
+      <header><strong>${escapeHtml(role)}</strong>${route}</header>
+      <div class="request-content-text">${renderPlainText(item.text)}</div>
+      ${item.truncated ? '<span class="request-content-truncated">正文已截断</span>' : ""}
+    </article>`;
+  }
+  if (item.kind === "tool_call") {
+    const normalizedFields = (item.fields ?? []).length
+      ? item.fields
+      : typeof item.text === "string" && item.text
+        ? [{ label: "Arguments", value: item.text, format: "code", truncated: item.truncated }]
+        : [];
+    const fields = normalizedFields.length
+      ? `<dl class="request-tool-fields">${normalizedFields.map((field) => `
+          <div><dt>${escapeHtml(field.label)}</dt><dd class="${field.format === "code" ? "code" : ""}">${renderPlainText(field.value)}</dd>${field.truncated ? '<small>已截断</small>' : ""}</div>
+        `).join("")}</dl>`
+      : '<p class="request-content-empty">没有可展示参数</p>';
+    return `<article class="request-content-card tool-call">
+      <header><strong>Tool · ${escapeHtml(item.tool || "unknown")}</strong>${item.status ? `<small>${escapeHtml(item.status)}</small>` : ""}</header>
+      ${fields}
+    </article>`;
+  }
+  if (item.kind === "tool_result") {
+    const resultIdentity = item.tool && item.tool !== "unknown_tool"
+      ? item.tool
+      : item.callId || "unknown";
+    return `<details class="request-content-card tool-result">
+      <summary><strong>Result · ${escapeHtml(resultIdentity)}</strong><span>${tokenFormatter.format(item.lineCount ?? 0)} lines${item.truncated ? " · 已截断" : ""}</span></summary>
+      <pre><code>${escapeHtml(item.text || "（空结果）")}</code></pre>
+    </details>`;
+  }
+  if (item.kind === "reasoning_summary") {
+    const body = renderPlainText(item.text || "");
+    const count = Number(item.occurrenceCount ?? 1);
+    const occurrence = count > 1
+      ? `${tokenFormatter.format(count)} equivalent summary records`
+      : item.opaqueContentPresent ? "存在 opaque reasoning" : "可公开摘要";
+    return `<details class="request-content-card reasoning">
+      <summary><strong>Reasoning summary</strong><span>${escapeHtml(occurrence)}</span></summary>
+      <div class="request-content-text">${body}</div>
+      ${item.truncated ? '<span class="request-content-truncated">摘要已截断</span>' : ""}
+    </details>`;
+  }
+  if (item.kind === "reasoning_activity") {
+    const count = Number(item.occurrenceCount ?? 1);
+    return `<article class="request-content-card reasoning-activity">
+      <header><strong>Reasoning activity</strong><small>${tokenFormatter.format(count)} opaque records</small></header>
+      <p class="request-content-empty">存在不可公开的 reasoning activity；未推断这些记录的内容相同。</p>
+    </article>`;
+  }
+  if (item.kind === "context_signal") {
+    return `<article class="request-content-card context-signal"><header><strong>Context</strong><small>${escapeHtml(item.signal || "signal")}</small></header><p>${escapeHtml(item.label || "检测到上下文状态记录")}</p></article>`;
+  }
+  return "";
+}
+
+function renderRequestInspectorEvidence(evidence, summary) {
+  return `<section class="request-evidence-details" aria-label="证据边界">
+    <div><strong>Evidence boundary</strong><span>Lines ${escapeHtml(evidence?.startLine ?? "—")}–${escapeHtml(evidence?.endLine ?? "—")}</span></div>
+    <div><strong>Coverage</strong><span>${escapeHtml(requestCoverageLabel(evidence?.coverage))}${evidence?.truncated ? " · truncated" : ""}</span></div>
+    <div><strong>Observed records</strong><span>${tokenFormatter.format(summary?.observedRecordCount ?? 0)}${summary?.unknownRecordCount ? ` · ${tokenFormatter.format(summary.unknownRecordCount)} unsupported` : ""}${summary?.malformedRecordCount ? ` · ${tokenFormatter.format(summary.malformedRecordCount)} malformed` : ""}</span></div>
+    <p>这是一段本地 rollout 的可观察交互证据，不是 Provider HTTP/Responses request body，也不用于推断未记录的历史上下文或 chain-of-thought。</p>
+  </section>`;
+}
+
+function requestEvidenceLabel(evidence) {
+  if (!evidence) return "Rollout observed interaction";
+  return `Rollout observed interaction · Lines ${evidence.startLine ?? "—"}–${evidence.endLine ?? "—"}`;
+}
+
+function requestCoverageLabel(value) {
+  return ({
+    complete: "Complete",
+    record_parse_partial: "Partial · malformed record",
+    content_truncated: "Partial · bounded truncation",
+    unsupported_content_shape: "Partial · unsupported record shape",
+    source_missing: "Source missing",
+    source_rebind_failed: "Source rebind failed",
+    task_boundary_unavailable: "Task boundary unavailable",
+    boundary_ambiguous: "Boundary ambiguous",
+    source_changed: "Source changed",
+  })[value] || value || "Unknown";
+}
+
+function requestContentReasonLabel(reason) {
+  return ({
+    source_missing: "原始 rollout 已不存在；Request 的 Token/Cost 元数据仍然有效。",
+    source_rebind_failed: "原始 rollout 无法重新绑定到当前 Codex 目录。",
+    request_locator_missing: "该 Request 缺少可证明的原始证据定位。",
+    task_boundary_unavailable: "当前 Task 缺少可证明的同源读取边界。",
+    boundary_ambiguous: "Request 与 Task/source 边界存在歧义，因此没有跨 source 猜测正文。",
+    source_changed: "原始 source 的当前内容与持久化 locator 不再一致。",
+    content_truncated: "目标 boundary 超出本次 bounded read 上限，因此没有进行无界文件扫描。",
+  })[reason] || "当前没有足够证据安全读取该 Request 的交互正文。";
+}
+
+function requestRoleLabel(role) {
+  return ({ user: "User", developer: "Developer", system: "System", agent: "Agent", assistant: "Assistant" })[role]
+    || (role ? String(role) : "Message");
+}
+
+function renderPlainText(value) {
+  return escapeHtml(value || "").replace(/\r?\n/gu, "<br>");
 }
 
 
@@ -1309,8 +2847,24 @@ async function withViewTransition(update) {
   }
 }
 
-async function fetchJson(url) {
-  const response = await fetch(url, { headers: { Accept: "application/json" } });
+async function fetchJson(url, options = {}) {
+  const response = await fetch(url, {
+    ...options,
+    headers: { Accept: "application/json", ...(options.headers ?? {}) },
+  });
+  const payload = await response.json().catch(() => ({}));
+  if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
+  return payload;
+}
+
+async function postJson(url, body) {
+  const headers = { Accept: "application/json" };
+  const options = { method: "POST", headers };
+  if (body !== undefined) {
+    headers["Content-Type"] = "application/json";
+    options.body = JSON.stringify(body);
+  }
+  const response = await fetch(url, options);
   const payload = await response.json().catch(() => ({}));
   if (!response.ok) throw new Error(payload.error || `请求失败 (${response.status})`);
   return payload;

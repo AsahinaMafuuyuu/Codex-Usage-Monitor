@@ -497,7 +497,7 @@ test("T-PROJ-010 stale projection semantics rebuild from persisted raw evidence 
   database = null;
 
   database = new MonitorDatabase(databasePath);
-  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 14);
+  assert.equal(database.db.prepare("PRAGMA user_version").get().user_version, 15);
   assert.equal(database.getTimeline().usage.totalTokens, 100);
   assert.equal(database.getTimeline().projection.version, 2);
   assert.equal(

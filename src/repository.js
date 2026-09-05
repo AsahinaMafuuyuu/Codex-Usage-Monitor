@@ -14,6 +14,8 @@ export class CodexRepository {
     this.entriesByPath = new Map();
     this.entriesByRoot = new Map();
     this.sessions = new Map();
+    this.sessionNames = new Map();
+    this.sessionIndexSignatures = { current: null, backup: null };
     this.state = { threads: new Map(), parentByChild: new Map(), errors: [] };
     this.indexErrors = [];
     this.lastIndexedAt = null;
@@ -21,7 +23,9 @@ export class CodexRepository {
 
   async initialize() {
     this.state = await readCodexState(this.codexHome);
-    const names = readSessionIndex(join(this.codexHome, "session_index.jsonl"));
+    const sessionNameCatalog = await readSessionNameCatalog(this.codexHome);
+    this.sessionNames = sessionNameCatalog.names;
+    this.sessionIndexSignatures = sessionNameCatalog.signatures;
     const files = await findRolloutFiles(this.codexHome);
     const scanned = await mapWithConcurrency(files, 12, async (path) => {
       try {
@@ -35,25 +39,28 @@ export class CodexRepository {
 
     for (const entry of scanned) if (entry) this.addEntry(entry);
     this.addStateOnlyRoots();
-    this.rebuildSessions(names);
+    this.rebuildSessions(this.sessionNames);
     this.database.upsertSessions([...this.sessions.values()]);
+    this.hydrateStoredSessions();
     this.lastIndexedAt = new Date().toISOString();
     return this.summary();
   }
 
   async discoverNewFiles() {
+    await this.refreshSessionNames();
     const files = await findRolloutFiles(this.codexHome);
     const additions = [];
     for (const path of files) {
       if (this.entriesByPath.has(normalizePath(path))) continue;
-      const entry = await this.refreshFile(path);
+      const entry = await this.refreshFile(path, { refreshSessionNames: false });
       if (entry) additions.push(entry);
     }
     this.lastIndexedAt = new Date().toISOString();
     return additions;
   }
 
-  async refreshFile(filePath) {
+  async refreshFile(filePath, { refreshSessionNames = true } = {}) {
+    if (refreshSessionNames) await this.refreshSessionNames();
     const normalizedPath = normalizePath(filePath);
     if (!isInside(this.codexHome, normalizedPath) || !isRolloutPath(normalizedPath)) return null;
     if (!existsSync(normalizedPath)) return null;
@@ -62,7 +69,7 @@ export class CodexRepository {
       if (!result) return null;
       const entry = this.makeEntry(normalizedPath, result);
       this.addEntry(entry);
-      const session = this.buildSession(entry.rootSessionId, new Map());
+      const session = this.buildSession(entry.rootSessionId);
       if (session) {
         this.sessions.set(session.id, session);
         this.database.upsertSessions([session]);
@@ -72,6 +79,59 @@ export class CodexRepository {
       this.indexErrors.push({ path: normalizedPath, message: error.message });
       return null;
     }
+  }
+
+  async refreshSessionNames() {
+    const catalog = await readSessionNameCatalog(this.codexHome);
+    if (!catalog.signatures.current && this.sessionIndexSignatures.current) return [];
+    if (sameSessionIndexSignatures(catalog.signatures, this.sessionIndexSignatures)) return [];
+
+    const nextNames = catalog.names;
+    const changedIds = changedSessionNameIds(this.sessionNames, nextNames);
+    this.sessionNames = nextNames;
+    this.sessionIndexSignatures = catalog.signatures;
+    if (!changedIds.length) return [];
+
+    for (const rootId of changedIds) {
+      if (!this.hasLiveSessionRoot(rootId)) continue;
+      const session = this.buildSession(rootId);
+      if (session) this.sessions.set(rootId, session);
+    }
+    this.hydrateStoredSessions();
+    const changedSessions = [];
+    for (const rootId of changedIds) {
+      const session = this.sessions.get(rootId);
+      if (!session) continue;
+      changedSessions.push(session);
+    }
+    if (changedSessions.length) this.database.upsertSessions(changedSessions);
+    return changedSessions;
+  }
+
+  hydrateStoredSessions() {
+    if (typeof this.database?.listSessions !== "function") return;
+    for (const stored of this.database.listSessions()) {
+      const live = this.hasLiveSessionRoot(stored.id) ? this.buildSession(stored.id) : null;
+      const indexedName = nonEmptyText(this.sessionNames.get(stored.id)?.threadName);
+      this.sessions.set(stored.id, {
+        ...stored,
+        ...(live ?? {}),
+        id: stored.id,
+        title: indexedName ?? live?.title ?? "",
+        source: live?.source ?? stored.source ?? null,
+        projectPath: live?.projectPath ?? stored.projectPath ?? null,
+        createdAt: live?.createdAt ?? stored.createdAt ?? null,
+        updatedAt: live?.updatedAt ?? stored.updatedAt ?? null,
+        archived: live?.archived ?? Boolean(stored.archived),
+        cliVersion: live?.cliVersion ?? stored.cliVersion ?? null,
+        rolloutKey: live?.rolloutKey ?? stored.rolloutKey ?? null,
+        rolloutPath: live?.rolloutPath ?? this.sourceLocator.pathForKey(stored.rolloutKey),
+      });
+    }
+  }
+
+  hasLiveSessionRoot(rootId) {
+    return this.entriesByRoot.has(rootId) || this.state.threads.has(rootId);
   }
 
   makeEntry(path, result) {
@@ -145,7 +205,7 @@ export class CodexRepository {
     }
   }
 
-  buildSession(rootId, names) {
+  buildSession(rootId, names = this.sessionNames) {
     if (!rootId) return null;
     const rootThread = this.state.threads.get(rootId);
     const entries = this.entriesByRoot.get(rootId) ?? [];
@@ -285,6 +345,48 @@ function readSessionIndex(filePath) {
     }
   }
   return result;
+}
+
+async function readSessionNameCatalog(codexHome) {
+  const backupPath = join(codexHome, "session_index.jsonl.bak");
+  const currentPath = join(codexHome, "session_index.jsonl");
+  const [backupSignature, currentSignature] = await Promise.all([
+    readFileSignature(backupPath),
+    readFileSignature(currentPath),
+  ]);
+  const names = new Map();
+  for (const [id, record] of readSessionIndex(backupPath)) names.set(id, record);
+  for (const [id, record] of readSessionIndex(currentPath)) names.set(id, record);
+  return {
+    names,
+    signatures: {
+      current: currentSignature,
+      backup: backupSignature,
+    },
+  };
+}
+
+function sameSessionIndexSignatures(left, right) {
+  return left.current === right.current && left.backup === right.backup;
+}
+
+async function readFileSignature(filePath) {
+  try {
+    const info = await stat(filePath, { bigint: true });
+    return `${info.size}:${info.mtimeNs}`;
+  } catch (error) {
+    if (error?.code === "ENOENT") return null;
+    throw error;
+  }
+}
+
+function changedSessionNameIds(previous, next) {
+  const ids = new Set([...previous.keys(), ...next.keys()]);
+  return [...ids].filter((id) => {
+    const before = previous.get(id);
+    const after = next.get(id);
+    return before?.threadName !== after?.threadName || before?.updatedAt !== after?.updatedAt;
+  });
 }
 
 async function findRolloutFiles(codexHome) {

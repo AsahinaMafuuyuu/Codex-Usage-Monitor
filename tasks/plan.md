@@ -2,7 +2,7 @@
 
 ## Overview
 
-Build a local-only, read-only dashboard that attributes cumulative Codex rollout token snapshots to individual subagent turns, persists derived records in SQLite, and streams updates to a Chinese web interface.
+Build a local-first, read-only dashboard that attributes cumulative Codex rollout token snapshots to individual subagent turns, persists derived records in SQLite, streams updates to a Chinese web interface, and uses one narrowly scoped official Codex Usage GET for account-level quota.
 
 ## Architecture Decisions
 
@@ -11,8 +11,17 @@ Build a local-only, read-only dashboard that attributes cumulative Codex rollout
 - Store usage metadata indefinitely, but load task instruction previews directly from source logs only when requested.
 - Use Node.js built-ins only: `node:http`, `node:sqlite`, filesystem watching, SSE, and static browser assets.
 - Bind only to loopback and require a per-launch session token exchanged for a strict cookie.
+- Keep Task/Token/Cost accounting local; allow only account quota to read current Codex global config/auth and poll the official Usage endpoint every 60 seconds per ADR-0025.
 
 ## Task List
+
+### Account quota: official Usage polling
+
+- [x] Read current Codex global `config.toml` and file-backed ChatGPT auth without modifying either file.
+- [x] Match official Codex backend-client Usage URL routing and normalize server quota windows into the existing UI contract.
+- [x] Query once at startup, every 60 seconds thereafter, and on manual refresh with in-flight deduplication.
+- [x] Stop treating rollout `rate_limits` as current account quota while preserving parser compatibility and historical audit evidence.
+- [x] Cover URL/auth/payload mapping, manual refresh, monotonic same-window reconciliation and periodic polling with automated tests.
 
 ### Phase 1: Foundation
 
@@ -1332,3 +1341,405 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 - [x] 小结果集不展示无意义分页导航；长分页使用边界页 + 当前页的紧凑窗口，并且同时只展示一个 Request drawer。
 
 **Delivered evidence (2026-08-28):** `npm test` 125 / 124 passed / 0 failed / 1 optional skip，`npm run check` 与 `git diff --check` 通过。Chrome/CDP 实测 Task synthetic 23 rows 全部保留，任务视口 `clientHeight=513 / scrollHeight=2287`、纵向 `scrollTop 80→240`；普通 SSE snapshot 保持同一 `.task-table-wrap` 且 `scrollLeft=473 / scrollTop=120` 不变。Task 到底时真实 wheel 使 workspace `931→1251` 而 wrap 保持 `1774/1774`；无纵向 overflow 时 workspace `639→319` 接管。真实 24-Request Task 默认 10 行，切换 5 条后变为 `第 1 / 5 页`；分页 `justify-content=center`，jump input=`type=text`，Lucide nav icon center delta=`0/0`，pagination animation=`pagination-enter`。展开第二个有 Request 的 Task 后 `openCount=1`，旧 Task `aria-expanded=false`、新 Task=`true`；父/子横向滚动和 720px 回归继续通过。
+
+## Phase 23: Usage Diagnostics
+
+### Overview
+
+在 canonical Request accounting 之上增加独立确定性诊断层，让监控器从“统计用了多少”升级为“解释哪里发生 Usage / Cache / Cost 异常”。设计事实源为 `docs/DESIGN-USAGE-DIAGNOSTICS.md`、技术实现为 `docs/TECHNICAL-IMPLEMENTATION-USAGE-DIAGNOSTICS.md`，长期决策见 ADR-0026。
+
+### V1 Tasks
+
+- [x] 冻结 `usage-diagnostics-v1` implementation contract：policy、Finding interface、deterministic identity、Session/Day scope invariant、Cost partial eligibility、pricing long-context seam、lazy SSE 策略和 Request locator。
+- [x] 新增 `src/diagnostics.js` 深模块及 `test/diagnostics.test.js`，实现 rolling median / baseline 规则。
+- [x] analyzer 使用 single-pass rolling state，确保同一 Request 不因 Session/Day scope 改变 baseline，并避免 O(N²) 历史回扫。
+- [x] 实现 Context Inflation relative + absolute gate。
+- [x] 实现 Cache Regression 和首次显著下降 breakpoint locator。
+- [x] 实现 Cost Spike；唯一费用来源继续为现有 `estimateRequestCost()`。
+- [x] 实现 Long Context Trigger，并严格复用 pricing feature evidence。
+- [x] `database.js` 增加一次性 canonical diagnostic facts query，避免 Task/Request N+1。
+- [x] `monitor.js/server.js` 增加 full/day lazy diagnostics read path，dirty session 不同步 replay rollout；常规 Session/SSE snapshot 不计算 diagnostics summary。
+- [x] 前端增加 lazy Session summary、finding panel、轻量 Request warning marker，并用 request ordinal + requestId 复用现有 Canonical Request 分页完成精确定位。
+- [x] 运行真实历史 shadow diagnostics report，审查 finding density / 误报并冻结 V1 policy revision。
+- [x] 完成 unit / DB / API / security / browser / performance / reconciliation / rollout hash gate。
+
+### Checkpoint
+
+- [x] Diagnostics 不改变任何 Request/Token/Cost accounting 数值。
+- [x] finding 可从异常摘要精确追溯到 canonical Request evidence。
+- [x] 初始 Session/SSE payload 不携带 finding 或 diagnostics summary，且 SSE 热路径不执行 analyzer。
+- [x] 常规 warm diagnostics API P95 目标 `<150ms`，大历史 session 单独记录 benchmark。
+- [x] Delivery 文档只有在所有实际验证完成后才从 `Implementation Pending` 改为 `Implemented`。
+
+**Delivered evidence (2026-09-01):** `src/diagnostics.js` 已实现四类 V1 finding 与 `usage-diagnostics-v1` single-pass policy；pricing 新增唯一 `longContextCandidate` seam，DB/API/UI 均保持 schema v14 / projection v2。真实 shadow 扫描 `245 sessions / 30,201 canonical Requests`，得到 `4,068 findings / 3,048 unique affected Requests`，保留当前阈值 revision。真实 HTTP P95：常规 70-Request session `6.206ms`，最大 1,464-Request session `80.049ms`。Chrome/CDP 1440×900 / 720×900 验证 lazy panel、跨页 Request locator、SSE state preservation。正式 accounting 前后均为 `30,201 Requests / 3,712,877,422 total tokens / $2569.48648723 known calendar cost`；450 rollout manifest SHA-256 前后均为 `8d535514aef5b8dff3fa532afeb01922fc2e9e46941bf52d5899fc3cf0a02fee`。
+
+## Phase 24: Advanced Usage Diagnostics
+
+### Overview
+
+在 Phase 23 Local Diagnostics 稳定基线上增加独立 Historical Robust Diagnostics，不改写 `usage-diagnostics-v1`。设计事实源为 `docs/DESIGN-ADVANCED-USAGE-DIAGNOSTICS.md`，技术实现为 `docs/TECHNICAL-IMPLEMENTATION-ADVANCED-USAGE-DIAGNOSTICS.md`，交付契约为 `docs/DELIVERY-ADVANCED-USAGE-DIAGNOSTICS.md`，长期约束见 ADR-0027。
+
+当前状态：**Phase 24A Implemented / Verified；Phase 24B1 Behavioral Diagnostics Implemented / Verified；Phase 24B2 Budget / In-app Notification Implemented / Verified；LLM Root-Cause Explanation Pending**。
+
+### Phase 24A Tasks
+
+- [x] Freeze structural contract：exact project/model/known-effort cohort、current Session exclusion、MAD=0、Cost tier/rate isolation、Session-slice weighting、V1/V2 独立 interface、shadow-first lifecycle。
+- [x] 新增 `src/advanced-diagnostics.js` 与 `test/advanced-diagnostics.test.js`，先用 worked examples 完成 Median/MAD/Robust-Z TDD。
+- [x] 实现 strict cohort builder；unknown effort 不 fallback，project/model 不自动 broaden。
+- [x] `database.js` 增加 bounded historical canonical facts query；优先 SQL per-cohort cap，禁止 Project 全历史无界装入内存。
+- [x] benchmark query plan；实测现有 schema v14 index 足够，未新增 persisted diagnostic sample table。
+- [x] 实现 Historical Context / Cache / Cost shadow candidates；Cost 只接受 estimated + same service tier + same rateVersion。
+- [x] 实现 Session Cohort Slice；同一 prior Session 同 cohort 只贡献一个 sample。
+- [x] 实现 Cross-session Regression shadow candidates。
+- [x] 新增 `shadow:advanced-usage-diagnostics`，输出 cohort coverage、insufficient history、unknown effort、degenerate MAD、Robust-Z/effect 分布、threshold-adjacent/high-tail 与 V1 overlap。
+- [x] 人工审查 threshold 边缘与 high tail；冻结 practical-effect gate，未为减少报警数量任意抬阈值。
+- [x] shadow 通过后冻结 `advanced-usage-diagnostics-v1`。
+- [x] 新增独立 lazy `/advanced-diagnostics` full/day read path；Phase 23 `/diagnostics` contract 不变且不同步 replay rollout。
+- [x] UI 在现有 Diagnostics 中区分 Local / Historical / Cross-session，并显示 sample count、median、MAD、Robust-Z、effect 和 cohort evidence。
+- [x] 复用 Canonical Request locator；Cross-session finding 使用 supporting Request locator，不建设第二套 viewer。
+- [x] 新增 advanced benchmark；20 轮 warm common P95 `84.298ms`，largest real project/session P95 `416.362ms`。
+- [x] 执行 unit / DB / API / security / browser / performance / accounting / rollout-hash gates。
+- [x] 所有真实门槛完成后把 Phase 24A Delivery 改为 `Implemented / Verified`。
+
+### Phase 24B Tasks
+
+- [x] Phase 24B1 structural contract：Reasoning 使用 reasoning/output share + absolute reasoning gate；Burst 只计 canonical model Request、60s sliding window + 120s evidence episode；Subagent Amplification 使用 exact-project prior multi-agent Session baseline，不做全局 fallback。
+- [x] Reasoning Anomaly：reasoning/output share + minimum denominator + strict historical cohort + Robust-Z/effect gate；真实 shadow 后冻结并接入 lazy API/UI。
+- [x] Request Burst：canonical Request 60s sliding window + 120s evidence episode；真实 historical Session-slice baseline、shadow、freeze、lazy API/UI。
+- [x] Subagent Amplification：root/descendant canonical Token/Request lineage metric + exact-project prior multi-agent baseline；真实 shadow、freeze、lazy API/UI。
+- [x] 新增 `shadow:behavioral-usage-diagnostics` 与 `benchmark:behavioral-usage-diagnostics`；Behavioral policy 冻结为 `behavioral-usage-diagnostics-v1`。
+- [x] Behavioral UI 分为 `Behavioral · Request / Behavioral · Session`，显示 n/median/MAD/Z/effect 并复用 Canonical Request locator/supporting locator。
+- [x] 20 轮 warm performance gate：common P95 `85.607ms`，最大真实工程最新 Session P95 `381.353ms`。
+- [x] Chrome/CDP 1440×900 / 720×900 真实验证 Behavioral finding、Request locator、SSE state、focus/scroll 与窄屏 viewport。
+- [x] Budget / Notification：ADR-0029；schema v15 operational tables；工程级 Session Standard-Rate Equivalent Budget；Warning/High；Ack；Snooze/cooldown；本机 in-app Alerts；严格 POST allowlist。
+- [x] Alerts projection-generation scoped cache：generation/policy/Ack/Snooze 失效，最多 32 Session；steady-state warm 20 轮 common P95 `2.208ms`、最大真实工程最新 Session P95 `2.335ms`。
+- [x] Phase 24B2 DB/API、安全、1440/720 Chrome、accounting/calendar reconciliation、rollout manifest、全量 test/check/diff gate 完成。
+- [ ] LLM Root-Cause Explanation：实施前必须新增独立 ADR，冻结 explicit opt-in、data egress、model-call cost 与 deterministic finding 分离规则。
+
+### Checkpoint
+
+- [x] Phase 23 Local finding id/severity/policy 在 Phase 24 启用后完全不变。
+- [x] Historical sample 不包含 current Session 或 future facts。
+- [x] MAD=0 / insufficient history 是 coverage 状态，不冒充“没有异常”。
+- [x] 24A 仍 metadata-only / no-model-call / no-new-network。
+- [x] Robust-Z threshold 只在真实 shadow review 后才冻结为 production rule。
+- [x] 24B2 仅增加本机 operational write，不发送外部通知，不改变 deterministic finding/accounting。
+
+**Delivered evidence (2026-09-02):** Phase 24A `advanced-usage-diagnostics-v1` final shadow 为 `4,490 findings / 30,198 Requests`；20 轮最大真实工程 P95 `416.362ms`。Phase 24B1 `behavioral-usage-diagnostics-v1` final shadow 为 `26 findings / 30,198 Requests`（Reasoning `24`、Burst `1`、Subagent Amplification `1`，约 `0.09/100`）；20 轮 warm common P95 `85.607ms`、最大真实工程最新 Session P95 `381.353ms`。Chrome/CDP 已验证 Behavioral Session Burst 的 `n=13 / median=8 / MAD=2 / Z=3.71` 与 Canonical Request evidence locator。Phase 24B2 已完成 schema v15 operational state、Budget/Ack/Snooze 与本机 Alerts；最终 steady-state warm P95 为 `2.208ms / 2.335ms`（common / 最大真实工程最新 Session）。最终 schema v15 reconciliation 为 canonical/calendar `30,201 Requests / 3,712,877,422 total tokens`，known calendar cost `$2569.48648723`，projection v2 generation `8191`；`.codex` 仍为 450 rollout、manifest `8d535514aef5b8dff3fa532afeb01922fc2e9e46941bf52d5899fc3cf0a02fee`。`npm test`=`176 / 175 pass / 0 fail / 1 optional skip`，`npm run check` 与 `git diff --check` Green。LLM Explanation 仍 Pending。
+
+## Phase 25: Request Content Inspector
+
+### Overview
+
+在现有 Canonical Request audit 上增加只读、按需的内容下钻。正式语义是从上一 canonical `token_count` boundary 到当前 Request origin boundary 的 **Observed Interaction Slice**，而不是 Provider wire payload。设计事实源为 `docs/DESIGN-REQUEST-CONTENT-INSPECTOR.md`，实施方案为 `docs/TECHNICAL-IMPLEMENTATION-REQUEST-CONTENT-INSPECTOR.md`，交付契约为 `docs/DELIVERY-REQUEST-CONTENT-INSPECTOR.md`，长期约束见 ADR-0030。
+
+当前状态：**Implemented / Verified**。
+
+### Phase 25A：Content Projection Core
+
+- [x] 新增 `src/request-content.js` 深模块与 boundary/projector fixtures。
+- [x] DB 提供 `requestId -> canonical origin locator + previous same-source boundary + task locator` 的窄只读 query。
+- [x] 通过 portable source key 重新绑定当前 rollout path；客户端不能提交 path/source/line。
+- [x] 使用 canonical Request boundary 构造 bounded Observed Interaction Slice；ambiguous/source changed 时明确 unavailable/partial。
+- [x] 将 message / assistant message / tool call / tool result / reasoning summary / context signal 投影为稳定语义 shape，不返回 Raw JSON envelope。
+- [x] scanner 实现 byte/record/item/payload hard limits 与显式 truncation。
+- [x] 新增 lazy `GET /api/sessions/:sessionId/requests/:requestId/content`；不进入 Session/SSE/Timeline/Diagnostics 热路径。
+- [x] source missing 时 Request metadata 仍可返回、content 标记 unavailable；request 不属于 session 时 404。
+- [x] 完成 unit / DB / API / XSS / no-persistence / read-only source gates。
+
+### Phase 25B：Request Inspector UI
+
+- [x] Canonical Requests 表增加 `详情 / 查看` 列。
+- [x] 增加单一全局、可访问 Request Inspector Dialog。
+- [x] Header 展示 time/model/effort/tier/usage/cache/cost 与 `Rollout observed interaction` evidence。
+- [x] Message 使用角色块；Tool Call/Result 使用通用 Card；Reasoning summary 默认折叠；无公开 summary 时不推断 CoT。
+- [x] loading/unavailable/partial/truncated/error 均有可读状态。
+- [x] 浏览器只持有当前打开 Request 的 ephemeral payload；close/session/day switch 后清除，不使用 localStorage/sessionStorage/IndexedDB。
+- [x] SSE replay 保持 Dialog root、Request row identity、focus/scroll；关闭后恢复触发按钮焦点。
+- [x] 完成 1440×900 / 720×900 Chrome/CDP 与 reduced-motion 回归。
+
+### Phase 25C：Delivery Freeze
+
+- [x] 真实 representative rollout 审计确认 boundary 语义与 projector 输出。
+- [x] common / near-limit Request benchmark 达到冻结门槛。
+- [x] canonical Request count、六字段 Token、calendar cost、Diagnostics identity 前后完全一致。
+- [x] `.codex` manifest before/after 完全一致，SQLite schema v15 / projection v2 不因 Inspector 改变。
+- [x] 更新 API/Architecture/README/CHANGELOG/VERIFICATION，只记录实际实现和执行过的证据。
+- [x] `npm test`、`npm run check`、`git diff --check` Green 后，Delivery 才允许改为 `Implemented / Verified`。
+
+### Checkpoint
+
+- [x] 用户能从任一 canonical Request 打开可读 interaction，不需要阅读 JSONL。
+- [x] UI 不把 Observed Interaction 冒充 Provider Request Body。
+- [x] 正文不写 SQLite、磁盘缓存或浏览器持久化存储。
+- [x] 大 Tool Result/长 slice 有明确 bounded/truncated 行为。
+- [x] Phase 18–24 accounting、Request pagination、Diagnostics locator 与 SSE interaction 均不回归。
+
+**Delivered evidence (2026-09-02):** `src/request-content.js`、DB locator、lazy content endpoint 与单一 Inspector Dialog 已交付；locator/projector 最终拆分为 `12 MiB/侧、24 MiB 总 locator budget + 4 MiB slice budget + 500 records / 64 KiB item / 512 KiB public body`。`audit:request-content`：30,201 Requests 中 source-present 29,807、boundary ambiguous 0、当前 bounded policy 可读 29,801（99.97987%），6 条 oversized slice 显式 truncate、394 条历史 source missing。production-equivalent warm P95：最终 default common `1.683ms`、最重双-anchor fallback `63.370ms`、3.865 MiB 可投影 slice `49.776ms`；5.70 MiB/15.13 MiB oversized slice 分别在 `12.683ms / 32.146ms` 内 bounded truncate。Chrome/CDP 验证 1440×900 与 720×900、SSE DOM identity、stale refresh、close payload clear/focus restore 均通过。最终 accounting/read-only fingerprint 以 `docs/VERIFICATION.md` 交付记录为准。
+
+## Phase 25.1: Request Inspector Semantic Refinement
+
+当前状态：**Implemented / Verified**。
+
+- [x] `Input/Cached/Output/Total` 改为明确 Token accounting label。
+- [x] 当前 slice 建立 conservative pre-model evidence cut。
+- [x] 新增 `Observed Input Evidence` section。
+- [x] 新增 allowlisted `Runtime Context` section。
+- [x] identical public reasoning summary semantic coalesce + occurrence evidence。
+- [x] opaque-only reasoning 聚合 activity count，不推断内容相同。
+- [x] strict-slice Tool Result callId fallback 不回归。
+- [x] Request Content public projection 版本化升级。
+- [x] unit/API/UI security/Chrome/performance/accounting/read-only Gate 全部 Green 后才标记完成。
+
+设计事实源：`docs/DESIGN-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md`；实施方案：`docs/TECHNICAL-IMPLEMENTATION-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md`；交付契约：`docs/DELIVERY-REQUEST-INSPECTOR-SEMANTIC-REFINEMENT.md`。
+
+**Delivered evidence (2026-09-02):** Request Content contract 已升级 v2；focused projector tests 覆盖 cut/runtime/dedupe/opaque activity；`audit:request-content` 仍为 30,201 Requests、source-present 29,807、bounded-readable 29,801、boundary ambiguous 0。20 轮 warm common/near-limit P95=`0.967/0.892ms`。Chrome/CDP 实测真实 `occurrenceCount=2` duplicate reasoning Request 只渲染 1 张 summary Card，并完成 1440×900 / 720×900、SSE/stale/focus 回归。schema v15 / projection v2 与 accounting/read-only fingerprint 不变。
+
+## Phase 26: Reconstructed Input Context
+
+当前状态：**Implemented / Verified**。
+
+- [x] 新增 request/thread/source-chain read locator，不让客户端提交 source/path/line/byte。
+- [x] 新增 `src/request-input-context.js` 深模块。
+- [x] 复用 Phase 25.1 单一 pre-model cut 事实源。
+- [x] 支持同线程 multi-source history continuity。
+- [x] 支持 explicit compaction snapshot rebase。
+- [x] source missing / compaction gap / unsupported shape / bounded truncation 明确 coverage。
+- [x] 每个 context item 有 provenance evidence level。
+- [x] Input/Cached token accounting 不分配到 reconstructed item。
+- [x] 新增 lazy `/input-context` read path 与 Inspector `Input Context` tab。
+- [x] 新增真实 history/compaction audit，再冻结 limits。
+- [x] 新增 production-equivalent benchmark。
+- [x] no persistence / no schema / no accounting regression。
+- [x] unit/API/UI security/Chrome/performance/accounting/read-only Gate 全部 Green 后才标记完成。
+
+设计事实源：`docs/DESIGN-RECONSTRUCTED-INPUT-CONTEXT.md`；实施方案：`docs/TECHNICAL-IMPLEMENTATION-RECONSTRUCTED-INPUT-CONTEXT.md`；交付契约：`docs/DELIVERY-RECONSTRUCTED-INPUT-CONTEXT.md`；长期约束：`docs/decisions/0031-reconstructed-input-context-evidence.md`。
+
+**Delivered evidence (2026-09-02):** 300 Request audit：source/thread P99=2/max=4，history scan P99=25,614,241 bytes，context items P99=699，visible chars P99=778,549；293 complete / 3 bounded partial / 4 unavailable。冻结 limits=`16 sources / 32 MiB / 800 items / 64 KiB item / 1 MiB projected`。118/118 sampled compaction 有 explicit snapshot；全库 262 条 `context_compacted` 均是前方 2–4 行 explicit compaction 的 lifecycle echo。20 轮 warm common/large P95=`9.427/39.421ms`。Chrome/CDP 验证首次 Input Context 点击只产生 1 次 lazy fetch、24 个 provenance badge、desktop/narrow/SSE/focus 全 Green；Provider payload/serialization 仍明确未重建/未知。
+
+## Phase 27: Context Delta & Cache Correlation
+
+当前状态：**Implemented / Verified**。
+
+- [x] 冻结同 thread immediate predecessor comparison 语义；不按 mtime/UI order/最近 timestamp 猜 predecessor。
+- [x] 新增 DB narrow pair locator，并覆盖 cross-source predecessor / no predecessor / ambiguity。
+- [x] 新增 `src/request-context-delta.js`，previous/current context 只复用 Phase 26 reconstruction seam。
+- [x] 实现 bounded sequence-aware semantic diff：retained / added / removed-or-superseded / runtime / compaction / source / coverage。
+- [x] semantic fingerprint 仅 ephemeral，不进入 SQLite。
+- [x] canonical Input/Cached/Cache Hit 前后值与 delta 独立计算，不按 item 分配 token。
+- [x] correlation signal 不输出 Provider cache key、exact causality、confidence/ranking。
+- [x] 新增 `audit:request-context-delta`，基于真实 predecessor/compaction/delta/cache 分布冻结 limits 与 `request-context-delta-v1` policy。
+- [x] 新增 production-equivalent `benchmark:request-context-delta`。
+- [x] 新增 lazy `/context-delta` read path；query injection/foreign session/no-store/no absolute path/security Gate。
+- [x] Request Inspector 增加 `Context Delta` tab；Interaction/Input Context 默认不预加载它。
+- [x] 1440×900 / 720×900 / SSE stale / close-focus / large-delta collapse Chrome Gate。
+- [x] schema v15 / projection v2 / canonical accounting / Diagnostics / `.codex` read-only 全部不回归。
+- [x] 全量 test/check/diff/fingerprint Green 后才允许标记 `Implemented / Verified`。
+
+**Delivered evidence (2026-09-02):** 300 Request audit=`293 comparable / 7 no_predecessor`，context coverage=`286 complete / 6 both partial / 1 current partial`，`diffTruncated=0`；冻结 limits=`800 items/side / 200 details / 512 KiB characters / 250,000 work units` 与 `request-context-delta-v1`。20 轮 common/large total P95=`19.777/68.592ms`，diff P95=`1.463/9.351ms`，source hash unchanged。Chrome/CDP 验证第三 tab lazy fetch、1440×900/720×900、SSE/stale/focus 与 200-detail synthetic collapse=`1.5ms`。最终全量=`210 tests / 209 passed / 0 failed / 1 existing optional skipped`；accounting/.codex fingerprint 前后完全一致。
+
+技术实施方案：`docs/TECHNICAL-IMPLEMENTATION-CONTEXT-DELTA-CACHE-CORRELATION.md`；交付契约：`docs/DELIVERY-CONTEXT-DELTA-CACHE-CORRELATION.md`；证据边界继续继承 ADR-0031。
+
+## Phase 28: Release & CLI Management / v1.2.0
+
+当前状态：**Implemented / Verified**。
+
+设计事实源：`docs/DESIGN-RELEASE-CLI-MANAGEMENT.md`；技术实施：`docs/TECHNICAL-IMPLEMENTATION-RELEASE-CLI-MANAGEMENT.md`；长期决策：`docs/decisions/0033-managed-release-cli-self-update.md`、`docs/decisions/0034-fixed-loopback-persistent-browser-auth.md`。
+
+目标：把当前 Git-checkout 启动模型升级为明确的 CLI + Managed Install + GitHub stable Release 体系。`package.json.version` 成为唯一 App Version；`--version` 离线快速返回并读取本地 update cache；`--update` 只在 managed install 中执行 manifest/hash/staging/self-check/atomic pointer transaction；rollback 必须受 SQLite storage compatibility gate 保护。Git checkout 永远由 Git 管理，不允许 self-update 覆盖。
+
+### Task 1: Freeze App Version and CLI seam
+
+**Description:** 新建正式 `bin` entrypoint 与 `src/cli.js`，把 `src/server.js` 从命令行 main 还原为纯 `startApplication()` module；版本只从 `package.json` 读取。
+
+**Acceptance criteria:**
+- [x] `codex-usage-monitor` / `start` / `--no-open` 保持现有启动行为。
+- [x] `--version/-V`、`--help/-h` 不初始化 DB、不扫描 `.codex`、不联网。
+- [x] `package.json.version` 是唯一 App Version，README 不再手写可漂移“当前版本”。
+
+**Verification:** focused CLI unit tests；现有 server/security tests；`npm run check`。
+
+**Dependencies:** None。
+
+**Files likely touched:** `bin/codex-usage-monitor.js`, `src/app-version.js`, `src/cli.js`, `src/server.js`, `test/cli.test.js`。
+
+### Task 2: Introduce Runtime Layout
+
+**Description:** 建立 Development/Managed 两种 runtime layout，formal install 使用 `%LOCALAPPDATA%\CodexUsageMonitor` 的 immutable app versions + mutable data/state；开发 checkout 继续使用 repo `data/usage.sqlite`。
+
+**Acceptance criteria:**
+- [x] managed mode 必须由 install marker + current pointer + entry path 一致性共同证明，不能只看 `.git` 或环境变量。
+- [x] `CODEX_MONITOR_DB` 只能解析到当前 runtime mutable root 内，Windows path escape 被拒绝。
+- [x] Development Mode `--update/rollback` 没有任何 worktree 写入路径。
+
+**Verification:** runtime-layout path fixture；database resolver regression；Windows drive/case/`..` containment tests。
+
+**Dependencies:** Task 1。
+
+**Files likely touched:** `src/runtime-layout.js`, `src/server.js`, `test/runtime-layout.test.js`, `test/database-server.test.js`。
+
+### Task 3: Stabilize the loopback endpoint and browser authorization
+
+**Description:** 把当前“每次启动随机 launch token + 自动递增端口”改为精确 loopback endpoint + 持久 browser authorization。默认固定 `127.0.0.1:47832`，端口占用直接失败；首次/失效授权由 `codex-usage-monitor open` 通过短时 challenge/proof 建立持久 HttpOnly Cookie，普通启动输出只显示固定根 URL。
+
+**Acceptance criteria:**
+- [x] 默认只监听 `127.0.0.1:47832`；`CODEX_MONITOR_PORT` 只改变本次精确端口，`EADDRINUSE` 不 fallback 到后续端口。
+- [x] 浏览器授权可跨 monitor 进程重启保留；固定 `http://127.0.0.1:47832/` 在已有有效 Cookie 时可直接点击访问，不需要新的 `?token=`。
+- [x] `open` 使用本机私有 secret + 60 秒 one-shot challenge/proof；secret/proof 不进入 stdout、SQLite、日志、Git 或 release artifact；Host/Origin/CSP/CORS/敏感 API auth 边界不放宽。
+
+**Verification:** `test/browser-auth.test.js`；server/security regression；fixed-port/EADDRINUSE fixture；cookie restart fixture；`open` challenge replay/expiry/origin mismatch tests。
+
+**Dependencies:** Task 2。
+
+**Files likely touched:** `src/browser-auth.js`, `src/cli.js`, `src/server.js`, `src/runtime-layout.js`, `test/browser-auth.test.js`, `test/database-server.test.js`。
+
+### Checkpoint A: CLI/Foundation
+
+- [x] 默认启动、`--version`、`--help` 全部可用。
+- [x] `src/server.js` 不再解析 CLI 参数。
+- [x] Managed/Development layout 在测试中严格分离。
+- [x] 固定 loopback URL 可重复访问，端口不漂移，浏览器授权不再依赖每次进程启动的一次性 URL。
+- [x] 全量测试仍 Green 后才进入网络/update 工作。
+
+### Task 4: Extract shared proxy-aware HTTP transport
+
+**Description:** 将现有 Codex Usage client 的 HTTPS proxy/WinINET/CONNECT transport 提取为独立深模块，为 ReleaseClient 复用；Codex credential/header 逻辑仍留在 CodexUsageClient。
+
+**Acceptance criteria:**
+- [x] 现有 HTTPS_PROXY/ALL_PROXY/NO_PROXY/WinINET 行为不变。
+- [x] Release transport 不接触 Codex auth/account id。
+- [x] Transport 支持 manual redirect，供 GitHub host allowlist 检查。
+
+**Verification:** 原 `codex-usage-client` tests 全部 Green；新增 transport fixture。
+
+**Dependencies:** Checkpoint A。
+
+**Files likely touched:** `src/http-transport.js`, `src/codex-usage-client.js`, `test/codex-usage-client.test.js`。
+
+### Task 5: Implement ReleaseClient and update cache
+
+**Description:** 固定官方 GitHub repository，读取 stable `release-manifest.json`，实现 stable SemVer、manifest validator、manual redirect allowlist 与 managed update cache。
+
+**Acceptance criteria:**
+- [x] 不从 Git remote 或用户 URL 推导 update source。
+- [x] invalid manifest/tag/hash/size/platform/storage/redirect 全部 fail closed。
+- [x] managed `update.json` 原子写；Development `update --check` 只做 one-shot，不创建 managed marker/state。
+
+**Verification:** manifest/redirect/proxy/cache unit tests；GitHub request header fixture 证明无 Codex credential。
+
+**Dependencies:** Task 4。
+
+**Files likely touched:** `src/release-client.js`, `src/update-state.js`, `test/release-client.test.js`。
+
+### Task 6: Implement managed update transaction
+
+**Description:** 建立 lock -> manifest -> download -> size/hash -> staging -> extraction validation -> embedded build identity -> target offline self-check -> immutable version dir -> atomic current pointer 的 transaction。
+
+**Acceptance criteria:**
+- [x] checksum/extract/self-check/lock 任一失败都不改变 current pointer。
+- [x] 已存在同版本目录只有 identity 完全一致才复用；不一致直接 integrity failure。
+- [x] updater 不覆盖当前版本目录，不杀死正在运行 server，不执行 npm install。
+
+**Verification:** failure-injection updater tests；concurrent lock；current pointer atomicity；temp cleanup。
+
+**Dependencies:** Task 5。
+
+**Files likely touched:** `src/updater.js`, `src/cli.js`, `test/updater.test.js`。
+
+### Task 7: Add SQLite backup, migration, and rollback compatibility
+
+**Description:** 使用 Node 24 `node:sqlite backup()` 建立一致性 backup/migration；rollback 读取目标 release storage compatibility metadata，兼容时 code-only pointer rollback，不兼容时只允许显式 `--restore-data`。
+
+**Acceptance criteria:**
+- [x] doctor/rollback schema inspection 只读，不实例化会 migration 的 MonitorDatabase。
+- [x] incompatible code-only rollback 被拒绝。
+- [x] restore failure 不同时破坏 current DB 和 current pointer。
+
+**Verification:** WAL online backup；quick_check；compatible/incompatible rollback；restore failure injection；checkout->managed accounting fingerprint equality。
+
+**Dependencies:** Task 6。
+
+**Files likely touched:** `src/database-backup.js`, `src/updater.js`, `test/database-backup.test.js`, `test/updater.test.js`。
+
+### Checkpoint B: Update/Rollback Core
+
+- [x] Managed update transaction 在全 fixture 下原子。
+- [x] Git checkout `--update` 零写入。
+- [x] DB compatibility/backup/restore gates 可重复验证。
+- [x] update 网络失败不影响 monitor start/health。
+
+### Task 8: Build Windows installer and stable shim
+
+**Description:** 提供 `%LOCALAPPDATA%\CodexUsageMonitor` bootstrap installer 和稳定 `.cmd` shim；支持显式 `-MigrateFrom <checkout>`，将旧 repo DB 通过 SQLite backup 复制到 managed data root，不删除源 DB。
+
+**Acceptance criteria:**
+- [x] 安装无需管理员权限，User PATH 只加入 managed `bin`。
+- [x] shim 只读取 current pointer 并透传参数，退出码正确。
+- [x] migration 幂等，目标 DB 已存在时拒绝覆盖。
+
+**Verification:** temp LOCALAPPDATA clean install；PATH/shim smoke；migration fingerprint；原 checkout hash/status 不变。
+
+**Dependencies:** Checkpoint B。
+
+**Files likely touched:** `scripts/install.ps1`, `src/runtime-layout.js`, `test/runtime-layout.test.js`, `docs/OPERATIONS.md`。
+
+### Task 9: Build deterministic release artifact and verifier
+
+**Description:** 构建自包含 runtime zip。zip 内使用 `build-manifest.json`；zip 完成后生成外部 `release-manifest.json` 和 SHA-256，避免 archive self-hash 循环。
+
+**Acceptance criteria:**
+- [x] target machine update 不运行 npm install/npm ci。
+- [x] clean extract 后 `--version` 与 `doctor --release-self-check` Green。
+- [x] artifact 不含 SQLite、`.codex`、日志、凭据、`.git` 或开发缓存。
+
+**Verification:** release-build fixture；clean temp extract/run；manifest identity/hash/size tests。
+
+**Dependencies:** Task 8。
+
+**Files likely touched:** `scripts/build-release.js`, `scripts/verify-release.js`, `test/release-build.test.js`, `package.json`。
+
+### Task 10: Add controlled GitHub Draft Release workflow
+
+**Description:** SemVer tag 触发 CI，依次验证 version/release note、tests/check/diff、构建与 clean-artifact self-test，最后只创建 Draft Release，由维护者显式 Publish。
+
+**Acceptance criteria:**
+- [x] tag/package/package-lock/release note 任何不一致都 fail。
+- [x] workflow 不自动 bump/commit/tag/publish。
+- [x] Draft assets 固定包含 zip、external manifest、installer；stable updater 只看到 Publish 后 release。
+
+**Verification:** workflow static contract test；本地 release verifier；首次正式 tag 前人工审查 GitHub workflow permissions。
+
+**Dependencies:** Task 9。
+
+**Files likely touched:** `.github/workflows/release.yml`, `docs/RELEASE-CHECKLIST.md`, `docs/releases/v1.2.0.md`。
+
+### Task 11: Final public contract and v1.2.0 release gate
+
+**Description:** 只有实现与真实验证完成后才更新 README/CHANGELOG/OPERATIONS/VERIFICATION，并清除旧 `0.1.0` 等版本漂移表述。完成 clean install -> update -> rollback 全链路与 accounting/read-only 对账。
+
+**Acceptance criteria:**
+- [x] public docs 与实际 CLI/installer/release behavior 一致。
+- [x] `npm test`, `npm run check`, `git diff --check` Green；skipped 明确记录。
+- [x] canonical Request/Token/Cost 与 `.codex` manifest 在 Phase 28 前后不因 updater 改变。
+
+**Verification:** full suite；clean managed E2E；release artifact E2E；accounting/source hash fingerprint。
+
+**Dependencies:** Task 10。
+
+**Files likely touched:** `README.md`, `CHANGELOG.md`, `docs/OPERATIONS.md`, `docs/VERIFICATION.md`, 必要时 `docs/API.md` / `docs/ARCHITECTURE.md`。
+
+### Final Checkpoint: v1.2.0 Release Ready
+
+- [x] `package.json.version` 是唯一 App Version。
+- [x] `127.0.0.1:47832` 为稳定默认 endpoint；端口占用 fail-fast；固定根 URL + persistent browser authorization 可跨进程重启使用。
+- [x] `--version` offline、`update --check` explicit network、managed start 24h low-frequency check。
+- [x] `--update` 只使用固定 GitHub stable Release，不使用 Git。
+- [x] SHA-256 + embedded build identity + offline self-check + atomic pointer transaction 全部生效。
+- [x] rollback 有 storage compatibility gate 和 pre-update backup path。
+- [x] GitHub workflow 只生成 Draft，Publish 保持人工 gate。
+- [x] 正式 artifact 无 npm-install runtime dependency resolution。
+- [x] 当前业务 accounting、安全与 `.codex` read-only 不变量保持。
+
+**Implementation baseline note:** 本轮开始时工作树包含 Phase 27 / Astra / Phase 28 既有未提交改动。按用户明确指令，这些改动作为必须保留的实施基线，整个实现过程未执行 reset/stash/checkout，也未覆盖或撤销既有改动。正式 release artifact 仍只允许在未来 clean tagged checkout 的 GitHub Release Gate 中构建。
+
+**Delivered evidence (2026-09-05):** 最终全量 `npm test` = `274 tests / 273 passed / 0 failed / 1 existing optional skipped`；`npm run check` 与 `git diff --check` Green。真实本地 E2E 使用 release builder 生成 clean runtime artifact，依次完成 Managed Install `v1.2.0`、真实 updater 切换到临时 `v1.2.1`、再 rollback 到 `v1.2.0`。canonical accounting 前后均为 `30,239` Requests、total=`3,718,496,297` tokens、known calendar cost=`$2579.79482923`；`.codex` 前后均为 `452` rollout，combined SHA-256=`fb704efd96f4dc0019737a0ed9bed8fc7ecfe394f6029db8e9cb15302cc813cf`。完整证据见 `docs/DELIVERY-RELEASE-CLI-MANAGEMENT.md`。

@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   combineCostSummaries,
   estimateRequestCost,
+  estimateTaskCost,
   normalizeServiceTier,
   priceTasksByRequestEvents,
   pricingCatalogSummary,
@@ -111,6 +112,28 @@ test("T-COST-006 unsupported dates do not fall back to nearest rate", () => {
   assert.equal(resolveHistoricalRate("unknown-model", AT("2026-08-26")), null);
 });
 
+test("T-COST-007 GPT-6 Astra uses the Codex subscription rate from launch", () => {
+  assert.equal(resolveHistoricalRate("gpt-6-astra", AT("2026-09-02")), null);
+  assert.deepEqual(resolveHistoricalRate("gpt-6-astra", AT("2026-09-03")).ratesPerMillion, {
+    input: 10,
+    cachedInput: 1,
+    output: 50,
+  });
+});
+
+test("T-COST-008 legacy API-equivalent catalog recognizes GPT-6 Astra cache writes", () => {
+  const estimate = estimateTaskCost("gpt-6-astra", {
+    inputTokens: 1_000_000,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 200_000,
+    outputTokens: 0,
+    totalTokens: 1_000_000,
+  }, Date.parse("2026-09-04T00:00:00.000Z"));
+  assert.equal(estimate.status, "estimated");
+  assert.equal(estimate.amountUsd, 10.5);
+  assert.equal(estimate.components.cacheWriteInputUsd, 2.5);
+});
+
 test("T-COST-010 cached input is a subset of input", () => {
   const estimate = estimateRequestCost(request(), { applyFeaturePolicy: false });
   assert.equal(estimate.status, "estimated");
@@ -192,8 +215,10 @@ test("T-COST-020 long context uses a strict greater-than 272K boundary", () => {
     outputTokens: 0,
     totalTokens: 272_001,
   }));
+  assert.equal(normal.longContextCandidate, false);
   assert.equal(normal.longContextStatus, "normal");
   assert.equal(normal.multipliers.input, 1);
+  assert.equal(long.longContextCandidate, true);
   assert.equal(long.longContextStatus, "long");
   assert.equal(long.multipliers.input, 2);
   assert.equal(long.multipliers.output, 1.5);
@@ -275,12 +300,32 @@ test("T-COST-025 an unsupported long-context model is never guessed into a price
     totalTokens: 300_000,
   }));
   assert.equal(estimate.status, "unavailable");
+  assert.equal(estimate.longContextCandidate, true);
+  assert.equal(estimate.longContextStatus, "unknown");
   assert.equal(estimate.amountUsd, null);
   assert.equal(estimate.reason, "historical_rate_unavailable");
 });
 
+test("T-COST-026 GPT-6 Astra Codex long context is explicitly exempt from the surcharge", () => {
+  const estimate = estimateRequestCost(request({
+    model: "gpt-6-astra",
+    observedAt: AT("2026-09-04"),
+    inputTokens: 300_000,
+    cachedInputTokens: 0,
+    outputTokens: 10_000,
+    totalTokens: 310_000,
+  }));
+  assert.equal(estimate.status, "estimated");
+  assert.equal(estimate.longContextCandidate, true);
+  assert.equal(estimate.longContextStatus, "exempt");
+  assert.equal(estimate.multipliers.input, 1);
+  assert.equal(estimate.multipliers.output, 1);
+  assert.equal(estimate.amountUsd, 3.5);
+});
+
 test("T-COST-031 Fast multiplier follows model family", () => {
   const cases = [
+    ["gpt-6-astra", AT("2026-09-04"), 2.5, 2.5],
     ["gpt-5.6-sol", AT("2026-08-26"), 1.25, 2.5],
     ["gpt-5.5", AT("2026-08-26"), 1.25, 2.5],
     ["gpt-5.4", AT("2026-08-26"), 0.5, 2],
