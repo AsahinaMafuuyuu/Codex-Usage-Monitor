@@ -305,11 +305,11 @@ test("startup falls back from a stale Codex home and anchors relative database p
   );
 
   const projectDatabase = resolveDatabasePath("portable-data\\usage.sqlite", {});
-  assert.match(projectDatabase, /codex-usage-monitor[\\/]data[\\/]portable-data[\\/]usage\.sqlite$/u);
-  assert.match(resolveDatabasePath(null, {}), /codex-usage-monitor[\\/]data[\\/]usage\.sqlite$/u);
+  assert.match(projectDatabase, /codex-usage-monitor[\\/]data[\\/]portable-data[\\/]usage\.sqlite$/iu);
+  assert.match(resolveDatabasePath(null, {}), /codex-usage-monitor[\\/]data[\\/]usage\.sqlite$/iu);
   assert.match(
     resolveDatabasePath(null, { CODEX_MONITOR_DB: join(directory, "external.sqlite") }),
-    /codex-usage-monitor[\\/]data[\\/]usage\.sqlite$/u,
+    /codex-usage-monitor[\\/]data[\\/]usage\.sqlite$/iu,
   );
 });
 
