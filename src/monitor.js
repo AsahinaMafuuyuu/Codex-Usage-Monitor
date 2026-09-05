@@ -30,12 +30,14 @@ export class UsageMonitor extends EventEmitter {
     database,
     quotaClient = new CodexUsageClient({ codexHome: repository.codexHome }),
     quotaRefreshIntervalMs = 60_000,
+    watchImpl = watch,
   }) {
     super();
     this.repository = repository;
     this.database = database;
     this.quotaClient = quotaClient;
     this.quotaRefreshIntervalMs = quotaRefreshIntervalMs;
+    this.watchImpl = watchImpl;
     this.selectedSessionId = null;
     this.parser = null;
     this.selectedEntries = [];
@@ -923,13 +925,14 @@ export class UsageMonitor extends EventEmitter {
   }
 
   startWatchers() {
+    if (typeof this.watchImpl !== "function") return;
     for (const root of [
       join(this.repository.codexHome, "sessions"),
       join(this.repository.codexHome, "archived_sessions"),
     ]) {
       if (!existsSync(root)) continue;
       try {
-        const watcher = watch(root, { recursive: true }, (_event, filename) => {
+        const watcher = this.watchImpl(root, { recursive: true }, (_event, filename) => {
           if (!filename || !String(filename).endsWith(".jsonl")) return;
           this.schedulePath(join(root, String(filename)));
         });
