@@ -1101,12 +1101,13 @@ export class UsageMonitor extends EventEmitter {
     if (this.pollTimer) clearInterval(this.pollTimer);
     if (this.reconcileTimer) clearInterval(this.reconcileTimer);
     if (this.quotaPollTimer) clearInterval(this.quotaPollTimer);
-    for (const watcher of this.watchers) watcher.close();
+    const watcherClosures = this.watchers.map((watcher) => closeWatcher(watcher));
     this.watchers = [];
     this.pendingPaths.clear();
     this.timelineDirtySessions.clear();
     this.timelineStats.dirtySessions = 0;
     const active = [
+      ...watcherClosures,
       this.pendingProcessPromise,
       this.selectionPromise,
       this.indexerPromise,
@@ -1115,6 +1116,30 @@ export class UsageMonitor extends EventEmitter {
     this.closePromise = Promise.allSettled(active).then(() => undefined);
     return this.closePromise;
   }
+}
+
+function closeWatcher(watcher) {
+  if (!watcher || typeof watcher.close !== "function") return Promise.resolve();
+  if (typeof watcher.once !== "function") {
+    try {
+      watcher.close();
+    } catch {}
+    return Promise.resolve();
+  }
+  return new Promise((resolvePromise) => {
+    let settled = false;
+    const done = () => {
+      if (settled) return;
+      settled = true;
+      resolvePromise();
+    };
+    watcher.once("close", done);
+    try {
+      watcher.close();
+    } catch {
+      done();
+    }
+  });
 }
 
 function hasImportedRequestProjection(indexState) {
