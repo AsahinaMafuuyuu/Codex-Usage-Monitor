@@ -413,6 +413,10 @@ async function verifyRequestInspector(cdp) {
       if (!response.ok) continue;
       const payload = await response.json();
       if (!payload.available || !(payload.items?.length > 0)) continue;
+      const deltaResponse = await fetch('/api/sessions/' + encodeURIComponent(sessionId) + '/requests/' + encodeURIComponent(requestId) + '/context-delta');
+      if (!deltaResponse.ok) continue;
+      const deltaPayload = await deltaResponse.json();
+      if (deltaPayload.pair?.status !== 'complete_pair') continue;
       window.__codexLiveUiQa.requestInspectorTrigger = button;
       window.__codexLiveUiQa.requestInspectorRequestId = requestId;
       button.focus({ preventScroll: true });
@@ -449,6 +453,8 @@ async function verifyRequestInspector(cdp) {
       inputTokensLabel: (body?.textContent ?? '').includes('Input Tokens'),
       inputContextResourceCount: performance.getEntriesByType('resource')
         .filter((entry) => entry.name.includes('/input-context')).length,
+      contextDeltaResourceCount: performance.getEntriesByType('resource')
+        .filter((entry) => entry.name.includes('/context-delta')).length,
     };
   })()`);
   assert(opened.open && opened.modal, "Request Inspector did not open as a modal dialog");
@@ -552,6 +558,102 @@ async function verifyRequestInspector(cdp) {
   assert(inputContext.provenanceBadges > 0, "Input Context tab rendered no textual provenance badge");
   assert(!inputContext.rawJsonLabel, "Input Context tab exposes a Raw JSON viewer");
   assert(!inputContext.providerClaim, "Input Context tab claims provider reconstruction");
+
+  await cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-tab="context_delta"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    if (!dialog?.open) return false;
+    const loading = dialog.querySelector('.request-inspector-state[role="status"]');
+    if (loading) return false;
+    return Boolean(dialog.querySelector('.request-context-delta'));
+  })()`), "Request Context Delta lazy content");
+  const contextDelta = await cdp.evaluate(`(() => {
+    const dialog = document.querySelector('#request-inspector');
+    const body = dialog?.querySelector('#request-inspector-body');
+    const selected = dialog?.querySelector('[data-request-inspector-tab="context_delta"]');
+    const resourceCount = performance.getEntriesByType('resource')
+      .filter((entry) => entry.name.includes('/context-delta')).length;
+    const text = body?.textContent ?? '';
+    return {
+      selected: selected?.getAttribute('aria-selected') === 'true',
+      evidence: dialog?.querySelector('#request-inspector-evidence')?.textContent?.trim() ?? '',
+      resourceCount,
+      disclaimer: text.includes('Context changes are reconstructed from local rollout evidence') &&
+        text.includes('Exact provider cache-key behavior and causal attribution are unavailable'),
+      accountingSection: text.includes('Canonical Accounting Delta'),
+      contextSummary: text.includes('Context Change Summary'),
+      correlationSection: text.includes('Cache Correlation Evidence'),
+      coverageSection: text.includes('Coverage & Limitations'),
+      ppVisible: text.includes('pp'),
+      closedDetails: body?.querySelectorAll('.request-delta-details:not([open])').length ?? 0,
+      rootCauseClaim: /Root Cause Found|Cache key changed|This caused the cache miss/iu.test(text),
+      rawJsonLabel: ['raw json', 'json viewer'].some((label) => text.toLowerCase().includes(label)),
+    };
+  })()`);
+  assert(contextDelta.selected, "Context Delta tab did not become the selected tab");
+  assert(contextDelta.resourceCount === opened.contextDeltaResourceCount + 1, "Context Delta was not fetched exactly once on first tab activation");
+  assert(/Context Delta & Cache Correlation/u.test(contextDelta.evidence), "Context Delta tab does not identify correlation evidence");
+  assert(contextDelta.disclaimer, "Context Delta tab lost the provider-cache causality disclaimer");
+  assert(contextDelta.accountingSection && contextDelta.contextSummary && contextDelta.correlationSection && contextDelta.coverageSection,
+    "Context Delta tab is missing one or more evidence sections");
+  assert(contextDelta.ppVisible, "Context Delta cache hit delta is not labeled in percentage points");
+  assert(contextDelta.closedDetails > 0, "Context Delta detailed item groups are not collapsed by default");
+  assert(!contextDelta.rootCauseClaim, "Context Delta UI overstates correlation as cache causality");
+  assert(!contextDelta.rawJsonLabel, "Context Delta tab exposes a Raw JSON viewer");
+  const largeDeltaRender = await cdp.evaluate(`(() => {
+    const payload = {
+      policyVersion: 'request-context-delta-v1',
+      pair: {
+        status: 'complete_pair',
+        previousRequestId: 'reqr_previous_large_delta',
+        currentRequestId: 'reqr_current_large_delta',
+      },
+      evidence: { comparisonCoverage: 'complete_pair', diffTruncated: false },
+      accounting: {
+        previous: { inputTokens: 100000, cachedInputTokens: 90000, cacheHitRate: 0.9 },
+        current: { inputTokens: 110000, cachedInputTokens: 85000, cacheHitRate: 0.772727 },
+        delta: { inputTokens: 10000, cachedInputTokens: -5000, cacheHitRatePoints: -12.7273 },
+      },
+      contextDelta: {
+        summary: {
+          retainedItems: 600,
+          addedItems: 200,
+          removedOrSupersededItems: 0,
+          visibleCharactersDelta: 20000,
+        },
+        added: Array.from({ length: 200 }, (_, index) => ({
+          kind: 'message',
+          role: 'user',
+          text: 'bounded synthetic delta item ' + index,
+          deltaDisposition: 'added',
+          provenance: { level: 'historical_rollout', sourceKey: 'synthetic', lineStart: index + 1, lineEnd: index + 1 },
+        })),
+        removedOrSuperseded: [],
+        runtimeChanges: [],
+        compaction: [],
+        sourceTransitions: [],
+        coverageChanges: [],
+      },
+      correlationSignals: [],
+      limitations: ['Exact provider cache causality unavailable.'],
+    };
+    const state = { loading: false, error: null, payload, abortController: null };
+    const host = document.createElement('div');
+    const started = performance.now();
+    host.innerHTML = window.__codexLiveUiQa.renderRequestContextDeltaTab(state);
+    const durationMs = performance.now() - started;
+    return {
+      durationMs,
+      cardCount: host.querySelectorAll('.request-delta-item').length,
+      detailGroups: host.querySelectorAll('.request-delta-details').length,
+      openDetailGroups: host.querySelectorAll('.request-delta-details[open]').length,
+    };
+  })()`);
+  assert(largeDeltaRender.cardCount === 200, `large Context Delta renderer lost bounded detail items: ${JSON.stringify(largeDeltaRender)}`);
+  assert(largeDeltaRender.detailGroups > 0 && largeDeltaRender.openDetailGroups === 0,
+    `large Context Delta details are not collapsed by default: ${JSON.stringify(largeDeltaRender)}`);
+  assert(largeDeltaRender.durationMs < 100,
+    `large Context Delta detached render exceeded 100ms: ${JSON.stringify(largeDeltaRender)}`);
   await cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-tab="interaction"]')?.click()`);
   await waitFor(async () => cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-tab="interaction"]')?.getAttribute('aria-selected') === 'true'`), "Request Inspector Interaction tab restore");
 
@@ -616,7 +718,7 @@ async function verifyRequestInspector(cdp) {
   })()`);
   assert(closed.payloadCleared, "closing Request Inspector retained rendered Request content");
   assert(closed.focusRestored && closed.focusedRequestId === target.requestId, "closing Request Inspector did not restore focus to the Request trigger");
-  return { target, opened, reasoningProjection, realDuplicateReasoning, inputContext, replayed, stale, reducedMotion, closed };
+  return { target, opened, reasoningProjection, realDuplicateReasoning, inputContext, contextDelta, largeDeltaRender, replayed, stale, reducedMotion, closed };
 }
 
 async function verifyTaskScroll(cdp) {
@@ -1213,9 +1315,33 @@ async function verifyNarrowViewport(cdp) {
     narrowInputContext.tabsLeft >= inspector.left && narrowInputContext.tabsRight <= inspector.right,
     `narrow Input Context tabs overflow the dialog: ${JSON.stringify(narrowInputContext)}`,
   );
+  await cdp.evaluate(`document.querySelector('#request-inspector [data-request-inspector-tab="context_delta"]')?.click()`);
+  await waitFor(async () => cdp.evaluate(`Boolean(document.querySelector('#request-inspector .request-context-delta'))`), "narrow Request Context Delta");
+  const narrowContextDelta = await cdp.evaluate(`(() => {
+    const body = document.querySelector('#request-inspector-body');
+    const tabs = document.querySelector('#request-inspector .request-inspector-tabs');
+    const bodyRect = body?.getBoundingClientRect();
+    const tabsRect = tabs?.getBoundingClientRect();
+    return {
+      bodyScrollWidth: body?.scrollWidth ?? null,
+      bodyClientWidth: body?.clientWidth ?? null,
+      bodyLeft: bodyRect?.left ?? null,
+      bodyRight: bodyRect?.right ?? null,
+      tabsLeft: tabsRect?.left ?? null,
+      tabsRight: tabsRect?.right ?? null,
+    };
+  })()`);
+  assert(
+    narrowContextDelta.bodyScrollWidth <= narrowContextDelta.bodyClientWidth + 1,
+    `narrow Context Delta introduced horizontal body overflow: ${JSON.stringify(narrowContextDelta)}`,
+  );
+  assert(
+    narrowContextDelta.tabsLeft >= inspector.left && narrowContextDelta.tabsRight <= inspector.right,
+    `narrow Context Delta tabs overflow the dialog: ${JSON.stringify(narrowContextDelta)}`,
+  );
   await cdp.evaluate(`document.querySelector('#request-inspector-close')?.click()`);
   await waitFor(async () => cdp.evaluate(`!document.querySelector('#request-inspector')?.open`), "narrow Request Inspector close");
-  return { ...result, requestInspector: inspector, requestInputContext: narrowInputContext };
+  return { ...result, requestInspector: inspector, requestInputContext: narrowInputContext, requestContextDelta: narrowContextDelta };
 }
 
 function resolveChromePath() {

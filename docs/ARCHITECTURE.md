@@ -2,7 +2,7 @@
 
 ## 系统边界
 
-Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会话执行。它不 resume 线程、不修改配置、不调用模型。Task/Token/Cost 事实层不访问远端；唯一网络例外是账号额度按 [ADR-0025](decisions/0025-official-codex-usage-polling.md) 只读查询 Codex 官方 Usage。
+Codex Usage Monitor 是 `.codex` 的旁路只读观察器，不参与 Codex 会话执行。它不 resume 线程、不修改配置、不调用模型。Task/Token/Cost 事实层不访问远端。允许的网络用途只有账号额度按 [ADR-0025](decisions/0025-official-codex-usage-polling.md) 只读查询 Codex 官方 Usage，以及 Managed Release 按 [ADR-0033](decisions/0033-managed-release-cli-self-update.md) 从固定 GitHub stable Release source 获取 manifest/artifact；Release path 与 Codex credential/request builder 分离。
 
 ```text
 .codex/session_index.jsonl ----┐
@@ -17,6 +17,11 @@ Codex config/auth --只读--> CodexUsageClient --60 秒--> 官方 Usage
                                                 HTTP JSON + SSE
                                                           |
                                                 本地无框架 Web UI
+
+bin/codex-usage-monitor.js -> CLI -> Runtime Layout
+                                |-> fixed loopback/browser auth -> server
+                                |-> ReleaseClient -> ManagedUpdater -> app/vX.Y.Z + state/current
+                                `-> SQLite backup/rollback gate -> managed data/backups
 ```
 
 ## 组件职责
@@ -34,9 +39,15 @@ Codex config/auth --只读--> CodexUsageClient --60 秒--> 官方 Usage
 | `src/pricing.js` | 用历史订阅标准价逐 verified Request Ledger usage unit 计算 request cost，并合并 Task/Agent/Session/Day coverage |
 | `src/source-locator.js` | 在当前 Codex home 的绝对 runtime path 与可持久化 `.codex` 相对 source key 之间做安全转换和旧路径恢复 |
 | `src/codex-usage-client.js` | 每次只读重载 Codex `config.toml` / `auth.json`，按官方 backend-client path style 查询账号 Usage 并规范化额度窗口；不持久化凭据 |
+| `src/http-transport.js` | 共享 HTTPS_PROXY/ALL_PROXY/NO_PROXY/WinINET CONNECT transport；只提供 transport，不共享 Codex 或 Release 业务 header |
+| `src/app-version.js` / `src/cli.js` | 从 `package.json.version` 读取唯一 App Version；解析 start/open/version/update/rollback/doctor，并按命令 lazy load server/SQLite 模块 |
+| `src/runtime-layout.js` | 严格区分 Development 与 marker/current/entry-proven Managed Install，限制数据库和 update state 的可写根 |
+| `src/browser-auth.js` | 持久本机 secret、one-shot origin-bound challenge/proof、签名 HttpOnly Cookie；credential 不进入 URL 日志/SQLite/release artifact |
+| `src/release-client.js` / `src/update-state.js` | 固定 GitHub stable source、manual redirect allowlist、manifest/SemVer validator 与 managed update cache/history |
+| `src/updater.js` / `src/database-backup.js` | checksum/staging/embedded identity/offline self-check/current pointer transaction，以及 SQLite backup/compatibility/restore rollback |
 | `src/database.js` | 管理 schema v15、raw Request evidence、canonical request/ownership provenance、versioned request-day/cost projection、Task/Request 定向 locator query、Alerts operational state、WAL 与可恢复 cursor |
 | `src/monitor.js` | 管理 cached selection、低并发 background indexer、dirty-session queue、增量 tail、SSE 和 graceful shutdown |
-| `src/server.js` | loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件 |
+| `src/server.js` | 纯 `startApplication()` module：精确 loopback HTTP、认证、安全响应头、JSON API、SSE 和静态文件；不解析 CLI argv |
 | `public/**` | 可折叠工程索引、编辑式会话账页、递归智能体谱系、按 session/agent/task 稳定 key 增量 reconcile 的任务明细、额度与健康状态 |
 
 ## 会话发现
@@ -105,6 +116,31 @@ source chain 不能由客户端提供，也不使用 filesystem mtime 作为历�
 Phase 26 冻结 hard limits 为 `16 source segments / 32 MiB history scan / 800 context items / 64 KiB item / 1 MiB projected characters`。同 Task forward reader 对跨 chunk 大 record 只合并一次；prefix/older-source tail 直接在 Buffer 上逆向逐行解析，并在遇到最近 explicit compaction 后停止继续语义解析，因此不会为已 supersede 的旧 history 创建大量字符串/对象。300 Request audit 中 source/thread P99=`2`、history scan P99=`25,614,241` bytes、context items P99=`699`、visible chars P99=`778,549`；293 complete、3 bounded partial、4 unavailable。最终 20 轮 production-equivalent warm P95 为 common=`9.427ms`、large=`39.421ms`。
 
 每个 Phase 26 context item 必须携带 `direct_current / historical_rollout / compaction_snapshot / runtime_context / coverage_gap` provenance。`providerPayloadReconstructed=false` 与 `providerSerializationKnown=false` 是长期 truthfulness invariant；即使 rollout history coverage complete，也不能转换成“完整 Provider Input”。Input/Cached Input Tokens 继续只属于 canonical Request accounting，不允许按 context item 分配。正文仍不写 SQLite、server cache、SSE 或浏览器持久化存储。
+
+Phase 27 在 Phase 26 上增加第三条 lazy **Context Delta & Cache Correlation** seam。它不是新的 accounting projection，也不重新解析 rollout：
+
+```text
+current canonical request_id
+  -> getCanonicalRequestContextDeltaLocator(rootSessionId, requestId)
+  -> same-thread immediate predecessor by rollout filename chronology + origin line
+  -> previous/current Phase 26 input-context locators
+  -> readReconstructedInputContext(previous/current)
+  -> bounded sequence-aware semantic diff
+  -> canonical Input/Cached/Cache Hit accounting delta
+  -> request-context-delta-v1 correlation projector
+  -> authenticated no-store /context-delta
+  -> current Dialog Context Delta tab only
+```
+
+pair locator 只消费 `canonical_requests` 与 Phase 26 已有 source-chain evidence。first Request 返回 `no_predecessor`；source chronology 不唯一、origin line 冲突或 predecessor source 不在当前可证明 chain 内时返回 explicit ambiguity/unavailable state，禁止用 `observed_at`、filesystem mtime、UI order 或客户端提交的 Request ID 猜 predecessor。跨 Task 不构成边界：只要同 thread 且 chronology 可证明，immediate previous canonical Request 就是默认 pair。
+
+`src/request-context-delta.js` 对 previous/current reconstruction 做 NFC + line-ending normalization，并以 ephemeral SHA-256 semantic fingerprint 支持 duplicate-aware sequence matching；fingerprint 不进入 response/SQLite。diff 先匹配 common prefix/suffix，再在 `250,000 work units` 内做 bounded LCS；两侧最多各 `800` comparable items，公开 detailed delta 最多 `200 items / 512 KiB characters`。explicit compaction 出现时，未匹配旧 history 使用 `superseded_by_compaction`；signal-only compaction 只形成 `unresolved_due_to_compaction_gap`，不把本地重建差异冒充 Provider delete。
+
+Cache accounting 与 context evidence 始终分层：previous/current `Input Tokens`、`Cached Input Tokens` 来自 canonical Request，Cache Hit Rate 只按 `cached/input` 派生，delta 使用 percentage points。`request-context-delta-v1` 只输出同 pair 的 correlation signal；`providerCacheKeyKnown=false`、`providerSerializationKnown=false`、`exactCacheCausalityKnown=false` 固定为 false，不提供 confidence/ranking、item-level token attribution、Raw JSON/CoT diff 或 LLM root-cause explanation。
+
+真实 300 Request audit 命中 293 个可比较 pair：286 complete、6 both-context-partial、1 current-context-partial，另有 7 个 no-predecessor；sample 内 `diffTruncated=0`。retained items P50/P95/P99=`96/366/800`，added P95=`3`，visible-character delta P95=`12,851`。该样本未命中 cross-source/compaction pair，因此这两类边界继续由 deterministic fixture 覆盖，不能把 audit 的 0 解读为不存在。20 轮 production-equivalent benchmark：common total P95=`19.777ms`、large=`68.592ms`；cached-reconstruction diff projector P95=`1.463/9.351ms`，源文件 SHA-256 前后不变。
+
+Phase 27 不提升 schema/projection 版本，不写 Context Delta 正文、fingerprint 或 diagnosis 表；Session/Day snapshot、SSE、Diagnostics 热路径都不携带该 payload。浏览器只在第三个 tab 首次激活时 GET，close/session/day switch 会 abort + clear；真实 Chrome/CDP 证明首次激活只增加一次 `/context-delta` resource、720px body 无横向溢出，并且 200-detail-item 合成 delta detached render=`1.5ms`、detail group 默认关闭。
 
 ## 任务归因
 

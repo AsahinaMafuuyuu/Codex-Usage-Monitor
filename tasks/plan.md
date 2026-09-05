@@ -1516,3 +1516,230 @@ Long-lived decisions are indexed in [`docs/decisions/README.md`](../docs/decisio
 设计事实源：`docs/DESIGN-RECONSTRUCTED-INPUT-CONTEXT.md`；实施方案：`docs/TECHNICAL-IMPLEMENTATION-RECONSTRUCTED-INPUT-CONTEXT.md`；交付契约：`docs/DELIVERY-RECONSTRUCTED-INPUT-CONTEXT.md`；长期约束：`docs/decisions/0031-reconstructed-input-context-evidence.md`。
 
 **Delivered evidence (2026-09-02):** 300 Request audit：source/thread P99=2/max=4，history scan P99=25,614,241 bytes，context items P99=699，visible chars P99=778,549；293 complete / 3 bounded partial / 4 unavailable。冻结 limits=`16 sources / 32 MiB / 800 items / 64 KiB item / 1 MiB projected`。118/118 sampled compaction 有 explicit snapshot；全库 262 条 `context_compacted` 均是前方 2–4 行 explicit compaction 的 lifecycle echo。20 轮 warm common/large P95=`9.427/39.421ms`。Chrome/CDP 验证首次 Input Context 点击只产生 1 次 lazy fetch、24 个 provenance badge、desktop/narrow/SSE/focus 全 Green；Provider payload/serialization 仍明确未重建/未知。
+
+## Phase 27: Context Delta & Cache Correlation
+
+当前状态：**Implemented / Verified**。
+
+- [x] 冻结同 thread immediate predecessor comparison 语义；不按 mtime/UI order/最近 timestamp 猜 predecessor。
+- [x] 新增 DB narrow pair locator，并覆盖 cross-source predecessor / no predecessor / ambiguity。
+- [x] 新增 `src/request-context-delta.js`，previous/current context 只复用 Phase 26 reconstruction seam。
+- [x] 实现 bounded sequence-aware semantic diff：retained / added / removed-or-superseded / runtime / compaction / source / coverage。
+- [x] semantic fingerprint 仅 ephemeral，不进入 SQLite。
+- [x] canonical Input/Cached/Cache Hit 前后值与 delta 独立计算，不按 item 分配 token。
+- [x] correlation signal 不输出 Provider cache key、exact causality、confidence/ranking。
+- [x] 新增 `audit:request-context-delta`，基于真实 predecessor/compaction/delta/cache 分布冻结 limits 与 `request-context-delta-v1` policy。
+- [x] 新增 production-equivalent `benchmark:request-context-delta`。
+- [x] 新增 lazy `/context-delta` read path；query injection/foreign session/no-store/no absolute path/security Gate。
+- [x] Request Inspector 增加 `Context Delta` tab；Interaction/Input Context 默认不预加载它。
+- [x] 1440×900 / 720×900 / SSE stale / close-focus / large-delta collapse Chrome Gate。
+- [x] schema v15 / projection v2 / canonical accounting / Diagnostics / `.codex` read-only 全部不回归。
+- [x] 全量 test/check/diff/fingerprint Green 后才允许标记 `Implemented / Verified`。
+
+**Delivered evidence (2026-09-02):** 300 Request audit=`293 comparable / 7 no_predecessor`，context coverage=`286 complete / 6 both partial / 1 current partial`，`diffTruncated=0`；冻结 limits=`800 items/side / 200 details / 512 KiB characters / 250,000 work units` 与 `request-context-delta-v1`。20 轮 common/large total P95=`19.777/68.592ms`，diff P95=`1.463/9.351ms`，source hash unchanged。Chrome/CDP 验证第三 tab lazy fetch、1440×900/720×900、SSE/stale/focus 与 200-detail synthetic collapse=`1.5ms`。最终全量=`210 tests / 209 passed / 0 failed / 1 existing optional skipped`；accounting/.codex fingerprint 前后完全一致。
+
+技术实施方案：`docs/TECHNICAL-IMPLEMENTATION-CONTEXT-DELTA-CACHE-CORRELATION.md`；交付契约：`docs/DELIVERY-CONTEXT-DELTA-CACHE-CORRELATION.md`；证据边界继续继承 ADR-0031。
+
+## Phase 28: Release & CLI Management / v1.2.0
+
+当前状态：**Implemented / Verified**。
+
+设计事实源：`docs/DESIGN-RELEASE-CLI-MANAGEMENT.md`；技术实施：`docs/TECHNICAL-IMPLEMENTATION-RELEASE-CLI-MANAGEMENT.md`；长期决策：`docs/decisions/0033-managed-release-cli-self-update.md`、`docs/decisions/0034-fixed-loopback-persistent-browser-auth.md`。
+
+目标：把当前 Git-checkout 启动模型升级为明确的 CLI + Managed Install + GitHub stable Release 体系。`package.json.version` 成为唯一 App Version；`--version` 离线快速返回并读取本地 update cache；`--update` 只在 managed install 中执行 manifest/hash/staging/self-check/atomic pointer transaction；rollback 必须受 SQLite storage compatibility gate 保护。Git checkout 永远由 Git 管理，不允许 self-update 覆盖。
+
+### Task 1: Freeze App Version and CLI seam
+
+**Description:** 新建正式 `bin` entrypoint 与 `src/cli.js`，把 `src/server.js` 从命令行 main 还原为纯 `startApplication()` module；版本只从 `package.json` 读取。
+
+**Acceptance criteria:**
+- [x] `codex-usage-monitor` / `start` / `--no-open` 保持现有启动行为。
+- [x] `--version/-V`、`--help/-h` 不初始化 DB、不扫描 `.codex`、不联网。
+- [x] `package.json.version` 是唯一 App Version，README 不再手写可漂移“当前版本”。
+
+**Verification:** focused CLI unit tests；现有 server/security tests；`npm run check`。
+
+**Dependencies:** None。
+
+**Files likely touched:** `bin/codex-usage-monitor.js`, `src/app-version.js`, `src/cli.js`, `src/server.js`, `test/cli.test.js`。
+
+### Task 2: Introduce Runtime Layout
+
+**Description:** 建立 Development/Managed 两种 runtime layout，formal install 使用 `%LOCALAPPDATA%\CodexUsageMonitor` 的 immutable app versions + mutable data/state；开发 checkout 继续使用 repo `data/usage.sqlite`。
+
+**Acceptance criteria:**
+- [x] managed mode 必须由 install marker + current pointer + entry path 一致性共同证明，不能只看 `.git` 或环境变量。
+- [x] `CODEX_MONITOR_DB` 只能解析到当前 runtime mutable root 内，Windows path escape 被拒绝。
+- [x] Development Mode `--update/rollback` 没有任何 worktree 写入路径。
+
+**Verification:** runtime-layout path fixture；database resolver regression；Windows drive/case/`..` containment tests。
+
+**Dependencies:** Task 1。
+
+**Files likely touched:** `src/runtime-layout.js`, `src/server.js`, `test/runtime-layout.test.js`, `test/database-server.test.js`。
+
+### Task 3: Stabilize the loopback endpoint and browser authorization
+
+**Description:** 把当前“每次启动随机 launch token + 自动递增端口”改为精确 loopback endpoint + 持久 browser authorization。默认固定 `127.0.0.1:47832`，端口占用直接失败；首次/失效授权由 `codex-usage-monitor open` 通过短时 challenge/proof 建立持久 HttpOnly Cookie，普通启动输出只显示固定根 URL。
+
+**Acceptance criteria:**
+- [x] 默认只监听 `127.0.0.1:47832`；`CODEX_MONITOR_PORT` 只改变本次精确端口，`EADDRINUSE` 不 fallback 到后续端口。
+- [x] 浏览器授权可跨 monitor 进程重启保留；固定 `http://127.0.0.1:47832/` 在已有有效 Cookie 时可直接点击访问，不需要新的 `?token=`。
+- [x] `open` 使用本机私有 secret + 60 秒 one-shot challenge/proof；secret/proof 不进入 stdout、SQLite、日志、Git 或 release artifact；Host/Origin/CSP/CORS/敏感 API auth 边界不放宽。
+
+**Verification:** `test/browser-auth.test.js`；server/security regression；fixed-port/EADDRINUSE fixture；cookie restart fixture；`open` challenge replay/expiry/origin mismatch tests。
+
+**Dependencies:** Task 2。
+
+**Files likely touched:** `src/browser-auth.js`, `src/cli.js`, `src/server.js`, `src/runtime-layout.js`, `test/browser-auth.test.js`, `test/database-server.test.js`。
+
+### Checkpoint A: CLI/Foundation
+
+- [x] 默认启动、`--version`、`--help` 全部可用。
+- [x] `src/server.js` 不再解析 CLI 参数。
+- [x] Managed/Development layout 在测试中严格分离。
+- [x] 固定 loopback URL 可重复访问，端口不漂移，浏览器授权不再依赖每次进程启动的一次性 URL。
+- [x] 全量测试仍 Green 后才进入网络/update 工作。
+
+### Task 4: Extract shared proxy-aware HTTP transport
+
+**Description:** 将现有 Codex Usage client 的 HTTPS proxy/WinINET/CONNECT transport 提取为独立深模块，为 ReleaseClient 复用；Codex credential/header 逻辑仍留在 CodexUsageClient。
+
+**Acceptance criteria:**
+- [x] 现有 HTTPS_PROXY/ALL_PROXY/NO_PROXY/WinINET 行为不变。
+- [x] Release transport 不接触 Codex auth/account id。
+- [x] Transport 支持 manual redirect，供 GitHub host allowlist 检查。
+
+**Verification:** 原 `codex-usage-client` tests 全部 Green；新增 transport fixture。
+
+**Dependencies:** Checkpoint A。
+
+**Files likely touched:** `src/http-transport.js`, `src/codex-usage-client.js`, `test/codex-usage-client.test.js`。
+
+### Task 5: Implement ReleaseClient and update cache
+
+**Description:** 固定官方 GitHub repository，读取 stable `release-manifest.json`，实现 stable SemVer、manifest validator、manual redirect allowlist 与 managed update cache。
+
+**Acceptance criteria:**
+- [x] 不从 Git remote 或用户 URL 推导 update source。
+- [x] invalid manifest/tag/hash/size/platform/storage/redirect 全部 fail closed。
+- [x] managed `update.json` 原子写；Development `update --check` 只做 one-shot，不创建 managed marker/state。
+
+**Verification:** manifest/redirect/proxy/cache unit tests；GitHub request header fixture 证明无 Codex credential。
+
+**Dependencies:** Task 4。
+
+**Files likely touched:** `src/release-client.js`, `src/update-state.js`, `test/release-client.test.js`。
+
+### Task 6: Implement managed update transaction
+
+**Description:** 建立 lock -> manifest -> download -> size/hash -> staging -> extraction validation -> embedded build identity -> target offline self-check -> immutable version dir -> atomic current pointer 的 transaction。
+
+**Acceptance criteria:**
+- [x] checksum/extract/self-check/lock 任一失败都不改变 current pointer。
+- [x] 已存在同版本目录只有 identity 完全一致才复用；不一致直接 integrity failure。
+- [x] updater 不覆盖当前版本目录，不杀死正在运行 server，不执行 npm install。
+
+**Verification:** failure-injection updater tests；concurrent lock；current pointer atomicity；temp cleanup。
+
+**Dependencies:** Task 5。
+
+**Files likely touched:** `src/updater.js`, `src/cli.js`, `test/updater.test.js`。
+
+### Task 7: Add SQLite backup, migration, and rollback compatibility
+
+**Description:** 使用 Node 24 `node:sqlite backup()` 建立一致性 backup/migration；rollback 读取目标 release storage compatibility metadata，兼容时 code-only pointer rollback，不兼容时只允许显式 `--restore-data`。
+
+**Acceptance criteria:**
+- [x] doctor/rollback schema inspection 只读，不实例化会 migration 的 MonitorDatabase。
+- [x] incompatible code-only rollback 被拒绝。
+- [x] restore failure 不同时破坏 current DB 和 current pointer。
+
+**Verification:** WAL online backup；quick_check；compatible/incompatible rollback；restore failure injection；checkout->managed accounting fingerprint equality。
+
+**Dependencies:** Task 6。
+
+**Files likely touched:** `src/database-backup.js`, `src/updater.js`, `test/database-backup.test.js`, `test/updater.test.js`。
+
+### Checkpoint B: Update/Rollback Core
+
+- [x] Managed update transaction 在全 fixture 下原子。
+- [x] Git checkout `--update` 零写入。
+- [x] DB compatibility/backup/restore gates 可重复验证。
+- [x] update 网络失败不影响 monitor start/health。
+
+### Task 8: Build Windows installer and stable shim
+
+**Description:** 提供 `%LOCALAPPDATA%\CodexUsageMonitor` bootstrap installer 和稳定 `.cmd` shim；支持显式 `-MigrateFrom <checkout>`，将旧 repo DB 通过 SQLite backup 复制到 managed data root，不删除源 DB。
+
+**Acceptance criteria:**
+- [x] 安装无需管理员权限，User PATH 只加入 managed `bin`。
+- [x] shim 只读取 current pointer 并透传参数，退出码正确。
+- [x] migration 幂等，目标 DB 已存在时拒绝覆盖。
+
+**Verification:** temp LOCALAPPDATA clean install；PATH/shim smoke；migration fingerprint；原 checkout hash/status 不变。
+
+**Dependencies:** Checkpoint B。
+
+**Files likely touched:** `scripts/install.ps1`, `src/runtime-layout.js`, `test/runtime-layout.test.js`, `docs/OPERATIONS.md`。
+
+### Task 9: Build deterministic release artifact and verifier
+
+**Description:** 构建自包含 runtime zip。zip 内使用 `build-manifest.json`；zip 完成后生成外部 `release-manifest.json` 和 SHA-256，避免 archive self-hash 循环。
+
+**Acceptance criteria:**
+- [x] target machine update 不运行 npm install/npm ci。
+- [x] clean extract 后 `--version` 与 `doctor --release-self-check` Green。
+- [x] artifact 不含 SQLite、`.codex`、日志、凭据、`.git` 或开发缓存。
+
+**Verification:** release-build fixture；clean temp extract/run；manifest identity/hash/size tests。
+
+**Dependencies:** Task 8。
+
+**Files likely touched:** `scripts/build-release.js`, `scripts/verify-release.js`, `test/release-build.test.js`, `package.json`。
+
+### Task 10: Add controlled GitHub Draft Release workflow
+
+**Description:** SemVer tag 触发 CI，依次验证 version/release note、tests/check/diff、构建与 clean-artifact self-test，最后只创建 Draft Release，由维护者显式 Publish。
+
+**Acceptance criteria:**
+- [x] tag/package/package-lock/release note 任何不一致都 fail。
+- [x] workflow 不自动 bump/commit/tag/publish。
+- [x] Draft assets 固定包含 zip、external manifest、installer；stable updater 只看到 Publish 后 release。
+
+**Verification:** workflow static contract test；本地 release verifier；首次正式 tag 前人工审查 GitHub workflow permissions。
+
+**Dependencies:** Task 9。
+
+**Files likely touched:** `.github/workflows/release.yml`, `docs/RELEASE-CHECKLIST.md`, `docs/releases/v1.2.0.md`。
+
+### Task 11: Final public contract and v1.2.0 release gate
+
+**Description:** 只有实现与真实验证完成后才更新 README/CHANGELOG/OPERATIONS/VERIFICATION，并清除旧 `0.1.0` 等版本漂移表述。完成 clean install -> update -> rollback 全链路与 accounting/read-only 对账。
+
+**Acceptance criteria:**
+- [x] public docs 与实际 CLI/installer/release behavior 一致。
+- [x] `npm test`, `npm run check`, `git diff --check` Green；skipped 明确记录。
+- [x] canonical Request/Token/Cost 与 `.codex` manifest 在 Phase 28 前后不因 updater 改变。
+
+**Verification:** full suite；clean managed E2E；release artifact E2E；accounting/source hash fingerprint。
+
+**Dependencies:** Task 10。
+
+**Files likely touched:** `README.md`, `CHANGELOG.md`, `docs/OPERATIONS.md`, `docs/VERIFICATION.md`, 必要时 `docs/API.md` / `docs/ARCHITECTURE.md`。
+
+### Final Checkpoint: v1.2.0 Release Ready
+
+- [x] `package.json.version` 是唯一 App Version。
+- [x] `127.0.0.1:47832` 为稳定默认 endpoint；端口占用 fail-fast；固定根 URL + persistent browser authorization 可跨进程重启使用。
+- [x] `--version` offline、`update --check` explicit network、managed start 24h low-frequency check。
+- [x] `--update` 只使用固定 GitHub stable Release，不使用 Git。
+- [x] SHA-256 + embedded build identity + offline self-check + atomic pointer transaction 全部生效。
+- [x] rollback 有 storage compatibility gate 和 pre-update backup path。
+- [x] GitHub workflow 只生成 Draft，Publish 保持人工 gate。
+- [x] 正式 artifact 无 npm-install runtime dependency resolution。
+- [x] 当前业务 accounting、安全与 `.codex` read-only 不变量保持。
+
+**Implementation baseline note:** 本轮开始时工作树包含 Phase 27 / Astra / Phase 28 既有未提交改动。按用户明确指令，这些改动作为必须保留的实施基线，整个实现过程未执行 reset/stash/checkout，也未覆盖或撤销既有改动。正式 release artifact 仍只允许在未来 clean tagged checkout 的 GitHub Release Gate 中构建。
+
+**Delivered evidence (2026-09-05):** 最终全量 `npm test` = `274 tests / 273 passed / 0 failed / 1 existing optional skipped`；`npm run check` 与 `git diff --check` Green。真实本地 E2E 使用 release builder 生成 clean runtime artifact，依次完成 Managed Install `v1.2.0`、真实 updater 切换到临时 `v1.2.1`、再 rollback 到 `v1.2.0`。canonical accounting 前后均为 `30,239` Requests、total=`3,718,496,297` tokens、known calendar cost=`$2579.79482923`；`.codex` 前后均为 `452` rollout，combined SHA-256=`fb704efd96f4dc0019737a0ed9bed8fc7ecfe394f6029db8e9cb15302cc813cf`。完整证据见 `docs/DELIVERY-RELEASE-CLI-MANAGEMENT.md`。

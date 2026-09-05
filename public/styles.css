@@ -1953,7 +1953,8 @@ summary:focus-visible,
 .request-content-card.context-signal p { margin: 9px 0 0; font-size: var(--text-body); }
 .request-content-card.runtime-context[open] { background: var(--paper); }
 .request-content-card.reasoning-activity { border-left: 3px solid var(--quiet); }
-.request-input-context { display: grid; gap: 18px; margin-top: 18px; }
+.request-input-context { display: grid; gap: 18px; min-width: 0; margin-top: 18px; }
+.request-context-delta { display: grid; gap: 18px; min-width: 0; margin-top: 18px; }
 .request-input-context-header,
 .request-context-section > header,
 .request-context-evidence-card > header,
@@ -2030,6 +2031,67 @@ summary:focus-visible,
 .request-context-gap { border-left: 3px solid var(--gold); }
 .request-context-evidence-card p,
 .request-context-gap p { margin: 7px 0 0; overflow-wrap: anywhere; color: var(--quiet); font-size: var(--text-utility); }
+.request-delta-accounting-grid,
+.request-delta-summary-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fit, minmax(150px, 1fr));
+  gap: 8px;
+}
+.request-delta-accounting-grid article,
+.request-delta-summary-grid > span {
+  display: grid;
+  gap: 5px;
+  min-width: 0;
+  padding: 11px 12px;
+  background: color-mix(in srgb, var(--paper-deep) 38%, var(--paper));
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.request-delta-accounting-grid small,
+.request-delta-summary-grid small { color: var(--quiet); font-size: var(--text-utility); }
+.request-delta-accounting-grid strong,
+.request-delta-summary-grid strong {
+  overflow-wrap: anywhere;
+  color: var(--ink);
+  font-family: var(--mono);
+  font-size: var(--text-label);
+}
+.request-delta-accounting-grid article > span { color: var(--muted); font-family: var(--mono); font-size: var(--text-identifier); }
+.request-delta-details {
+  padding: 11px 12px;
+  background: color-mix(in srgb, var(--paper-deep) 45%, var(--paper));
+  border: 1px solid var(--line);
+  border-radius: 7px;
+}
+.request-delta-details > summary {
+  display: flex;
+  align-items: baseline;
+  justify-content: space-between;
+  gap: 12px;
+  cursor: pointer;
+}
+.request-delta-details > summary > span { color: var(--quiet); font-size: var(--text-utility); }
+.request-delta-details > .request-interaction-list { margin-top: 12px; }
+.request-delta-item { display: grid; gap: 6px; min-width: 0; }
+.request-delta-item-meta {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+  color: var(--quiet);
+  font-size: var(--text-utility);
+}
+.request-runtime-delta dl { display: grid; gap: 8px; margin: 9px 0 0; }
+.request-runtime-delta dl > div {
+  display: grid;
+  grid-template-columns: minmax(80px, 120px) minmax(0, 1fr);
+  gap: 10px;
+}
+.request-runtime-delta dt { color: var(--quiet); font-size: var(--text-utility); font-weight: 700; }
+.request-runtime-delta dd { min-width: 0; margin: 0; overflow-wrap: anywhere; }
+.request-correlation-card small { display: block; margin-top: 8px; color: var(--quiet); font-size: var(--text-utility); }
+.request-delta-coverage ul { display: grid; gap: 6px; margin: 0; padding-left: 20px; color: var(--quiet); font-size: var(--text-utility); line-height: 1.5; }
+.request-context-evidence-card code { overflow-wrap: anywhere; white-space: normal; }
 .request-evidence-details {
   display: grid;
   grid-template-columns: repeat(3, minmax(0, 1fr));

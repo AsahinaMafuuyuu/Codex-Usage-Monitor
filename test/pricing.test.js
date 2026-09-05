@@ -3,6 +3,7 @@ import test from "node:test";
 import {
   combineCostSummaries,
   estimateRequestCost,
+  estimateTaskCost,
   normalizeServiceTier,
   priceTasksByRequestEvents,
   pricingCatalogSummary,
@@ -109,6 +110,28 @@ test("T-COST-005 aliases and dated model ids resolve only inside proven interval
 test("T-COST-006 unsupported dates do not fall back to nearest rate", () => {
   assert.equal(resolveHistoricalRate("gpt-5.6-terra", AT("2026-07-08")), null);
   assert.equal(resolveHistoricalRate("unknown-model", AT("2026-08-26")), null);
+});
+
+test("T-COST-007 GPT-6 Astra uses the Codex subscription rate from launch", () => {
+  assert.equal(resolveHistoricalRate("gpt-6-astra", AT("2026-09-02")), null);
+  assert.deepEqual(resolveHistoricalRate("gpt-6-astra", AT("2026-09-03")).ratesPerMillion, {
+    input: 10,
+    cachedInput: 1,
+    output: 50,
+  });
+});
+
+test("T-COST-008 legacy API-equivalent catalog recognizes GPT-6 Astra cache writes", () => {
+  const estimate = estimateTaskCost("gpt-6-astra", {
+    inputTokens: 1_000_000,
+    cachedInputTokens: 0,
+    cacheWriteInputTokens: 200_000,
+    outputTokens: 0,
+    totalTokens: 1_000_000,
+  }, Date.parse("2026-09-04T00:00:00.000Z"));
+  assert.equal(estimate.status, "estimated");
+  assert.equal(estimate.amountUsd, 10.5);
+  assert.equal(estimate.components.cacheWriteInputUsd, 2.5);
 });
 
 test("T-COST-010 cached input is a subset of input", () => {
@@ -283,8 +306,26 @@ test("T-COST-025 an unsupported long-context model is never guessed into a price
   assert.equal(estimate.reason, "historical_rate_unavailable");
 });
 
+test("T-COST-026 GPT-6 Astra Codex long context is explicitly exempt from the surcharge", () => {
+  const estimate = estimateRequestCost(request({
+    model: "gpt-6-astra",
+    observedAt: AT("2026-09-04"),
+    inputTokens: 300_000,
+    cachedInputTokens: 0,
+    outputTokens: 10_000,
+    totalTokens: 310_000,
+  }));
+  assert.equal(estimate.status, "estimated");
+  assert.equal(estimate.longContextCandidate, true);
+  assert.equal(estimate.longContextStatus, "exempt");
+  assert.equal(estimate.multipliers.input, 1);
+  assert.equal(estimate.multipliers.output, 1);
+  assert.equal(estimate.amountUsd, 3.5);
+});
+
 test("T-COST-031 Fast multiplier follows model family", () => {
   const cases = [
+    ["gpt-6-astra", AT("2026-09-04"), 2.5, 2.5],
     ["gpt-5.6-sol", AT("2026-08-26"), 1.25, 2.5],
     ["gpt-5.5", AT("2026-08-26"), 1.25, 2.5],
     ["gpt-5.4", AT("2026-08-26"), 0.5, 2],

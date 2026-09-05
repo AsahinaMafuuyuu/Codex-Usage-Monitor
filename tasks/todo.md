@@ -109,3 +109,14 @@
 - [x] Add lazy canonical Request drill-down with task/day-scoped SQL and bounded payload
 - [x] Differentiate Project full-task UI from Time task-day-slice UI
 - [x] Reconcile six-field accounting/day conservation and meet SQL/UI performance gates
+- [x] Phase 28: establish package.json as the single App Version source and add the dedicated CLI entrypoint
+- [x] Phase 28: separate Development and Managed Install runtime layouts without allowing updater writes into Git checkouts
+- [x] Phase 28: stabilize the exact loopback port and replace per-start launch URLs with persistent browser authorization plus `open`
+- [x] Phase 28: extract the proxy-aware HTTPS transport while preserving Codex Usage request/auth behavior
+- [x] Phase 28: implement fixed-source GitHub stable Release manifest checking and atomic update-cache state
+- [x] Phase 28: implement checksum-verified staged Managed Update with offline self-check and atomic current-pointer switch
+- [x] Phase 28: implement SQLite online backup, managed-data migration, rollback compatibility gates, and explicit restore rollback
+- [x] Phase 28: add the Windows managed installer, stable command shim, and optional checkout-to-managed DB migration
+- [x] Phase 28: build self-contained runtime release artifacts with embedded build identity and external SHA-256 manifest
+- [x] Phase 28: add a SemVer-tag GitHub Actions pipeline that creates Draft Releases only after all quality gates pass
+- [x] Phase 28: complete v1.2.0 clean-install/update/rollback E2E, docs, accounting fingerprint, and read-only verification

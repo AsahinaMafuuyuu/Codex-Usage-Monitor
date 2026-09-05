@@ -8,7 +8,9 @@ node --version
 npm start
 ```
 
-Node 版本必须为 24 或更高。服务优先监听 `127.0.0.1:47832`；如被占用，会顺序尝试到 `47842`。终端输出的 URL 含一次性令牌，只应在本机浏览器打开。
+Node 版本必须为 24 或更高。服务精确监听 `127.0.0.1:47832`；如被占用直接以 `EADDRINUSE` 失败，不顺序尝试其他端口。正常根地址固定为 `http://127.0.0.1:47832/`，终端不再输出 `?token=` 访问 URL。
+
+`npm start` 是 Development checkout 入口。它已经走新的 `bin/codex-usage-monitor.js -> src/cli.js -> startApplication()` 链路，但 runtime state 仍属于当前 checkout；它不是 Managed Install。Development 的 browser auth secret 位于 `<repo>\data\state\browser-auth.key`，Managed Install 则位于 `%LOCALAPPDATA%\CodexUsageMonitor\state\browser-auth.key`，两者签发的 Cookie 不互认。
 
 不自动打开浏览器：
 
@@ -16,13 +18,56 @@ Node 版本必须为 24 或更高。服务优先监听 `127.0.0.1:47832`；如�
 npm run start:no-open
 ```
 
+浏览器已有有效 Cookie 时可直接反复打开固定根地址。Development checkout 授权丢失时运行：
+
+```powershell
+npm run open
+```
+
+Managed Install 授权丢失时运行：
+
+```powershell
+codex-usage-monitor open
+```
+
+`open` 不启动第二个 server；它从本机 private auth secret 生成短时 one-shot challenge/proof，成功后只把 HttpOnly Strict Cookie 留在浏览器中。
+
+## Managed Install 与版本命令
+
+正式安装根固定为 `%LOCALAPPDATA%\CodexUsageMonitor`，程序版本目录不可变，可写状态与数据库独立：
+
+```text
+CodexUsageMonitor\
+├─ app\v1.2.0\
+├─ bin\codex-usage-monitor.cmd
+├─ data\usage.sqlite
+├─ state\current
+├─ downloads\
+└─ backups\
+```
+
+从 checkout 本地安装可执行 `scripts/install.ps1`；若要把旧 checkout 数据库迁入 managed data root，显式使用 `-MigrateFrom <checkout>`。迁移使用 `node:sqlite backup()` 创建一致性 snapshot，不删除原 DB，也不复制 live WAL/SHM。
+
+常用命令：
+
+```powershell
+codex-usage-monitor --version       # 完全离线
+codex-usage-monitor update --check  # 显式联网，只检查
+codex-usage-monitor --update        # 仅 Managed Install
+codex-usage-monitor rollback
+codex-usage-monitor rollback --restore-data
+codex-usage-monitor doctor          # 本地、离线、只读
+```
+
+Managed `start` 成功后只在距离上次成功检查至少 24 小时时 fire-and-forget 检查一次 stable Release；网络失败不会阻塞 monitor 启动或 health。正式更新源固定为 GitHub `AsahinaMafuuyuu/Codex-Usage-Monitor` 已发布 stable Release，不读取 Git remote，也不执行 `git pull`。
+
 ## 配置
 
 | 环境变量 | 默认值 | 说明 |
 |---|---|---|
 | `CODEX_MONITOR_HOME` | 当前 Windows 用户的 `.codex` | 只读 Codex 数据源；旧值不存在时自动回退当前用户目录并告警 |
-| `CODEX_MONITOR_PORT` | `47832` | 首选 loopback 端口 |
-| `CODEX_MONITOR_DB` | `<project>\data\usage.sqlite` | 派生 SQLite 路径；相对值始终从工程根解析 |
+| `CODEX_MONITOR_PORT` | `47832` | 精确 loopback 端口；占用时 fail-fast |
+| `CODEX_MONITOR_DB` | Development: `<project>\data\usage.sqlite`; Managed: `<LOCALAPPDATA>\CodexUsageMonitor\data\usage.sqlite` | 相对值从 runtime data root 解析；绝对值不得越出 runtime mutable root |
 
 示例：
 
@@ -33,7 +78,7 @@ npm run start:no-open
 
 ## 停止与重启
 
-在运行终端按 `Ctrl+C`。Phase 18 的关闭顺序是：停止接收新索引任务 → 取消 queued dirty session → 等待 active parse/write → 关闭 watcher/timer → 关闭 HTTP → 最后关闭 SQLite。不要在后台 index job 活跃时直接删除/覆盖 `usage.sqlite*`。每次启动都会生成新的随机 token/Cookie；旧浏览器 Cookie 对新进程无效。
+在运行终端按 `Ctrl+C`。Phase 18 的关闭顺序是：停止接收新索引任务 → 取消 queued dirty session → 等待 active parse/write → 关闭 watcher/timer → 关闭 HTTP → 最后关闭 SQLite。不要在后台 index job 活跃时直接删除/覆盖 `usage.sqlite*`。browser authorization secret 是持久本机状态，因此有效 Cookie 可跨 monitor 进程重启继续使用；Cookie 丢失时用 `codex-usage-monitor open` 恢复。
 
 ## 健康检查
 
@@ -61,7 +106,7 @@ schema version 与 parser semantics version 是两个不同概念。当前 SQLit
 
 ## USD 价目维护
 
-进程不会联网获取价格。`src/pricing.js` 内维护不可变 Historical Rate Catalog；resolver 按 `model + event.observedAt` 选择唯一有效区间，并由 policy version 决定 long-context / Fast / cache-write 语义。历史记录不能通过覆盖“当前价格”来回写。
+进程不会联网获取价格。`src/pricing.js` 内维护不可变 Historical Rate Catalog；resolver 按 `model + event.observedAt` 选择唯一有效区间，并由 policy version 决定 long-context / Fast / cache-write 语义。GPT-6 Astra 的 Codex subscription pricing 使用独立例外：`>272K` 不追加 long-context surcharge、Fast 为 2.5×、cache write 不单独收费；不要把 API model page 的 feature rate 直接套入该口径。历史记录不能通过覆盖“当前价格”来回写。
 
 更新价目时：
 

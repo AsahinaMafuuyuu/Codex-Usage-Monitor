@@ -9,7 +9,8 @@ import { MonitorDatabase } from "../src/database.js";
 import { UsageMonitor } from "../src/monitor.js";
 import { SUBSCRIPTION_PRICING_CATALOG } from "../src/pricing.js";
 import { CodexRepository } from "../src/repository.js";
-import { resolveCodexHome, resolveDatabasePath, startApplication } from "../src/server.js";
+import { createBootstrapProof } from "../src/browser-auth.js";
+import { resolveCodexHome, resolveDatabasePath, startApplication as startApplicationReal } from "../src/server.js";
 import { CodexSourceLocator, recoverLegacySourceKey } from "../src/source-locator.js";
 import { zeroUsage } from "../src/usage.js";
 
@@ -22,6 +23,11 @@ const GRANDCHILD = "ffffffff-ffff-4fff-8fff-ffffffffffff";
 const GRANDCHILD_TURN = "11111111-1111-4111-8111-111111111111";
 const OTHER_ROOT = "22222222-2222-4222-8222-222222222222";
 const OTHER_TURN = "33333333-3333-4333-8333-333333333333";
+const TEST_BROWSER_AUTH_SECRET = Buffer.alloc(32, 19);
+
+function startApplication(options) {
+  return startApplicationReal({ ...options, browserAuthSecret: TEST_BROWSER_AUTH_SECRET });
+}
 
 process.env.TZ = "America/Los_Angeles";
 
@@ -299,7 +305,7 @@ test("startup falls back from a stale Codex home and anchors relative database p
   );
 
   const projectDatabase = resolveDatabasePath("portable-data\\usage.sqlite", {});
-  assert.match(projectDatabase, /codex-usage-monitor[\\/]portable-data[\\/]usage\.sqlite$/u);
+  assert.match(projectDatabase, /codex-usage-monitor[\\/]data[\\/]portable-data[\\/]usage\.sqlite$/u);
   assert.match(resolveDatabasePath(null, {}), /codex-usage-monitor[\\/]data[\\/]usage\.sqlite$/u);
   assert.match(
     resolveDatabasePath(null, { CODEX_MONITOR_DB: join(directory, "external.sqlite") }),
@@ -1165,7 +1171,7 @@ test("derived tasks survive restart after one source rollout disappears", async 
   assert.equal(preview.available, false);
 });
 
-test("HTTP service requires the launch token, strict cookie, and trusted origin", async (t) => {
+test("HTTP service requires persistent browser authorization, strict cookie, and trusted origin", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-server-"));
   const codexHome = join(directory, ".codex");
   const sessions = join(codexHome, "sessions", "2026", "08", "24");
@@ -1209,7 +1215,9 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assert.equal(unauthorized.status, 401);
   assertSecurityHeaders(unauthorized.headers);
 
-  const exchange = await fetch(app.accessUrl, { redirect: "manual" });
+  assert.equal(app.accessUrl, `${base}/`);
+  assert.doesNotMatch(app.accessUrl, /token=/u);
+  const exchange = await authorizeApplication(app);
   assert.equal(exchange.status, 302);
   assertSecurityHeaders(exchange.headers);
   const setCookie = exchange.headers.get("set-cookie");
@@ -1218,7 +1226,7 @@ test("HTTP service requires the launch token, strict cookie, and trusted origin"
   assert.match(setCookie, /Path=\//iu);
   const cookie = setCookie.split(";")[0];
 
-  const secondExchange = await fetch(app.accessUrl, { redirect: "manual" });
+  const secondExchange = await fetch(exchange.bootstrapUrl, { redirect: "manual" });
   assert.equal(secondExchange.status, 401);
   assertSecurityHeaders(secondExchange.headers);
   const sessionsResponse = await fetch(`${base}/api/sessions`, { headers: { Cookie: cookie } });
@@ -1361,9 +1369,7 @@ test("Request Content Inspector resolves canonical evidence lazily without persi
   assert.doesNotMatch(JSON.stringify(direct), /encrypted-request-content/u);
   assert.doesNotMatch(JSON.stringify(direct), new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"));
 
-  const exchange = await fetch(app.accessUrl, { redirect: "manual" });
-  const cookie = exchange.headers.get("set-cookie").split(";")[0];
-  const base = `http://127.0.0.1:${app.port}`;
+  const { base, cookie } = await authenticateApplication(app);
   const endpoint = `${base}/api/sessions/${ROOT}/requests/${secondRequest.requestId}/content`;
   const response = await fetch(endpoint, { headers: { Cookie: cookie } });
   assert.equal(response.status, 200);
@@ -1439,6 +1445,63 @@ test("Request Content Inspector resolves canonical evidence lazily without persi
     { headers: { Cookie: cookie } },
   );
   assert.equal(inputWrongSession.status, 404);
+
+  const deltaLocator = app.monitor.database.getCanonicalRequestContextDeltaLocator(
+    ROOT,
+    secondRequest.requestId,
+  );
+  assert.equal(deltaLocator.status, "ok");
+  assert.equal(deltaLocator.current.requestId, secondRequest.requestId);
+  assert.equal(deltaLocator.previous.requestId, firstRequest.requestId);
+  assert.equal(deltaLocator.current.threadId, deltaLocator.previous.threadId);
+  assert.equal(deltaLocator.sourceOrdering, "rollout_filename_timestamp");
+  assert.equal(Object.hasOwn(deltaLocator.current, "sourcePath"), false);
+  assert.equal(Object.hasOwn(deltaLocator.previous, "sourcePath"), false);
+
+  const directDelta = await app.monitor.requestContextDelta(ROOT, secondRequest.requestId);
+  assert.equal(directDelta.pair.status, "complete_pair");
+  assert.equal(directDelta.pair.previousRequestId, firstRequest.requestId);
+  assert.equal(directDelta.pair.currentRequestId, secondRequest.requestId);
+  assert.equal(directDelta.evidence.providerCacheKeyKnown, false);
+  assert.equal(directDelta.evidence.providerSerializationKnown, false);
+  assert.equal(directDelta.evidence.exactCacheCausalityKnown, false);
+  assert.equal(directDelta.accounting.previous.inputTokens, 80);
+  assert.equal(directDelta.accounting.current.inputTokens, 50);
+  assert.equal(directDelta.accounting.delta.inputTokens, -30);
+  assert.equal(directDelta.accounting.delta.cachedInputTokens, -10);
+  assert.equal(directDelta.accounting.delta.cacheHitRatePoints, 10);
+  assert.ok(directDelta.contextDelta.summary.retainedItems >= 1);
+  assert.ok(directDelta.contextDelta.summary.addedItems >= 1);
+  assert.doesNotMatch(JSON.stringify(directDelta), /encrypted-request-content|itemTokens|tokenAllocation/u);
+  assert.doesNotMatch(
+    JSON.stringify(directDelta),
+    new RegExp(directory.replace(/[.*+?^${}()|[\]\\]/gu, "\\$&"), "u"),
+  );
+
+  const firstDelta = await app.monitor.requestContextDelta(ROOT, firstRequest.requestId);
+  assert.equal(firstDelta.pair.status, "no_predecessor");
+  assert.equal(firstDelta.pair.previousRequestId, null);
+
+  const deltaEndpoint = `${base}/api/sessions/${ROOT}/requests/${secondRequest.requestId}/context-delta`;
+  const deltaResponse = await fetch(deltaEndpoint, { headers: { Cookie: cookie } });
+  assert.equal(deltaResponse.status, 200);
+  assert.equal(deltaResponse.headers.get("cache-control"), "no-store");
+  const deltaPayload = await deltaResponse.json();
+  assert.equal(deltaPayload.pair.status, "complete_pair");
+  assert.equal(deltaPayload.evidence.kind, "context_delta_cache_correlation");
+  const deltaHead = await fetch(deltaEndpoint, { method: "HEAD", headers: { Cookie: cookie } });
+  assert.equal(deltaHead.status, 200);
+  assert.equal(deltaHead.headers.get("cache-control"), "no-store");
+  assert.equal(await deltaHead.text(), "");
+  const deltaInjected = await fetch(`${deltaEndpoint}?predecessor=${firstRequest.requestId}&path=C%3A%5Csecret&line=1`, {
+    headers: { Cookie: cookie },
+  });
+  assert.equal(deltaInjected.status, 400);
+  const deltaWrongSession = await fetch(
+    `${base}/api/sessions/${OTHER_ROOT}/requests/${secondRequest.requestId}/context-delta`,
+    { headers: { Cookie: cookie } },
+  );
+  assert.equal(deltaWrongSession.status, 404);
 
   await unlink(rollout);
   const unavailable = await fetch(endpoint, { headers: { Cookie: cookie } });
@@ -2694,11 +2757,32 @@ function assertCostSummary(actual, expected) {
 
 async function authenticateApplication(app) {
   const base = `http://127.0.0.1:${app.port}`;
-  const exchange = await fetch(app.accessUrl, { redirect: "manual" });
+  const exchange = await authorizeApplication(app);
   assert.equal(exchange.status, 302);
   const cookie = exchange.headers.get("set-cookie")?.split(";")[0];
   assert.ok(cookie);
   return { base, cookie };
+}
+
+async function authorizeApplication(app) {
+  const challengeResponse = await fetch(`${app.origin}/auth/challenge`);
+  assert.equal(challengeResponse.status, 200);
+  const challenge = await challengeResponse.json();
+  const proof = createBootstrapProof({
+    secret: TEST_BROWSER_AUTH_SECRET,
+    origin: app.origin,
+    challenge: challenge.challenge,
+    expiresAt: challenge.expiresAt,
+    protocolVersion: challenge.protocolVersion,
+  });
+  const bootstrapUrl = new URL("/auth/bootstrap", app.origin);
+  bootstrapUrl.searchParams.set("version", String(challenge.protocolVersion));
+  bootstrapUrl.searchParams.set("challenge", challenge.challenge);
+  bootstrapUrl.searchParams.set("expiresAt", String(challenge.expiresAt));
+  bootstrapUrl.searchParams.set("proof", proof);
+  const response = await fetch(bootstrapUrl, { redirect: "manual" });
+  Object.defineProperty(response, "bootstrapUrl", { value: bootstrapUrl.href });
+  return response;
 }
 
 async function waitFor(predicate, { timeoutMs = 250, intervalMs = 5 } = {}) {

@@ -1,8 +1,10 @@
 data/*.sqlite
 data/*.sqlite-shm
 data/*.sqlite-wal
+data/state/
 .impeccable/
 coverage/
+dist/
 node_modules/
 *.log
 Thumbs.db

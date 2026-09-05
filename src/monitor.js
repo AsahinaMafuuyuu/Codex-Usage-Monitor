@@ -15,6 +15,7 @@ import {
 import { analyzeUsageDiagnostics } from "./diagnostics.js";
 import { estimateRequestCost, pricingCatalogSummary } from "./pricing.js";
 import { readRequestContent } from "./request-content.js";
+import { analyzeRequestContextDelta } from "./request-context-delta.js";
 import { readReconstructedInputContext } from "./request-input-context.js";
 import {
   readTaskPreview,
@@ -527,6 +528,27 @@ export class UsageMonitor extends EventEmitter {
       version: 1,
       projectionGeneration: Number(projection?.generation ?? 0),
       request,
+    };
+  }
+
+  async requestContextDelta(sessionId, requestId) {
+    const pairLocator = this.database.getCanonicalRequestContextDeltaLocator(sessionId, requestId);
+    if (!pairLocator) return null;
+    const projection = this.database.getProjectionState();
+    const reconstructInputContext = (locator) => readReconstructedInputContext({
+      locator,
+      resolveSource: (sourceKey) => {
+        const sourcePath = this.repository.resolveSourceKey(sourceKey);
+        return sourcePath && existsSync(sourcePath) ? sourcePath : null;
+      },
+    });
+    const delta = await analyzeRequestContextDelta({
+      pairLocator,
+      reconstructInputContext,
+    });
+    return {
+      ...delta,
+      projectionGeneration: Number(projection?.generation ?? 0),
     };
   }
 

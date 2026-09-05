@@ -26,6 +26,12 @@ const state = {
       payload: null,
       abortController: null,
     },
+    contextDelta: {
+      loading: false,
+      error: null,
+      payload: null,
+      abortController: null,
+    },
     stale: false,
     selectionVersion: 0,
     projectionGeneration: null,
@@ -75,6 +81,7 @@ function refreshLucideIcons() {
 function installLiveQaHooks() {
   if (!window.__codexLiveUiQa || typeof window.__codexLiveUiQa !== "object") return;
   window.__codexLiveUiQa.renderRequestContentItem = renderRequestContentItem;
+  window.__codexLiveUiQa.renderRequestContextDeltaTab = renderRequestContextDeltaTab;
 }
 
 elements["session-search"].addEventListener("input", (event) => {
@@ -178,17 +185,24 @@ elements["request-inspector-close"].addEventListener("click", () => closeRequest
 elements["request-inspector"].addEventListener("click", (event) => {
   const tab = event.target.closest("[data-request-inspector-tab]");
   if (tab) {
-    const nextTab = tab.dataset.requestInspectorTab === "input_context" ? "input_context" : "interaction";
+    const nextTab = tab.dataset.requestInspectorTab === "input_context"
+      ? "input_context"
+      : tab.dataset.requestInspectorTab === "context_delta"
+        ? "context_delta"
+        : "interaction";
     state.requestInspector.activeTab = nextTab;
     renderRequestInspector();
     if (nextTab === "input_context" && !state.requestInspector.inputContext.payload) {
       void loadRequestInputContext();
+    } else if (nextTab === "context_delta" && !state.requestInspector.contextDelta.payload) {
+      void loadRequestContextDelta();
     }
     return;
   }
   const refresh = event.target.closest("[data-request-inspector-refresh]");
   if (refresh) {
     if (state.requestInspector.activeTab === "input_context") void loadRequestInputContext({ force: true });
+    else if (state.requestInspector.activeTab === "context_delta") void loadRequestContextDelta({ force: true });
     else void refreshRequestInspector();
   }
 });
@@ -1922,6 +1936,8 @@ async function openRequestInspector(trigger) {
   inspector.activeTab = "interaction";
   inspector.inputContext.abortController?.abort();
   inspector.inputContext = { loading: false, error: null, payload: null, abortController: null };
+  inspector.contextDelta.abortController?.abort();
+  inspector.contextDelta = { loading: false, error: null, payload: null, abortController: null };
   inspector.stale = false;
   inspector.projectionGeneration = null;
   inspector.trigger = trigger;
@@ -1993,6 +2009,44 @@ async function loadRequestInputContext({ force = false } = {}) {
   }
 }
 
+async function loadRequestContextDelta({ force = false } = {}) {
+  const inspector = state.requestInspector;
+  const requestId = inspector.requestId;
+  const sessionId = state.selectedId;
+  if (!inspector.open || !requestId || !sessionId) return;
+  if (inspector.contextDelta.payload && !force) return;
+  inspector.contextDelta.abortController?.abort();
+  const selectionVersion = inspector.selectionVersion;
+  const controller = new AbortController();
+  inspector.contextDelta = {
+    loading: true,
+    error: null,
+    payload: force ? null : inspector.contextDelta.payload,
+    abortController: controller,
+  };
+  renderRequestInspector();
+  try {
+    const payload = await fetchJson(
+      `/api/sessions/${encodeURIComponent(sessionId)}/requests/${encodeURIComponent(requestId)}/context-delta`,
+      { signal: controller.signal },
+    );
+    if (
+      selectionVersion !== inspector.selectionVersion ||
+      requestId !== inspector.requestId ||
+      sessionId !== state.selectedId
+    ) return;
+    inspector.contextDelta = { loading: false, error: null, payload, abortController: null };
+    inspector.projectionGeneration = payload.projectionGeneration ?? inspector.projectionGeneration;
+    inspector.stale = false;
+    renderRequestInspector();
+  } catch (error) {
+    if (error?.name === "AbortError") return;
+    if (selectionVersion !== inspector.selectionVersion || requestId !== inspector.requestId) return;
+    inspector.contextDelta = { loading: false, error: error.message, payload: null, abortController: null };
+    renderRequestInspector();
+  }
+}
+
 async function refreshRequestInspector() {
   const inspector = state.requestInspector;
   if (!inspector.open || !inspector.requestId || !state.selectedId) return;
@@ -2018,6 +2072,7 @@ function releaseRequestInspectorContent() {
   inspector.selectionVersion += 1;
   inspector.abortController?.abort();
   inspector.inputContext.abortController?.abort();
+  inspector.contextDelta.abortController?.abort();
   inspector.open = false;
   inspector.requestId = null;
   inspector.loading = false;
@@ -2025,6 +2080,7 @@ function releaseRequestInspectorContent() {
   inspector.payload = null;
   inspector.activeTab = "interaction";
   inspector.inputContext = { loading: false, error: null, payload: null, abortController: null };
+  inspector.contextDelta = { loading: false, error: null, payload: null, abortController: null };
   inspector.stale = false;
   inspector.projectionGeneration = null;
   inspector.abortController = null;
@@ -2061,7 +2117,9 @@ function renderRequestInspector() {
       : "Request Inspector";
   elements["request-inspector-evidence"].textContent = inspector.activeTab === "input_context"
     ? "Reconstructed Input Context · Provider payload / serialization unavailable"
-    : "Rollout observed interaction · Provider Payload unavailable / not reconstructed";
+    : inspector.activeTab === "context_delta"
+      ? "Context Delta & Cache Correlation · exact provider cache causality unavailable"
+      : "Rollout observed interaction · Provider Payload unavailable / not reconstructed";
   if (inspector.loading) {
     elements["request-inspector-body"].innerHTML = `
       <div class="request-inspector-state" role="status">
@@ -2090,9 +2148,11 @@ function renderRequestInspector() {
   const tabs = renderRequestInspectorTabs(inspector.activeTab);
   const availability = inspector.activeTab === "input_context"
     ? renderRequestInputContextTab(inspector.inputContext)
-    : payload.available
-      ? renderRequestInspectorSemanticSections(payload)
-      : renderRequestInspectorUnavailable(payload);
+    : inspector.activeTab === "context_delta"
+      ? renderRequestContextDeltaTab(inspector.contextDelta)
+      : payload.available
+        ? renderRequestInspectorSemanticSections(payload)
+        : renderRequestInspectorUnavailable(payload);
   elements["request-inspector-body"].innerHTML = `
     ${stale}
     ${renderRequestInspectorSummary(payload.request, payload.evidence)}
@@ -2105,6 +2165,7 @@ function renderRequestInspectorTabs(activeTab) {
   return `<div class="request-inspector-tabs" role="tablist" aria-label="Request Inspector 视图">
     <button type="button" role="tab" aria-selected="${activeTab === "interaction"}" class="${activeTab === "interaction" ? "active" : ""}" data-request-inspector-tab="interaction">Interaction</button>
     <button type="button" role="tab" aria-selected="${activeTab === "input_context"}" class="${activeTab === "input_context" ? "active" : ""}" data-request-inspector-tab="input_context">Input Context</button>
+    <button type="button" role="tab" aria-selected="${activeTab === "context_delta"}" class="${activeTab === "context_delta" ? "active" : ""}" data-request-inspector-tab="context_delta">Context Delta</button>
   </div>`;
 }
 
@@ -2251,6 +2312,268 @@ function renderRequestInputContextTab(inputContext) {
       <div class="request-context-evidence-list">${gapContent}</div>
     </section>
   </section>`;
+}
+
+function renderRequestContextDeltaTab(contextDelta) {
+  if (contextDelta.loading) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state" role="status">
+        <strong>正在比较 Context Delta…</strong>
+        <span>按同 thread immediate previous canonical Request 读取两侧 bounded reconstruction。</span>
+      </div>
+    </section>`;
+  }
+  if (contextDelta.error) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state error">
+        <strong>Context Delta 读取失败</strong>
+        <span>${escapeHtml(contextDelta.error)}</span>
+        <button type="button" data-request-inspector-refresh>重新读取</button>
+      </div>
+    </section>`;
+  }
+  const payload = contextDelta.payload;
+  if (!payload) {
+    return `<section class="request-interaction">
+      <div class="request-inspector-state compact"><strong>Context Delta 尚未读取</strong><span>首次进入该 tab 时才发起 lazy read。</span></div>
+    </section>`;
+  }
+
+  const pair = payload.pair ?? {};
+  if (pair.status !== "complete_pair") {
+    return `<section class="request-context-delta">
+      ${renderContextDeltaDisclaimer()}
+      <div class="request-inspector-state unavailable">
+        <strong>${escapeHtml(contextDeltaPairStateTitle(pair.status))}</strong>
+        <span>${escapeHtml(contextDeltaPairStateDescription(pair.status))}</span>
+      </div>
+      ${renderContextDeltaCoverage(payload)}
+    </section>`;
+  }
+
+  const accounting = payload.accounting ?? {};
+  const previous = accounting.previous ?? {};
+  const current = accounting.current ?? {};
+  const delta = accounting.delta ?? {};
+  const context = payload.contextDelta ?? {};
+  const summary = context.summary ?? {};
+  const added = context.added ?? [];
+  const removed = context.removedOrSuperseded ?? [];
+  const runtimeChanges = context.runtimeChanges ?? [];
+  const compaction = context.compaction ?? [];
+  const sourceTransitions = context.sourceTransitions ?? [];
+  const correlations = payload.correlationSignals ?? [];
+  const truncated = payload.evidence?.diffTruncated
+    ? '<p class="request-inspector-warning">Context Delta 达到 bounded diff/detail 预算；summary 仍保留，但 detailed evidence 为 partial。</p>'
+    : "";
+
+  return `<section class="request-context-delta" aria-labelledby="request-context-delta-title">
+    <header class="request-input-context-header">
+      <div><p class="eyebrow">CONTEXT DELTA & CACHE CORRELATION</p><h3 id="request-context-delta-title">Request-to-Request 上下文变化</h3></div>
+      <span>${escapeHtml(shortId(pair.previousRequestId))} → ${escapeHtml(shortId(pair.currentRequestId))}</span>
+    </header>
+    ${renderContextDeltaDisclaimer()}
+    ${truncated}
+    <section class="request-context-section request-delta-accounting">
+      <header><h4>Canonical Accounting Delta</h4><span>${escapeHtml(payload.policyVersion || "request-context-delta-v1")}</span></header>
+      <div class="request-delta-accounting-grid">
+        ${renderAccountingDeltaMetric("Input Tokens", previous.inputTokens, current.inputTokens, delta.inputTokens, "tokens")}
+        ${renderAccountingDeltaMetric("Cached Input Tokens", previous.cachedInputTokens, current.cachedInputTokens, delta.cachedInputTokens, "tokens")}
+        ${renderAccountingDeltaMetric("Cache Hit Rate", previous.cacheHitRate, current.cacheHitRate, delta.cacheHitRatePoints, "rate")}
+      </div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Context Change Summary</h4><span>${escapeHtml(contextDeltaCoverageLabel(payload.evidence?.comparisonCoverage))}</span></header>
+      <div class="request-delta-summary-grid">
+        <span><small>Retained</small><strong>${tokenFormatter.format(summary.retainedItems ?? 0)}</strong></span>
+        <span><small>Added</small><strong>${tokenFormatter.format(summary.addedItems ?? 0)}</strong></span>
+        <span><small>Removed / Superseded</small><strong>${tokenFormatter.format(summary.removedOrSupersededItems ?? 0)}</strong></span>
+        <span><small>Visible characters</small><strong>${formatSignedInteger(summary.visibleCharactersDelta)}</strong></span>
+      </div>
+    </section>
+    ${renderContextDeltaDetails("Added Context", added, "没有观察到新增 semantic context item。")}
+    ${renderContextDeltaDetails("Removed / Superseded Context", removed, "没有观察到 removed / superseded semantic context item。")}
+    <section class="request-context-section">
+      <header><h4>Runtime Context Changes</h4><span>${tokenFormatter.format(runtimeChanges.length)}</span></header>
+      <div class="request-context-evidence-list">${runtimeChanges.length
+        ? runtimeChanges.map(renderRuntimeDeltaChange).join("")
+        : '<p class="request-content-empty">Phase 25.1 allowlist runtime fields 未观察到变化。</p>'}</div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Compaction / Source Evidence</h4><span>${tokenFormatter.format(compaction.length + sourceTransitions.length)}</span></header>
+      <div class="request-context-evidence-list">
+        ${compaction.map(renderContextDeltaCompaction).join("")}
+        ${sourceTransitions.map(renderContextDeltaSourceTransition).join("")}
+        ${compaction.length + sourceTransitions.length === 0 ? '<p class="request-content-empty">该 Request pair 未观察到新的 compaction 或 rollout source transition。</p>' : ""}
+      </div>
+    </section>
+    <section class="request-context-section">
+      <header><h4>Cache Correlation Evidence</h4><span>${tokenFormatter.format(correlations.length)} signals</span></header>
+      <div class="request-context-evidence-list">${correlations.length
+        ? correlations.map(renderContextDeltaCorrelation).join("")
+        : '<p class="request-content-empty">当前 pair 没有触发 request-context-delta-v1 correlation signal。</p>'}</div>
+    </section>
+    ${renderContextDeltaCoverage(payload)}
+  </section>`;
+}
+
+function renderContextDeltaDisclaimer() {
+  return `<div class="request-input-context-disclaimer request-delta-disclaimer">
+    <strong>Evidence boundary</strong>
+    <span>Context changes are reconstructed from local rollout evidence. Cache metrics are canonical accounting facts. Exact provider cache-key behavior and causal attribution are unavailable.</span>
+  </div>`;
+}
+
+function renderAccountingDeltaMetric(label, previous, current, delta, type) {
+  const left = type === "rate" ? formatContextDeltaRate(previous) : formatTokens(previous);
+  const right = type === "rate" ? formatContextDeltaRate(current) : formatTokens(current);
+  const change = type === "rate" ? formatSignedPercentagePoints(delta) : formatSignedTokenDelta(delta);
+  return `<article>
+    <small>${escapeHtml(label)}</small>
+    <strong>${escapeHtml(left)} <span aria-hidden="true">→</span> ${escapeHtml(right)}</strong>
+    <span>${escapeHtml(change)}</span>
+  </article>`;
+}
+
+function renderContextDeltaDetails(title, items, emptyText) {
+  return `<section class="request-context-section">
+    <header><h4>${escapeHtml(title)}</h4><span>${tokenFormatter.format(items.length)} detailed items</span></header>
+    ${items.length
+      ? `<details class="request-delta-details"><summary><strong>展开 bounded detail</strong><span>${tokenFormatter.format(items.length)} items</span></summary><div class="request-interaction-list">${items.map(renderRequestDeltaItem).join("")}</div></details>`
+      : `<p class="request-content-empty">${escapeHtml(emptyText)}</p>`}
+  </section>`;
+}
+
+function renderRequestDeltaItem(item) {
+  return `<div class="request-delta-item">
+    <div class="request-delta-item-meta"><span>${escapeHtml(deltaDispositionLabel(item.deltaDisposition))}</span>${renderProvenanceBadge(item.provenance)}</div>
+    ${renderRequestContentItem(item)}
+  </div>`;
+}
+
+function renderRuntimeDeltaChange(change) {
+  return `<article class="request-context-evidence-card request-runtime-delta">
+    <header><strong>${escapeHtml(change.label || change.key || "Runtime field")}</strong><span class="request-provenance">Runtime metadata</span></header>
+    <dl><div><dt>Previous</dt><dd>${renderPlainText(change.previousValue ?? "—")}</dd></div><div><dt>Current</dt><dd>${renderPlainText(change.currentValue ?? "—")}</dd></div></dl>
+  </article>`;
+}
+
+function renderContextDeltaCompaction(item) {
+  return `<article class="request-context-evidence-card">
+    <header><strong>${escapeHtml(item.kind === "compaction_snapshot" ? "Compaction rebase" : "Compaction coverage signal")}</strong>${renderProvenanceBadge(item.provenance)}</header>
+    <p>${escapeHtml(item.label || "Observed compaction evidence")}</p>
+  </article>`;
+}
+
+function renderContextDeltaSourceTransition(item) {
+  return `<article class="request-context-evidence-card">
+    <header><strong>Rollout source transition</strong><span class="request-provenance">${escapeHtml(item.sourceOrdering || "source chronology")}</span></header>
+    <p><code>${escapeHtml(item.fromSourceKey || "unknown")}</code> → <code>${escapeHtml(item.toSourceKey || "unknown")}</code></p>
+  </article>`;
+}
+
+function renderContextDeltaCorrelation(signal) {
+  const evidence = signal.contextEvidence ?? {};
+  return `<article class="request-context-evidence-card request-correlation-card">
+    <header><strong>${escapeHtml(contextDeltaCorrelationLabel(signal.type))}</strong><span class="request-provenance">Correlation only</span></header>
+    <p>${escapeHtml(contextDeltaCorrelationDescription(signal.type, evidence))}</p>
+    <small>${escapeHtml(signal.limitation || "Exact provider cache causality unavailable.")}</small>
+  </article>`;
+}
+
+function renderContextDeltaCoverage(payload) {
+  const changes = payload.contextDelta?.coverageChanges ?? [];
+  const limitations = payload.limitations ?? [];
+  return `<section class="request-context-section request-delta-coverage">
+    <header><h4>Coverage & Limitations</h4><span>${escapeHtml(contextDeltaCoverageLabel(payload.evidence?.comparisonCoverage))}</span></header>
+    ${changes.length ? `<div class="request-context-evidence-list">${changes.map((change) => `<article class="request-context-gap"><header><strong>Coverage changed</strong></header><p>${escapeHtml(requestInputCoverageLabel(change.previous))} → ${escapeHtml(requestInputCoverageLabel(change.current))}</p></article>`).join("")}</div>` : ""}
+    <ul>${limitations.map((item) => `<li>${escapeHtml(item)}</li>`).join("")}</ul>
+  </section>`;
+}
+
+function contextDeltaPairStateTitle(status) {
+  return ({
+    no_predecessor: "该 thread 没有可比较的上一 canonical Request",
+    predecessor_unavailable: "上一 canonical Request 的 comparison evidence 不可用",
+    boundary_ambiguous: "Request pair chronology 无法唯一证明",
+  })[status] ?? "Context Delta 当前不可用";
+}
+
+function contextDeltaPairStateDescription(status) {
+  return ({
+    no_predecessor: "这是该 thread 的第一条 canonical Request；不会人为跨 thread 或按 UI 顺序寻找 predecessor。",
+    predecessor_unavailable: "已停止比较，不会用 observedAt、mtime 或任意 Request 猜测 predecessor。",
+    boundary_ambiguous: "rollout source chronology / origin line 存在歧义，因此没有构造假 comparison pair。",
+  })[status] ?? "当前证据不足以形成 bounded Request-to-Request comparison。";
+}
+
+function contextDeltaCoverageLabel(value) {
+  return ({
+    complete_pair: "Complete pair evidence",
+    no_predecessor: "No predecessor",
+    predecessor_unavailable: "Predecessor unavailable",
+    boundary_ambiguous: "Pair boundary ambiguous",
+    current_context_partial: "Current context partial",
+    previous_context_partial: "Previous context partial",
+    both_context_partial: "Both contexts partial",
+  })[value] ?? String(value || "Unknown comparison coverage");
+}
+
+function deltaDispositionLabel(value) {
+  return ({
+    added: "Added",
+    superseded_by_compaction: "Superseded by compaction",
+    unresolved_due_to_compaction_gap: "Unresolved after compaction gap",
+    removed_or_not_observed: "Removed / no longer observed",
+  })[value] ?? "Changed";
+}
+
+function contextDeltaCorrelationLabel(value) {
+  return ({
+    cache_hit_drop_with_context_growth: "Cache hit drop + context growth",
+    cache_hit_drop_with_compaction: "Cache hit drop + compaction",
+    cache_hit_drop_with_runtime_change: "Cache hit drop + runtime change",
+    cached_input_drop_with_source_transition: "Cached input drop + source transition",
+    context_changed_cache_stable: "Context changed while cache stayed stable",
+    cache_changed_without_visible_context_change: "Cache changed without visible context change",
+    insufficient_context_coverage: "Context coverage limits correlation",
+  })[value] ?? String(value || "Correlation signal");
+}
+
+function contextDeltaCorrelationDescription(type, evidence) {
+  const context = `${evidence.addedItems ?? 0} added · ${evidence.removedOrSupersededItems ?? 0} removed/superseded · ${evidence.runtimeChangeCount ?? 0} runtime changes`;
+  if (type === "insufficient_context_coverage") return `Local context evidence is partial (${context}). Do not infer an exact cache cause.`;
+  return `Canonical cache/accounting movement occurred in the same Request pair as local context evidence (${context}).`;
+}
+
+function formatContextDeltaRate(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  return Number.isFinite(number) ? formatPercent(number) : "—";
+}
+
+function formatSignedPercentagePoints(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const sign = number > 0 ? "+" : "";
+  return `${sign}${number.toFixed(1)} pp`;
+}
+
+function formatSignedTokenDelta(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const sign = number > 0 ? "+" : number < 0 ? "−" : "";
+  return `${sign}${formatTokens(Math.abs(number))}`;
+}
+
+function formatSignedInteger(value) {
+  if (value == null) return "—";
+  const number = Number(value);
+  if (!Number.isFinite(number)) return "—";
+  const sign = number > 0 ? "+" : number < 0 ? "−" : "";
+  return `${sign}${tokenFormatter.format(Math.abs(number))}`;
 }
 
 function renderRequestHistoryGroup(group, newest) {

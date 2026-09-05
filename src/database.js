@@ -6,9 +6,10 @@ import { resolveCanonicalRequestOwnership } from "./request-ownership.js";
 import { combineCostSummaries, SUBSCRIPTION_PRICING_CATALOG } from "./pricing.js";
 import { materializeCalendarSlices } from "./snapshot-scope.js";
 import { recoverLegacySourceKey } from "./source-locator.js";
+import { STORAGE_COMPATIBILITY } from "./storage-compatibility.js";
 import { addUsage, normalizeTimestamp, sumTaskUsage, USAGE_FIELDS, zeroUsage } from "./usage.js";
 
-const SCHEMA_VERSION = 15;
+const SCHEMA_VERSION = STORAGE_COMPATIBILITY.schemaVersion;
 const REQUEST_LEDGER_SCHEMA_VERSION = 9;
 const PARSER_VERSION = 15;
 const PROJECTION_VERSION = 2;
@@ -1264,6 +1265,80 @@ export class MonitorDatabase {
       sourceOrdering: "rollout_filename_timestamp",
       sourceChain: currentIndex >= 0 ? segments.slice(0, currentIndex + 1) : [],
     };
+  }
+
+  getCanonicalRequestContextDeltaLocator(rootSessionId, requestId) {
+    const current = this.getCanonicalRequestInputContextLocator(rootSessionId, requestId);
+    if (!current) return null;
+    const base = {
+      rootSessionId: current.rootSessionId,
+      threadId: current.threadId,
+      sourceOrdering: "rollout_filename_timestamp",
+      current,
+      previous: null,
+    };
+    if (current.sourceChainStatus === "boundary_ambiguous") {
+      return { ...base, status: "boundary_ambiguous" };
+    }
+
+    const rows = this.db.prepare(`
+      SELECT request_id, origin_source_key, origin_line_number
+      FROM canonical_requests
+      WHERE root_session_id=? AND thread_id=?
+    `).all(current.rootSessionId, current.threadId);
+    const ordered = [];
+    const sourceByChronology = new Map();
+    for (const row of rows) {
+      const chronologyKey = rolloutSourceChronologyKey(row.origin_source_key);
+      const lineNumber = Number(row.origin_line_number);
+      if (!chronologyKey || !Number.isInteger(lineNumber) || lineNumber <= 0) {
+        return { ...base, status: "boundary_ambiguous" };
+      }
+      const priorSource = sourceByChronology.get(chronologyKey);
+      if (priorSource && priorSource !== row.origin_source_key) {
+        return { ...base, status: "boundary_ambiguous" };
+      }
+      sourceByChronology.set(chronologyKey, row.origin_source_key);
+      ordered.push({
+        requestId: row.request_id,
+        sourceKey: row.origin_source_key,
+        lineNumber,
+        chronologyKey,
+      });
+    }
+    ordered.sort((left, right) =>
+      left.chronologyKey.localeCompare(right.chronologyKey) ||
+      left.lineNumber - right.lineNumber ||
+      left.requestId.localeCompare(right.requestId),
+    );
+    for (let index = 1; index < ordered.length; index += 1) {
+      const left = ordered[index - 1];
+      const right = ordered[index];
+      if (
+        left.chronologyKey === right.chronologyKey &&
+        left.sourceKey === right.sourceKey &&
+        left.lineNumber === right.lineNumber
+      ) {
+        return { ...base, status: "boundary_ambiguous" };
+      }
+    }
+
+    const currentIndex = ordered.findIndex((row) => row.requestId === current.requestId);
+    if (currentIndex < 0) return { ...base, status: "boundary_ambiguous" };
+    if (currentIndex === 0) return { ...base, status: "no_predecessor" };
+    const predecessor = ordered[currentIndex - 1];
+    const predecessorInCurrentChain = predecessor.sourceKey === current.sourceKey ||
+      current.sourceChain.some((segment) => segment.sourceKey === predecessor.sourceKey);
+    if (!predecessorInCurrentChain) return { ...base, status: "predecessor_unavailable" };
+
+    const previous = this.getCanonicalRequestInputContextLocator(rootSessionId, predecessor.requestId);
+    if (!previous || previous.threadId !== current.threadId) {
+      return { ...base, status: "predecessor_unavailable" };
+    }
+    if (previous.sourceChainStatus === "boundary_ambiguous") {
+      return { ...base, status: "predecessor_unavailable" };
+    }
+    return { ...base, status: "ok", previous };
   }
 
   getCursors(rootSessionId) {

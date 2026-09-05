@@ -4,9 +4,9 @@ API 由同一个 loopback HTTP 服务提供，前缀为 `/api`。它不是公开
 
 ## 认证和通用行为
 
-1. 启动时服务输出 `http://127.0.0.1:<port>/?token=<random>`。
-2. 第一次访问 `/` 时，一次性 token 被置空并换取 `codex_monitor` HttpOnly、SameSite=Strict Cookie。
-3. 后续 API 请求必须携带该 Cookie，并通过 Host 和 Origin 校验。
+1. 服务只在精确 loopback endpoint 提供 API；默认根地址为 `http://127.0.0.1:47832/`，启动输出不含 credential query。
+2. 浏览器授权通过 `codex-usage-monitor open` 与匿名的 `/auth/challenge`、`/auth/bootstrap` 两个 bootstrap route 建立：CLI 使用本机 private secret 对 60 秒 one-shot challenge 生成 origin-bound proof，成功后服务设置 `codex_monitor` HttpOnly、SameSite=Strict Cookie并重定向回无 credential 的 `/`。
+3. 除 challenge/bootstrap 外，静态页面和所有 API 均必须携带有效 Cookie，并继续通过 exact Host 与 Origin 校验；有效 Cookie 可跨 monitor 进程重启使用。
 
 默认接口只接受 `GET`（`HEAD` 在服务层允许）。Phase 24B2 仅为 Diagnostic Alerts operational state 开放三个明确 allowlist 的 `POST` 路由：policy、Ack、Snooze；不存在通配写路由，其他 POST 仍返回 `405`。所有写路由继续要求同一 Strict Cookie、Host 与 Origin 校验。响应使用 `Cache-Control: no-store`；SSE 使用 `no-cache, no-transform`。session/thread/turn/alert ID 必须匹配 8–128 位字母、数字、下划线或连字符。
 
@@ -184,7 +184,7 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 
 若 task 同时包含 verified 与 unverified/anomaly 事件，`deltaUsage` 只保留 verified 部分并以 `partial` 标记；没有可证明 usage 的完成任务保持 `partial`，活跃任务保持 `unknown`。旧 `boundaryDeltaUsage` / `boundaryQuality` API 字段已在 schema v11 删除；需要复核旧实现时使用 Git tag `usage-boundary-ledger-v1`。
 
-`costEstimate` 先逐 verified Request Ledger usage unit 计算，再在 Task 层求和。状态为 `estimated | partial | unavailable`；`partial.amountUsd` 是当前可证明金额，不代表完整 Plus 扣费。`pricing.basis` 固定为 `subscription-standard-equivalent`。Historical Rate Resolver 使用 event `observedAt` 选择历史价；`input >272K` 的 long-context multiplier 仍按 Request 证据判定。Fast 采用显式规则：只有原始 `service_tier` 明确为 `fast` 才应用 Fast multiplier，其余值全部按 standard；因此 service tier 缺失本身不再降低 cost coverage。
+`costEstimate` 先逐 verified Request Ledger usage unit 计算，再在 Task 层求和。状态为 `estimated | partial | unavailable`；`partial.amountUsd` 是当前可证明金额，不代表完整 Plus 扣费。`pricing.basis` 固定为 `subscription-standard-equivalent`。Historical Rate Resolver 使用 event `observedAt` 选择历史价；GPT-5.4/5.5/5.6 的 `input >272K` long-context multiplier 仍按 Request 证据判定，GPT-6 Astra 的 Codex pricing 则将该状态标记为 `exempt` 且不追加 surcharge。Fast 采用显式规则：只有原始 `service_tier` 明确为 `fast` 才应用 Fast multiplier，其余值全部按 standard；因此 service tier 缺失本身不再降低 cost coverage。
 
 每个智能体的 `ownCostEstimate` 只合计自己的任务，`subtreeCostEstimate` 递归包含全部后代。`summary.totalCostEstimate` 合计主智能体和所有后代，`summary.subagentCostEstimate` 只合计非根智能体。摘要同时返回 task 与 request 级 `estimated/partial/unavailable` 数量及 `featureCoverage`。所有金额都来自 request cost 求和，不能重新对 Task aggregate 套 272K/Fast 规则；页面继续直接显示 `$xx.xx`，partial 状态通过 coverage/title 解释，不在主数值前加 `≥`。
 
@@ -230,7 +230,7 @@ day snapshot 不修改 task 的 `startedAt` / `completedAt` 身份元数据；�
 }
 ```
 
-Request cost 继续严格使用该 Request 自身 event-level pricing evidence。缺 model、历史价、usage breakdown 或其他必要证据时仍返回 `partial/unavailable`，不会从 Task aggregate 反向猜值；但 service tier 采用 ADR-0023 的业务默认：**仅字面 `fast` 为 Fast，其余均为 standard**。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。服务层级 UI 只显示 `standard` 或 `fast · N 倍率`；倍率直接使用该 Request 已计算的 pricing evidence（当前 GPT-5.6/GPT-5.5 Fast 为 2.5×、GPT-5.4 为 2×），不会把 long-context output 的 1.5×误标成 Fast。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
+Request cost 继续严格使用该 Request 自身 event-level pricing evidence。缺 model、历史价、usage breakdown 或其他必要证据时仍返回 `partial/unavailable`，不会从 Task aggregate 反向猜值；但 service tier 采用 ADR-0023 的业务默认：**仅字面 `fast` 为 Fast，其余均为 standard**。Request 表的“推理强度”来自所属 Task 的 `turn_context.effort`，不是伪造的 Request 独立字段。服务层级 UI 只显示 `standard` 或 `fast · N 倍率`；倍率直接使用该 Request 已计算的 pricing evidence（当前 GPT-6 Astra/GPT-5.6/GPT-5.5 Fast 为 2.5×、GPT-5.4 为 2×），不会把 long-context output multiplier 混入 Fast。Astra 的 Codex `>272K` exemption 与 API model page 的 feature pricing 分开维护。前端缓存展开明细时使用 `projectionGeneration`；SSE generation 变化只使已展开项按需失效并重新读取，不对所有 Task 主动 eager refresh。
 
 ### `GET /api/sessions/:sessionId/requests/:requestId/content`
 
@@ -353,6 +353,54 @@ Slice 起点为前一条同 Task/同 source canonical Request `token_count` boun
 source chain 仅来自相同 `rootSessionId + threadId` 的已持久化 portable source evidence，并按 rollout filename timestamp chronology 排序；无法证明唯一顺序时返回 `boundary_ambiguous`，不会使用文件 mtime 猜历史。每个公开 context item 都带 `direct_current / historical_rollout / compaction_snapshot / runtime_context / coverage_gap` provenance。explicit `replacement_history` 会语义化后执行 context rebase；signal-only compaction、source missing、unsupported shape 或 hard-limit truncation 都形成显式 gap，旧历史不会静默补回。
 
 正式 V1 hard limits 为 `16 source segments / 32 MiB history scan / 800 context items / 64 KiB per item / 1 MiB projected characters`。Input/Cached Input Tokens 只作为 Request accounting 对照，不拆分或反推到具体 history/message/tool item。历史正文只在用户第一次点击 Inspector 的 `Input Context` tab 时 lazy fetch，并在 close/session/day switch 时清除。
+
+### `GET /api/sessions/:sessionId/requests/:requestId/context-delta`
+
+按需返回 **Context Delta & Cache Correlation**。默认 comparison pair 固定为当前 canonical Request 与**同 thread immediate previous canonical Request**；顺序由 portable rollout filename timestamp chronology + canonical `origin_line_number` 证明，不能由客户端提交 predecessor，也不按 UI 顺序、mtime 或最近 timestamp 猜测。first Request 返回 `200` + `pair.status="no_predecessor"`；无法唯一证明 chronology 时返回 explicit coverage state，不构造假 pair。
+
+previous/current context 都调用 Phase 26 `readReconstructedInputContext()`；Phase 27 不维护第二套 rollout reconstruction。semantic diff 只比较 message/tool input context 与 Phase 25.1 allowlisted runtime fields，支持 duplicate-aware sequence matching、explicit compaction supersede、signal-only compaction gap、source transition 与 coverage change。Reasoning CoT/encrypted content 不进入 diff。
+
+```json
+{
+  "version": 1,
+  "policyVersion": "request-context-delta-v1",
+  "projectionGeneration": 8330,
+  "pair": {
+    "previousRequestId": "reqr_previous",
+    "currentRequestId": "reqr_current",
+    "threadId": "thread-id",
+    "status": "complete_pair"
+  },
+  "evidence": {
+    "kind": "context_delta_cache_correlation",
+    "providerCacheKeyKnown": false,
+    "providerSerializationKnown": false,
+    "exactCacheCausalityKnown": false,
+    "comparisonCoverage": "complete_pair",
+    "diffTruncated": false
+  },
+  "accounting": {
+    "previous": { "inputTokens": 100000, "cachedInputTokens": 90000, "cacheHitRate": 0.9, "coverage": "complete" },
+    "current": { "inputTokens": 110000, "cachedInputTokens": 85000, "cacheHitRate": 0.772727, "coverage": "complete" },
+    "delta": { "inputTokens": 10000, "cachedInputTokens": -5000, "cacheHitRatePoints": -12.7273 }
+  },
+  "contextDelta": {
+    "summary": { "retainedItems": 60, "addedItems": 2, "removedOrSupersededItems": 0, "visibleCharactersDelta": 541 },
+    "added": [],
+    "removedOrSuperseded": [],
+    "runtimeChanges": [],
+    "compaction": [],
+    "sourceTransitions": [],
+    "coverageChanges": []
+  },
+  "correlationSignals": [],
+  "limitations": ["Exact provider cache causality unavailable."]
+}
+```
+
+Cache Hit Rate 仅按 canonical `cachedInputTokens / inputTokens` 计算，delta 单位固定为 **percentage points (`pp`)**；字段缺失或 `cached > input` 时保持 null/coverage，不补零。correlation signal 只表示同一个 Request pair 上两类证据同时变化，不做 item-level token attribution，也不输出 causal confidence/ranking。`providerCacheKeyKnown=false`、`providerSerializationKnown=false`、`exactCacheCausalityKnown=false` 是固定 truthfulness invariant。
+
+Phase 27 diff hard limits 为 `800 comparable items/side / 200 detailed delta items / 512 KiB projected detail characters / 250,000 diff work units`；超过 work/detail budget 时 `diffTruncated=true`，不会无界 LCS/DOM 展开。接口支持 `GET/HEAD`、`Cache-Control: no-store`，拒绝任何 query 参数；foreign session/request 返回 `404`。response 不包含 absolute path、Raw JSON、replacement history、encrypted reasoning，也不写 SQLite/server cache/browser persistence，不进入 Session/Day snapshot 或 SSE。
 
 ### `GET /api/sessions/:id/diagnostics[?day=YYYY-MM-DD]`
 

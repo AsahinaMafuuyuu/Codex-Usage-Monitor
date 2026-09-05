@@ -89,6 +89,34 @@ Phase 26 解决“Input Tokens 很大，但当前 User message 很短时，模�
 
 设计、实施、交付与长期证据约束见 [DESIGN-RECONSTRUCTED-INPUT-CONTEXT.md](DESIGN-RECONSTRUCTED-INPUT-CONTEXT.md)、[TECHNICAL-IMPLEMENTATION-RECONSTRUCTED-INPUT-CONTEXT.md](TECHNICAL-IMPLEMENTATION-RECONSTRUCTED-INPUT-CONTEXT.md)、[DELIVERY-RECONSTRUCTED-INPUT-CONTEXT.md](DELIVERY-RECONSTRUCTED-INPUT-CONTEXT.md)、[ADR-0031](decisions/0031-reconstructed-input-context-evidence.md)。
 
+## 已交付：Phase 27 Context Delta & Cache Correlation
+
+状态：**Implemented / Verified**。
+
+Phase 27 在 Phase 26 的 reconstructed context 之上比较同 thread 的相邻 canonical Request，提供 semantic Context Delta 与 canonical cache accounting 的 correlation evidence：
+
+- 默认 predecessor 固定为同 thread、按可证明 source chronology + origin line 紧邻当前 Request 的前一 canonical Request；
+- previous/current context 均复用 Phase 26，不建立第二套 rollout reconstruction；
+- 展示 retained / added / removed-or-superseded、runtime context change、compaction rebase、source transition 与 coverage change；
+- 同时展示 Input Tokens、Cached Input Tokens、Cache Hit Rate 的前后值与 delta；
+- correlation 只并列本地 context evidence 与 canonical accounting，不推断 Provider cache key、serialization 或精确 causal root cause；
+- Inspector 已增加 lazy `Context Delta` tab；正文继续 bounded、ephemeral、no-store，不进入 SQLite/Session/SSE；
+- V1 不做 arbitrary Request pair、item-level token attribution、Raw JSON diff、CoT diff 或 LLM root-cause explanation。
+
+最终实现新增 `src/request-context-delta.js`、same-thread DB pair locator、lazy `GET/HEAD .../context-delta`、Inspector 第三个 tab、`audit:request-context-delta` 与 `benchmark:request-context-delta`。300 Request 真实 audit 得到 293 个 complete comparison candidates 与 7 个 no-predecessor；context pair coverage 为 286 complete / 6 both partial / 1 current partial，`diffTruncated=0`。冻结 limits=`800 comparable items/side / 200 detailed items / 512 KiB detailed characters / 250,000 work units` 与 `request-context-delta-v1` correlation policy。
+
+20 轮 production-equivalent benchmark common/large total P95=`19.777/68.592ms`，diff projector P95=`1.463/9.351ms`，均满足 `<100/<750/<100ms` Gate，source hash 不变。Chrome/CDP 验证第三个 tab lazy fetch、canonical accounting + `pp`、coverage/causality disclaimer、SSE/stale/focus、1440×900 / 720×900 与 200-detail-item 默认折叠压力场景。最终全量=`210 tests / 209 passed / 0 failed / 1 existing optional skipped`，schema v15 / projection v2 / canonical accounting / `.codex` manifest 均不变。
+
+技术实施与交付契约见 [TECHNICAL-IMPLEMENTATION-CONTEXT-DELTA-CACHE-CORRELATION.md](TECHNICAL-IMPLEMENTATION-CONTEXT-DELTA-CACHE-CORRELATION.md) 与 [DELIVERY-CONTEXT-DELTA-CACHE-CORRELATION.md](DELIVERY-CONTEXT-DELTA-CACHE-CORRELATION.md)。
+
+## 已交付：Phase 28 Release & CLI Management / v1.2.0
+
+状态：**Implemented / Verified**。
+
+Phase 28 已建立正式 CLI、Development/Managed Runtime Layout、固定 loopback + persistent browser authorization、固定 GitHub stable Release client、checksum/staging/self-check/current-pointer update transaction、SQLite compatibility/backup/rollback、Windows installer/shim、自包含 deterministic release artifact 与 Draft-only GitHub Release workflow。最终本地全量为 `274 tests / 273 passed / 0 failed / 1 existing optional skipped`，`npm run check` 与 `git diff --check` Green；真实 clean artifact E2E 完成 `v1.2.0 install -> v1.2.1 update -> v1.2.0 rollback`。
+
+Phase 28 前后 canonical accounting 保持 `30,239` Requests、total=`3,718,496,297` tokens、known calendar cost=`$2579.79482923`；`.codex` 均为 `452` rollout，combined SHA-256=`fb704efd96f4dc0019737a0ed9bed8fc7ecfe394f6029db8e9cb15302cc813cf`。远程 GitHub tag/Draft/Publish 尚未执行，正式发布仍必须从 clean tagged checkout 经人工 Publish gate。完整证据见 [DELIVERY-RELEASE-CLI-MANAGEMENT.md](DELIVERY-RELEASE-CLI-MANAGEMENT.md)。
+
 ## 近期：MVP 稳定性
 
 - 固化更多脱敏 fixture：并发、嵌套、终止、legacy 无 ordinal、未知事件、坏行和归档移动。

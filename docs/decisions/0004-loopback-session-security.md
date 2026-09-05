@@ -1,6 +1,6 @@
 # ADR-0004：采用 loopback 和启动会话安全边界
 
-- **Status:** Accepted
+- **Status:** Superseded by ADR-0034
 - **Date:** 2026-08-24
 
 ## Context
@@ -30,3 +30,5 @@
 - 不能直接把 API 嵌入其他网页或通过远程代理使用。
 - 未来若支持远程/多用户，需要新的认证、TLS、授权、审计和威胁模型 ADR，不能简单放宽 Host/CORS。
 - 安全头、认证和恶意 Origin 必须有自动化回归测试。
+
+> 2026-09-04：固定 loopback endpoint 与跨进程 browser authorization 由 ADR-0034 替代本 ADR 的每进程 launch-token/session-secret 方案；loopback、Host/Origin、CSP、无 CORS 与敏感接口必须认证等安全目标继续保留。
