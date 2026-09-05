@@ -1,4 +1,5 @@
 import assert from "node:assert/strict";
+import { EventEmitter } from "node:events";
 import { appendFile, mkdtemp, mkdir, rename, rm, unlink, writeFile } from "node:fs/promises";
 import { request as httpRequest } from "node:http";
 import { tmpdir } from "node:os";
@@ -26,10 +27,51 @@ const OTHER_TURN = "33333333-3333-4333-8333-333333333333";
 const TEST_BROWSER_AUTH_SECRET = Buffer.alloc(32, 19);
 
 function startApplication(options) {
-  return startApplicationReal({ ...options, browserAuthSecret: TEST_BROWSER_AUTH_SECRET });
+  return startApplicationReal({
+    ...options,
+    browserAuthSecret: TEST_BROWSER_AUTH_SECRET,
+    watchImpl: null,
+  });
 }
 
 process.env.TZ = "America/Los_Angeles";
+
+test("watch adapter keeps production recursive semantics and close waits for watcher shutdown", async (t) => {
+  const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-watch-adapter-"));
+  const codexHome = join(directory, ".codex");
+  const sessions = join(codexHome, "sessions");
+  await mkdir(sessions, { recursive: true });
+  t.after(() => rm(directory, { recursive: true, force: true }));
+
+  const registrations = [];
+  let watcherClosed = false;
+  const watchImpl = (root, options) => {
+    registrations.push({ root, options });
+    const watcher = new EventEmitter();
+    watcher.close = () => {
+      setTimeout(() => {
+        watcherClosed = true;
+        watcher.emit("close");
+      }, 5);
+    };
+    return watcher;
+  };
+  const monitor = new UsageMonitor({
+    repository: { codexHome },
+    database: {},
+    quotaClient: {},
+    watchImpl,
+  });
+
+  monitor.startWatchers();
+  assert.deepEqual(registrations, [{ root: sessions, options: { recursive: true } }]);
+  assert.equal(monitor.watchers.length, 1);
+  const closing = monitor.close();
+  assert.equal(watcherClosed, false);
+  await closing;
+  assert.equal(watcherClosed, true);
+  assert.equal(monitor.watchers.length, 0);
+});
 
 test("calendar aggregate includes unselected sessions and local-day quality", async (t) => {
   const directory = await mkdtemp(join(tmpdir(), "codex-usage-monitor-calendar-"));
@@ -46,7 +88,7 @@ test("calendar aggregate includes unselected sessions and local-day quality", as
   );
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, watchImpl: null });
   t.after(async () => {
     await monitor.close();
     database.close();
@@ -324,7 +366,7 @@ test("incremental timeline tails only the changed session after rollout append",
   await writeFile(secondPath, makeCalendarRootRollout(OTHER_ROOT, OTHER_TURN, 240, "2026-08-24T13:00:00.000Z"));
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, watchImpl: null });
   t.after(async () => {
     await monitor.close();
     database.close();
@@ -500,7 +542,7 @@ test("request ledger exclusively drives snapshot, agent, cost, and calendar usag
   data.agents[0].subtreeUsage = zeroUsage();
   database.replaceSession(data);
   const repository = { getSession: () => null, summary: () => ({}) };
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, watchImpl: null });
   t.after(async () => {
     await monitor.close();
     database.close();
@@ -702,7 +744,7 @@ test("official quota does not regress within the same reset window when refreshe
 
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database, quotaClient });
+  const monitor = new UsageMonitor({ repository, database, quotaClient, watchImpl: null });
   t.after(async () => {
     await monitor.close();
     database.close();
@@ -757,7 +799,7 @@ test("manual quota refresh queries the official quota client instead of rescanni
 
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database, quotaClient });
+  const monitor = new UsageMonitor({ repository, database, quotaClient, watchImpl: null });
   t.after(async () => {
     await monitor.close();
     database.close();
@@ -804,13 +846,14 @@ test("official quota polling runs on the configured interval and defaults to six
   };
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
-  const defaultMonitor = new UsageMonitor({ repository, database, quotaClient });
+  const defaultMonitor = new UsageMonitor({ repository, database, quotaClient, watchImpl: null });
   assert.equal(defaultMonitor.quotaRefreshIntervalMs, 60_000);
   const monitor = new UsageMonitor({
     repository,
     database,
     quotaClient,
     quotaRefreshIntervalMs: 10,
+    watchImpl: null,
   });
   t.after(async () => {
     await monitor.close();
@@ -1914,7 +1957,7 @@ test("Phase 23 monitor diagnostics stays on the cached projection when the sessi
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   database.replaceSession(diagnosticsSnapshot());
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, watchImpl: null });
   t.after(async () => {
     await monitor.close();
     database.close();
@@ -1959,7 +2002,7 @@ test("Phase 24 monitor advanced diagnostics stays lazy and reads bounded histori
     inputTokens: 200_000,
   }));
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, watchImpl: null });
   t.after(async () => {
     await monitor.close();
     database.close();
@@ -2004,7 +2047,7 @@ test("Phase 24B monitor behavioral diagnostics stays lazy and exposes only froze
     reasoningOutputTokens: 1_500,
   }));
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, watchImpl: null });
   t.after(async () => {
     await monitor.close();
     database.close();
@@ -2360,7 +2403,7 @@ test("T-DAY-060..062 scoped SSE rematerializes the listener scope after updates"
 async function bootMonitor(codexHome, databasePath) {
   const database = new MonitorDatabase(databasePath);
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, watchImpl: null });
   await monitor.initialize();
   return { database, monitor };
 }

@@ -57,7 +57,7 @@ export async function startApplication(options = {}) {
   });
   const database = new MonitorDatabase(databasePath);
   const repository = new CodexRepository(codexHome, database);
-  const monitor = new UsageMonitor({ repository, database });
+  const monitor = new UsageMonitor({ repository, database, watchImpl: options.watchImpl });
   await monitor.initialize();
 
   let boundPort = preferredPort;
