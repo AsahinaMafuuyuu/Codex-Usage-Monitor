@@ -47,10 +47,10 @@ test("calendar aggregate includes unselected sessions and local-day quality", as
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
   const monitor = new UsageMonitor({ repository, database });
-  t.after(() => {
-    monitor.close();
+  t.after(async () => {
+    await monitor.close();
     database.close();
-    return rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true });
   });
 
   await monitor.initialize();
@@ -97,7 +97,7 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   );
   let second = null;
   t.after(async () => {
-    second?.monitor.close();
+    await second?.monitor.close();
     second?.database.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -108,7 +108,7 @@ test("incremental timeline survives restart without replaying unchanged rollout 
   assert.equal(firstTimeline.modelRequestCount, 1);
   assert.equal(first.monitor.health().timeline.replayedFiles, 1);
   assert.equal(first.database.getModelUsageEvents(ROOT).length, 1);
-  first.monitor.close();
+  await first.monitor.close();
   first.database.close();
 
   second = await bootMonitor(codexHome, databasePath);
@@ -141,7 +141,7 @@ test("pricing policy changes rebuild persisted calendar cost from stored canonic
     await rm(directory, { recursive: true, force: true });
   });
   await first.monitor.timeline();
-  first.monitor.close();
+  await first.monitor.close();
   first.database.db.prepare(`
     UPDATE session_day_usage
     SET cost_amount_usd=999, cost_status='partial', pricing_policy_version='stale-policy'
@@ -217,9 +217,9 @@ test("portable source keys survive Codex home relocation without path-only repla
   let first = null;
   let second = null;
   t.after(async () => {
-    first?.monitor.close();
+    await first?.monitor.close();
     first?.database.close();
-    second?.monitor.close();
+    await second?.monitor.close();
     second?.database.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -229,7 +229,7 @@ test("portable source keys survive Codex home relocation without path-only repla
   assert.equal(initial.summary.taskCount, 1);
   assert.equal(first.database.getCursors(ROOT)[0].sourceKey,
     `sessions/2026/08/24/rollout-portable-${CHILD}.jsonl`);
-  first.monitor.close();
+  await first.monitor.close();
   first.database.close();
   first = null;
 
@@ -326,7 +326,7 @@ test("incremental timeline tails only the changed session after rollout append",
   const repository = new CodexRepository(codexHome, database);
   const monitor = new UsageMonitor({ repository, database });
   t.after(async () => {
-    monitor.close();
+    await monitor.close();
     database.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -502,7 +502,7 @@ test("request ledger exclusively drives snapshot, agent, cost, and calendar usag
   const repository = { getSession: () => null, summary: () => ({}) };
   const monitor = new UsageMonitor({ repository, database });
   t.after(async () => {
-    monitor.close();
+    await monitor.close();
     database.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -614,12 +614,12 @@ test("T-DAY-041 v11 through v13 rebuilds calendar from persisted ledger without 
   );
   let booted = await bootMonitor(codexHome, databasePath);
   t.after(async () => {
-    booted?.monitor.close();
+    await booted?.monitor.close();
     booted?.database.close();
     await rm(directory, { recursive: true, force: true });
   });
   await booted.monitor.timeline();
-  booted.monitor.close();
+  await booted.monitor.close();
   booted.database.close();
 
   const legacy = new DatabaseSync(databasePath);
@@ -703,10 +703,10 @@ test("official quota does not regress within the same reset window when refreshe
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
   const monitor = new UsageMonitor({ repository, database, quotaClient });
-  t.after(() => {
-    monitor.close();
+  t.after(async () => {
+    await monitor.close();
     database.close();
-    return rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true });
   });
 
   await monitor.initialize();
@@ -758,10 +758,10 @@ test("manual quota refresh queries the official quota client instead of rescanni
   const database = new MonitorDatabase(join(directory, "usage.sqlite"));
   const repository = new CodexRepository(codexHome, database);
   const monitor = new UsageMonitor({ repository, database, quotaClient });
-  t.after(() => {
-    monitor.close();
+  t.after(async () => {
+    await monitor.close();
     database.close();
-    return rm(directory, { recursive: true, force: true });
+    await rm(directory, { recursive: true, force: true });
   });
 
   await monitor.initialize();
@@ -935,7 +935,7 @@ test("schema v8 sessions replay once to backfill the request ledger", async (t) 
 
   ({ monitor, database } = await bootMonitor(codexHome, databasePath));
   await monitor.timeline();
-  monitor.close();
+  await monitor.close();
   database.close();
   monitor = null;
   database = null;
@@ -978,7 +978,7 @@ test("schema v10 retires boundary storage and reaches v13 without replaying roll
 
   ({ monitor, database } = await bootMonitor(codexHome, databasePath));
   await monitor.timeline();
-  monitor.close();
+  await monitor.close();
   database.close();
   monitor = null;
   database = null;
@@ -1148,7 +1148,7 @@ test("derived tasks survive restart after one source rollout disappears", async 
   await writeFile(firstPath, makeSubagentRollout(CHILD, TURN, 100));
   await writeFile(secondPath, makeSubagentRollout(SIBLING, SIBLING_TURN, 200));
   t.after(async () => {
-    second?.monitor.close();
+    await second?.monitor.close();
     second?.database.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -1156,7 +1156,7 @@ test("derived tasks survive restart after one source rollout disappears", async 
   const first = await bootMonitor(codexHome, databasePath);
   const before = await first.monitor.selectSession(ROOT);
   assert.equal(before.summary.taskCount, 2);
-  first.monitor.close();
+  await first.monitor.close();
   first.database.close();
 
   await unlink(secondPath);
@@ -1916,7 +1916,7 @@ test("Phase 23 monitor diagnostics stays on the cached projection when the sessi
   const repository = new CodexRepository(codexHome, database);
   const monitor = new UsageMonitor({ repository, database });
   t.after(async () => {
-    monitor.close();
+    await monitor.close();
     database.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -1961,7 +1961,7 @@ test("Phase 24 monitor advanced diagnostics stays lazy and reads bounded histori
   const repository = new CodexRepository(codexHome, database);
   const monitor = new UsageMonitor({ repository, database });
   t.after(async () => {
-    monitor.close();
+    await monitor.close();
     database.close();
     await rm(directory, { recursive: true, force: true });
   });
@@ -2006,7 +2006,7 @@ test("Phase 24B monitor behavioral diagnostics stays lazy and exposes only froze
   const repository = new CodexRepository(codexHome, database);
   const monitor = new UsageMonitor({ repository, database });
   t.after(async () => {
-    monitor.close();
+    await monitor.close();
     database.close();
     await rm(directory, { recursive: true, force: true });
   });
